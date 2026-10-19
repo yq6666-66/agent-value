@@ -376,7 +376,7 @@ fn insufficient_ratings_switch_whole_layer_to_success_rate_mode() {
         window.extend(rate(a, &add, &[4, 4, 4]));
     }
     assert_eq!(
-        quality_mode(&candidates, &r, &cells, &window).unwrap(),
+        quality_mode(&candidates, &cells, &window).unwrap(),
         QualityMode::Rating
     );
     close(
@@ -390,11 +390,11 @@ fn insufficient_ratings_switch_whole_layer_to_success_rate_mode() {
         .position(|g| g.arm == y && g.cell == add)
         .unwrap();
     window.remove(pos);
-    let mode = quality_mode(&candidates, &r, &cells, &window).unwrap();
+    let mode = quality_mode(&candidates, &cells, &window).unwrap();
     assert_eq!(mode, QualityMode::SuccessRate);
     assert_eq!(mode.label(), Some(SUCCESS_RATE_MODE_LABEL));
-    // Every arm and the reference, on every cell, use 0.99 - including
-    // x, which had enough ratings.
+    // Every arm (the reference included), on every cell, uses 0.99 -
+    // including x, which had enough ratings.
     for a in [&x, &y, &r] {
         for c in [&fix, &add] {
             assert_eq!(q_hat(mode, a, c, &window, &[]).unwrap(), Q_HAT_MAX);
@@ -403,18 +403,28 @@ fn insufficient_ratings_switch_whole_layer_to_success_rate_mode() {
 }
 
 #[test]
-fn reference_arm_is_part_of_the_rating_gate() {
+fn rating_gate_covers_candidates_only() {
+    // §3.1: "every arm among the E_d candidates". A reference arm that is
+    // not a candidate does not gate the mode, but it still gets q_hat = 0.99
+    // in success-rate mode and a shrunk q_hat in rating mode.
     let (x, r, fix) = (arm("model-x"), arm("model-ref"), cell("fix"));
     let cells = CellWeights::equal(std::slice::from_ref(&fix)).unwrap();
     let mut window = rate(&x, &fix, &[5, 5, 5]);
     window.extend(rate(&r, &fix, &[3, 3]));
-    assert_eq!(
-        quality_mode(std::slice::from_ref(&x), &r, &cells, &window).unwrap(),
-        QualityMode::SuccessRate
-    );
+    let mode = quality_mode(std::slice::from_ref(&x), &cells, &window).unwrap();
+    assert_eq!(mode, QualityMode::Rating);
+    // r: (0.5 + 0.5 + 0.5 * 0.5) / 2.5 = 0.5
+    close(q_hat(mode, &r, &fix, &window, &[]).unwrap(), 0.5);
+
+    // When the reference arm is itself a candidate, it is gated like any
+    // other candidate: 2 < 3 ratings => success-rate mode for everyone.
+    let both = vec![x.clone(), r.clone()];
+    let mode = quality_mode(&both, &cells, &window).unwrap();
+    assert_eq!(mode, QualityMode::SuccessRate);
+    assert_eq!(q_hat(mode, &r, &fix, &window, &[]).unwrap(), Q_HAT_MAX);
     window.extend(rate(&r, &fix, &[3]));
     assert_eq!(
-        quality_mode(std::slice::from_ref(&x), &r, &cells, &window).unwrap(),
+        quality_mode(&both, &cells, &window).unwrap(),
         QualityMode::Rating
     );
 }
@@ -426,19 +436,19 @@ fn zero_weight_cells_and_failed_ratings_do_not_count_toward_the_gate() {
     // "add" has zero weight: it is not in d+ and needs no ratings.
     let window = rate(&x, &fix, &[4, 4, 4]);
     assert_eq!(
-        quality_mode(std::slice::from_ref(&x), &x, &cells, &window).unwrap(),
+        quality_mode(std::slice::from_ref(&x), &cells, &window).unwrap(),
         QualityMode::Rating
     );
     // A rating on a task that later failed does not count.
     let mut window = rate(&x, &fix, &[4, 4, 4]);
     window[2].outcome = Outcome::Failure;
     assert_eq!(
-        quality_mode(std::slice::from_ref(&x), &x, &cells, &window).unwrap(),
+        quality_mode(std::slice::from_ref(&x), &cells, &window).unwrap(),
         QualityMode::SuccessRate
     );
     // No candidates at all: success-rate mode.
     assert_eq!(
-        quality_mode(&[], &x, &cells, &window).unwrap(),
+        quality_mode(&[], &cells, &window).unwrap(),
         QualityMode::SuccessRate
     );
 }

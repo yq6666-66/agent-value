@@ -5,8 +5,10 @@
 //! ratings asked for on a random 10% of successful tasks, at most 3 per day.
 //!
 //! Each layer, each window, runs in one of two modes:
-//! - rating mode: every candidate arm and the reference arm have at least
-//!   `n_q >= 3` ratings on every positive-weight cell; then
+//! - rating mode: every candidate arm of the layer's `E_d` has at least
+//!   `n_q >= 3` ratings on every positive-weight cell (v22 §3.1, literal
+//!   wording: the reference and fallback arms are gated only when they are
+//!   themselves candidates); then
 //!   `q_hat = clip((sum q_j + m0 q_B) / (n_q + m0), 0.01, 0.99)`, where
 //!   `q_B` is the pooled mean of all arms' ratings in the same cell in the
 //!   previous window (0.5 when there are none);
@@ -93,12 +95,12 @@ impl QualityMode {
 }
 
 /// Decides the layer's quality mode from this window's ratings. The gate
-/// covers every candidate arm plus the reference arm, on every cell with
-/// positive weight. No candidates or no positive-weight cell means
-/// success-rate mode.
+/// covers exactly the candidate arms of the layer's `E_d`, on every cell
+/// with positive weight (§3.1). The reference arm is not added to the gate:
+/// its `q_hat` only enters the numerator shared by all arms. No candidates
+/// or no positive-weight cell means success-rate mode.
 pub fn quality_mode(
     candidates: &[Arm],
-    reference: &Arm,
     cells: &CellWeights,
     ratings: &[Rating],
 ) -> Result<QualityMode> {
@@ -106,7 +108,7 @@ pub fn quality_mode(
     if candidates.is_empty() || support.is_empty() {
         return Ok(QualityMode::SuccessRate);
     }
-    for arm in candidates.iter().chain(std::iter::once(reference)) {
+    for arm in candidates {
         for cell in &support {
             let n = qualities(ratings, arm, cell)?.len();
             if n < RATING_MODE_MIN_RATINGS as usize {

@@ -18,6 +18,11 @@ public leaderboard.
   24-hour rollback windows are open) and computes the rating-based quality
   signals, switching a whole layer to "delivery success rate" when ratings
   are too few. Nothing consumes these yet.
+- The core crate also computes the pass-rate prior and Beta posterior,
+  the K-truncated retry quantities (p_K, q_K, E[n_F], E[n_W]) with their
+  lower bounds, the cell states (miss / fail: too few samples or truly
+  failing / valid) and the cell weights omega_u from the previous window.
+  Nothing consumes these yet.
 - The store crate has the local SQLite data model: route metadata per
   request, tasks, behaviour events with available-arm snapshots, probe
   results, frozen cell weights, weight versions and other configuration

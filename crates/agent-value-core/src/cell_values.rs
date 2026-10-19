@@ -359,6 +359,19 @@ fn cancel_excess(d: &DimInputs, n_c: u64, f_price: f64, mean: f64) -> Result<(f6
                     max: f64::INFINITY,
                 });
             }
+            // E^UB is only defined on the feasible set 0 <= S_C <= n^C U^cap
+            // (DECISIONS N); bills outside it are inconsistent input.
+            let total = finite("cancel bill total", *total)?;
+            let max_total = n_c as f64 * cap;
+            if !(0.0..=max_total).contains(&total) {
+                return Err(CoreError::OutOfRange {
+                    what: "cancel bill total (must be within [0, n^C * cap])",
+                    value: total,
+                    min: 0.0,
+                    max: max_total,
+                });
+            }
+            // No tolerance on floor: E^UB is continuous where S/U is an integer.
             let full = (total / cap).floor();
             let rest = total - full * cap;
             (

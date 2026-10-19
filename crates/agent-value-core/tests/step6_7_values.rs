@@ -494,53 +494,90 @@ fn cancel_amortization_and_its_degrade_chain() {
 #[test]
 fn cancel_robust_excess_and_guards() {
     let r = stats(3, 1);
-    let rc = stats(3, 3); // n0 + nC failures
-    let mk = |cancel| {
-        let mut i = inputs(counts(3, 1, 2), r, cost_with(cancel, None, None));
-        i.retry_c = rc;
-        // Time has per-task cancel durations, so only cost decides the flag.
-        i.time.cancel = CancelBills::PerTask(vec![10.0, 10.0]);
-        cell_values(&i, Role::Terminal).unwrap()
+    // n^C cancels; robust retry stats count n0 + n^C failures. Time has
+    // per-task cancel durations, so only cost decides the flag.
+    let try_mk = |n_c: u64, cancel| {
+        let mut i = inputs(counts(3, 1, n_c), r, cost_with(cancel, None, None));
+        i.retry_c = stats(3, 1 + n_c);
+        i.time.cancel = CancelBills::PerTask(vec![10.0; n_c as usize]);
+        cell_values(&i, Role::Terminal)
     };
-    let own_c = rc.p_k * 0.5 + rc.e_n_f * 0.3;
+    let mk = |n_c, cancel| try_mk(n_c, cancel).unwrap();
+    let own_c = |n_c: u64| {
+        let rc = stats(3, 1 + n_c);
+        rc.p_k * 0.5 + rc.e_n_f * 0.3
+    };
     // Per task: sum max(0, c - C~_F) = 0.2 + 0 with C~_F = 0.3.
-    let v = mk(CancelBills::PerTask(vec![0.5, 0.1]));
+    let v = mk(2, CancelBills::PerTask(vec![0.5, 0.1]));
     close(
         v.robust.c.unwrap(),
-        (own_c + 0.2 / 4.0).max(v.star.c.unwrap()),
+        (own_c(2) + 0.2 / 4.0).max(v.star.c.unwrap()),
     );
     assert!(v.robust_dominance);
     assert!(v.robust.c.unwrap() >= v.star.c.unwrap());
-    // Aggregate with cap: S = 1.0, U = 0.4 => 2 * (0.4 - 0.3) + max(0, 0.2 - 0.3) = 0.2.
-    let v = mk(CancelBills::Aggregate {
-        total: 1.0,
-        cap: Some(0.4),
-    });
+    // Aggregate with cap, n^C = 3: S = 1.0, U = 0.4 => 2 * (0.4 - 0.3) + max(0, 0.2 - 0.3) = 0.2.
+    let v = mk(
+        3,
+        CancelBills::Aggregate {
+            total: 1.0,
+            cap: Some(0.4),
+        },
+    );
     close(
         v.robust.c.unwrap(),
-        (own_c + 0.2 / 4.0).max(v.star.c.unwrap()),
+        (own_c(3) + 0.2 / 4.0).max(v.star.c.unwrap()),
     );
     assert!(v.robust_dominance);
-    // Q10 / DECISIONS N: S=1.0, U=0.2, C~_F=0.3.
-    // Original formula: floor(1/0.2)*(0.2-0.3)+max(0,1-1-0.3) = -0.5.
-    // With max(0, U-C~_F) on each full-cap term: 5*0 + 0 = 0.
-    let v = mk(CancelBills::Aggregate {
-        total: 1.0,
-        cap: Some(0.2),
-    });
-    close(
-        v.robust.c.unwrap(),
-        (own_c + 0.0 / 4.0).max(v.star.c.unwrap()),
+    // Q10 / DECISIONS N, n^C = 5: S = 1.0, U = 0.2, C~_F = 0.3.
+    // Published formula: floor(1/0.2) * (0.2 - 0.3) + max(0, 1 - 1 - 0.3) = -0.5.
+    // With max(0, U - C~_F) on each full-cap term: 5 * 0 + 0 = 0.
+    let v = mk(
+        5,
+        CancelBills::Aggregate {
+            total: 1.0,
+            cap: Some(0.2),
+        },
     );
+    close(v.robust.c.unwrap(), own_c(5).max(v.star.c.unwrap()));
     assert!(v.robust.c.unwrap() >= v.star.c.unwrap());
+    // S exactly n^C * U is feasible (boundary included).
+    assert!(try_mk(
+        5,
+        CancelBills::Aggregate {
+            total: 1.0,
+            cap: Some(0.2)
+        }
+    )
+    .is_ok());
+    // DECISIONS N precondition: n^C = 2, U = 10, S = 25 > 20 is an input error.
+    assert!(try_mk(
+        2,
+        CancelBills::Aggregate {
+            total: 25.0,
+            cap: Some(10.0)
+        }
+    )
+    .is_err());
+    // Negative total is an input error too.
+    assert!(try_mk(
+        2,
+        CancelBills::Aggregate {
+            total: -1.0,
+            cap: Some(10.0)
+        }
+    )
+    .is_err());
     // Aggregate without cap: lower bound 2 * max(0, 0.5 - 0.3); robust dominance off.
-    let v = mk(CancelBills::Aggregate {
-        total: 1.0,
-        cap: None,
-    });
+    let v = mk(
+        2,
+        CancelBills::Aggregate {
+            total: 1.0,
+            cap: None,
+        },
+    );
     close(
         v.robust.c.unwrap(),
-        (own_c + 0.4 / 4.0).max(v.star.c.unwrap()),
+        (own_c(2) + 0.4 / 4.0).max(v.star.c.unwrap()),
     );
     assert!(!v.robust_dominance);
     assert!(v.notes.contains(&CellNote::CancelLowerBoundOnly));

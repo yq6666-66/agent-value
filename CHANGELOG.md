@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec step 3: task outcome judgement (§3.1 rules 1-6 in order:
+  explicit abort, failed last check, redo within 30 min, whole rollback
+  within 24 h for coding tasks, reported completion, else undetermined),
+  with provisional results until the observation windows close; quality
+  signals: star-to-quality mapping, per-layer rating / success-rate mode,
+  pooled prior `q_B`, shrunk `q_hat`, spot-rating decision (10%, max 3 per
+  Beijing-time day).
+- Store, spec step 3: schema version 2 with an append-only
+  `outcome_judgements` history (rule fired, rules version); recording a
+  judgement updates the task's current outcome; replaceable task ratings.
 - Store, spec step 2: new `agent-value-store` crate with a versioned SQLite
   schema for arms, tasks, per-request route metadata, behaviour events with
   available-arm snapshots, probe results (Beijing-time run days), frozen cell

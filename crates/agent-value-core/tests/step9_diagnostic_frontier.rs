@@ -526,6 +526,35 @@ fn robust_frontier_excludes_disabled_and_feeds_rec() {
     assert!(f.rec.iter().any(|x| x == "B"));
 }
 
+// ---- §2 line 307: lower-bound-only arm stays in F_rec, tagged (DECISIONS S) ---
+
+#[test]
+fn coarse_bill_arm_stays_in_rec_and_is_tagged() {
+    // C's robust triple (2, 12, 0.8) is robust-dominated by A's (1, 10, 0.9),
+    // but C has only a lower-bound cancel bill, so robust dominance is
+    // disabled: C stays in F_rec and carries the "账单过粗" tag.
+    let arms = vec![
+        FrontierArm {
+            id: "A".into(),
+            star: Triple::new(1.0, 10.0, 0.9),
+            robust: Triple::new(1.0, 10.0, 0.9),
+            robust_enabled: true,
+        },
+        FrontierArm {
+            id: "C".into(),
+            star: Triple::new(1.5, 9.0, 0.88),
+            robust: Triple::new(2.0, 12.0, 0.8),
+            robust_enabled: false,
+        },
+    ];
+    let f = layer_frontiers(&arms).unwrap();
+    assert_eq!(f.off, vec!["A".to_string(), "C".to_string()]);
+    assert_eq!(f.rob, vec!["A".to_string()]);
+    assert_eq!(f.rec, vec!["A".to_string(), "C".to_string()]);
+    assert_eq!(f.coarse_bill, vec!["C".to_string()]);
+    assert!(f.coarse_bill.iter().all(|x| f.rec.contains(x)));
+}
+
 // ---- §5 miss-cell diagnostic interval -----------------------------------------
 
 #[test]

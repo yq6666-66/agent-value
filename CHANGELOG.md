@@ -12,7 +12,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   miss fill via weighted lower median (DECISIONS E) and worst-valid per
   dimension (DECISIONS F), fail fill as the worse of measured and
   worst-valid; sort by coverage then model name. Layer frontiers
-  `F_off` / `F_rob` / `F_rec` (§6); arms with an NA triple are skipped.
+  `F_off` / `F_rob` / `F_rec` (§6); arms with an NA triple are skipped;
+  lower-bound-only cancel-bill arms stay in `F_rec` and are listed in
+  `coarse_bill` for the "账单过粗" tag (§2).
   Eligibility primary attribution maps seven labels to five §5 gates and
   suppresses spurious rate gates when complete-case already failed
   (DECISIONS P). Paired with v22 examples 6/7/8 (F_thin / F_bad paths;

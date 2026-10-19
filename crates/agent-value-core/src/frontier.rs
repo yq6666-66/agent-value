@@ -16,7 +16,9 @@ pub struct FrontierArm {
     pub star: Triple,
     pub robust: Triple,
     /// When false, the arm is excluded from the robust frontier and from
-    /// robust-dominance sets (e.g. cancel bills too coarse).
+    /// robust-dominance sets. Callers set it false only for a lower-bound-only
+    /// cancel bill (`CellNote::CancelLowerBoundOnly` on any of its cells; v22
+    /// §2 "账单过粗"), which is what `LayerFrontiers::coarse_bill` reports.
     pub robust_enabled: bool,
 }
 
@@ -29,6 +31,10 @@ pub struct LayerFrontiers {
     pub rob: Vec<String>,
     /// Recommended = off members with empty robust-dominator set.
     pub rec: Vec<String>,
+    /// `rec` members whose robust dominance is disabled (lower-bound-only
+    /// cancel bill). They stay in `rec` but must be shown with the
+    /// "账单过粗" tag (v22 §2; DECISIONS S). Sorted; subset of `rec`.
+    pub coarse_bill: Vec<String>,
 }
 
 fn point(t: &Triple) -> Option<Point> {
@@ -118,6 +124,7 @@ pub fn layer_frontiers(arms: &[FrontierArm]) -> Result<LayerFrontiers> {
 
     // R_d(i) = { j in E_d : j ≻_rob i }; F_rec = { i in F_off : R_d(i) = empty }
     let mut rec = Vec::new();
+    let mut coarse_bill = Vec::new();
     for id in &off {
         let a = arms.iter().find(|x| x.id == *id).unwrap();
         let r_empty = !arms.iter().any(|j| {
@@ -130,15 +137,24 @@ pub fn layer_frontiers(arms: &[FrontierArm]) -> Result<LayerFrontiers> {
         });
         // An F_off arm always has a complete robust triple (DECISIONS R
         // invariant). When its robust dominance is disabled (lower-bound
-        // cancel bill, v22 §2 "禁用稳健支配"), no j can robust-dominate it
-        // and R_d(i) is empty.
+        // cancel bill, v22 §2 "禁用稳健支配"), no j can robust-dominate it,
+        // R_d(i) is empty, and it is tagged "账单过粗" (DECISIONS S).
         if r_empty {
             rec.push(id.clone());
+            if !a.robust_enabled {
+                coarse_bill.push(id.clone());
+            }
         }
     }
     rec.sort();
+    coarse_bill.sort();
 
-    Ok(LayerFrontiers { off, rob, rec })
+    Ok(LayerFrontiers {
+        off,
+        rob,
+        rec,
+        coarse_bill,
+    })
 }
 
 /// Arms tied for the highest finite `V` among `scores` (id, V).

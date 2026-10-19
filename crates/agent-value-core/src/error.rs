@@ -65,6 +65,8 @@ pub enum CoreError {
     Parse { what: &'static str, value: String },
     /// Persisted ledger parts are inconsistent.
     CorruptLedger { reason: &'static str },
+    /// An iterative numeric method did not converge.
+    NoConvergence { what: &'static str },
 }
 
 impl fmt::Display for CoreError {
@@ -117,6 +119,7 @@ impl fmt::Display for CoreError {
             }
             Self::Parse { what, value } => write!(f, "cannot parse {what} from {value:?}"),
             Self::CorruptLedger { reason } => write!(f, "inconsistent weight ledger: {reason}"),
+            Self::NoConvergence { what } => write!(f, "{what} did not converge"),
         }
     }
 }

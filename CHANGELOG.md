@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec steps 4-5: Beta CDF and quantile (own implementation, checked
+  against 40-digit references); prior `p_B` / `kappa` exactly as written
+  (`rho = 1` direct pooling as its own case, `0/0` gives 0); posterior,
+  `q_K` then `p_K = 1 - q_K`, `E[n_F]` by geometric sum (no cancellation
+  at tiny `pi`), `E[n_W]`; lower-bound fail test via the CDF, quantile for
+  display; cancel-robust variant; cell states miss / F_thin / F_bad / valid
+  over the positive-weight cells with counts and weight sums; `omega_u`
+  from the previous window's user-task shares with carry-over / equal
+  fallbacks.
 - Core, spec step 3: task outcome judgement (§3.1 rules 1-6 in order:
   explicit abort, failed last check, redo within 30 min, whole rollback
   within 24 h for coding tasks, reported completion, else undetermined),

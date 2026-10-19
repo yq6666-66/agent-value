@@ -1,0 +1,15 @@
+[package]
+name = "agent-value-store"
+description = "Local SQLite storage for agent-value (data model and privacy rules)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-value-core = { path = "../agent-value-core" }
+# "bundled" compiles the SQLite C library from source, so no system SQLite is needed.
+rusqlite = { version = "0.40", features = ["bundled"] }
+hmac = "0.12"
+sha2 = "0.10"

@@ -12,26 +12,33 @@ public leaderboard.
 - The core crate has the foundations only: the specification's numeric
   constants, scoring scopes (coding / non-coding), arms as (model, route),
   time windows with freezing, and weight versions including trial versions.
-  These are covered by unit tests. No cost, time or quality formula, no
-  value score, no data storage, no probing, and no UI beyond a placeholder
-  page exist yet.
+  These are covered by unit tests.
+- The store crate has the local SQLite data model: route metadata per
+  request, tasks, behaviour events with available-arm snapshots, probe
+  results, frozen cell weights, weight versions and other configuration
+  versions, with the privacy rules below. It is not wired into the desktop
+  shell yet.
+- No cost, time or quality formula, no value score, no probing, and no UI
+  beyond a placeholder page exist yet.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `crates/agent-value-core/` | Pure-Rust core library. All formula logic and its tests will live here. No Tauri or GUI dependencies. |
+| `crates/agent-value-core/` | Pure-Rust core library. All formula logic and its tests will live here. No dependencies. |
+| `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
 | `src-tauri/` | Minimal Tauri 2 desktop shell that links the core crate. Not a member of the default Cargo workspace. |
 | `web/` | React + TypeScript + Vite front end. Display only; it never computes scores. |
 
 ## Building
 
-Core crate (no system GUI libraries needed):
+Core and store crates (no system GUI libraries needed; a C compiler is
+needed for the bundled SQLite):
 
 ```sh
 cargo fmt --all --check
-cargo clippy -p agent-value-core --all-targets -- -D warnings
-cargo test -p agent-value-core
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 Web app (Node.js 20+):
@@ -50,11 +57,17 @@ tested without GUI libraries. Building it needs the Tauri 2 system prerequisites
 first, then run `cargo build` from inside `src-tauri/`. CI installs these
 prerequisites and runs `cargo check` and `cargo clippy` for the shell.
 
-## Secrets
+## Secrets and privacy
 
 Real API keys go only in a local `.env` file, which is git-ignored.
 `.env.example` lists variable names only. agent-value stores the name of the
-environment variable a route uses, never its value.
+environment variable a route uses, never its value; the database has no
+column for key values.
+
+All data stays in one local SQLite file. Prompt and code text is never
+stored: only a category, a length and an HMAC-SHA256 digest whose key is
+kept outside the database. Task-level data is purged after 180 days, and
+the store can export every row or delete everything.
 
 ## License
 

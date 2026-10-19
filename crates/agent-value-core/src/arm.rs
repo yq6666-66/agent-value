@@ -55,6 +55,19 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    /// Parses [`ProviderKind::as_str`] output.
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "official" => Ok(Self::Official),
+            "relay" => Ok(Self::Relay),
+            "subscription" => Ok(Self::Subscription),
+            _ => Err(CoreError::Parse {
+                what: "provider kind",
+                value: s.to_string(),
+            }),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Official => "official",
@@ -82,6 +95,16 @@ impl Protocol {
             return Err(CoreError::EmptyField { field: "protocol" });
         }
         Ok(Self::Other(s))
+    }
+
+    /// Parses [`Protocol::as_str`] output; unknown names become `Other`.
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "anthropic-messages" => Ok(Self::AnthropicMessages),
+            "openai-chat-completions" => Ok(Self::OpenAiChatCompletions),
+            "openai-responses" => Ok(Self::OpenAiResponses),
+            other => Self::other(other),
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -325,6 +348,27 @@ mod tests {
         assert!(Protocol::other(" ").is_err());
         assert!(ModelId::new("").is_err());
         assert!(ModelId::new("a b").is_err());
+    }
+
+    #[test]
+    fn enum_parse_round_trip() {
+        for k in [
+            ProviderKind::Official,
+            ProviderKind::Relay,
+            ProviderKind::Subscription,
+        ] {
+            assert_eq!(ProviderKind::parse(k.as_str()), Ok(k));
+        }
+        assert!(ProviderKind::parse("x").is_err());
+        for p in [
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChatCompletions,
+            Protocol::OpenAiResponses,
+            Protocol::other("grpc").unwrap(),
+        ] {
+            assert_eq!(Protocol::parse(p.as_str()), Ok(p.clone()));
+        }
+        assert!(Protocol::parse("").is_err());
     }
 
     #[test]

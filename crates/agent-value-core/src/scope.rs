@@ -17,6 +17,18 @@ pub enum TaskKind {
 }
 
 impl TaskKind {
+    /// Parses [`TaskKind::as_str`] output.
+    pub fn parse(s: &str) -> Result<Self> {
+        match s {
+            "coding" => Ok(Self::Coding),
+            "non-coding" => Ok(Self::NonCoding),
+            _ => Err(CoreError::Parse {
+                what: "task kind",
+                value: s.to_string(),
+            }),
+        }
+    }
+
     /// Stable machine name.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -64,6 +76,14 @@ impl ScopeId {
     /// The default scopes: coding and non-coding.
     pub fn defaults() -> [ScopeId; 2] {
         [Self::new(TaskKind::Coding), Self::new(TaskKind::NonCoding)]
+    }
+
+    /// Parses the [`fmt::Display`] form, e.g. `coding` or `non-coding/writing`.
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.split_once('/') {
+            None => Ok(Self::new(TaskKind::parse(s)?)),
+            Some((k, sub)) => Self::subdivided(TaskKind::parse(k)?, sub),
+        }
     }
 
     pub fn kind(&self) -> TaskKind {
@@ -130,6 +150,15 @@ mod tests {
             ScopeId::subdivided(TaskKind::NonCoding, "  "),
             Err(CoreError::EmptyField { .. })
         ));
+    }
+
+    #[test]
+    fn scope_parse_round_trip() {
+        for s in ["coding", "non-coding", "non-coding/writing"] {
+            assert_eq!(ScopeId::parse(s).unwrap().to_string(), s);
+        }
+        assert!(ScopeId::parse("other").is_err());
+        assert!(ScopeId::parse("coding/").is_err());
     }
 
     #[test]

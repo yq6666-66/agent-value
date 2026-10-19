@@ -24,9 +24,9 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all --check
       - name: cargo clippy
-        run: cargo clippy -p agent-value-core --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
-        run: cargo test -p agent-value-core
+        run: cargo test --workspace
 
   web:
     name: Web (lint, typecheck, build)

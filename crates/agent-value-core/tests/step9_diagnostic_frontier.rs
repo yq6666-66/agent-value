@@ -531,7 +531,14 @@ fn robust_frontier_excludes_disabled_and_feeds_rec() {
 #[test]
 fn na_robust_arm_is_excluded_from_rec_in_every_build() {
     // A: plain complete, robust NA (only buildable through the public
-    // FrontierArm fields). B: complete both. Neither plain-dominates the other.
+    // FrontierArm fields). B: complete both. C: plain complete, robust NA
+    // and robust dominance disabled — R takes precedence over S, so C is
+    // excluded from F_rec and is not tagged.
+    // Plain: A (1,10,.9), B (2,5,.8), C (0.9,20,.85) — no pair dominates
+    // (A–C: A costs more, C is slower; B–C: B costs more, C is slower;
+    // A–B: A costs less, B is faster), so F_off = {A,B,C}.
+    // F_rob: A and C have NA robust triples (C is also disabled) → {B}.
+    // F_rec: A, C excluded (R); nobody can robust-dominate B → {B}.
     let arms = vec![
         FrontierArm {
             id: "A".into(),
@@ -549,11 +556,25 @@ fn na_robust_arm_is_excluded_from_rec_in_every_build() {
             robust: Triple::new(0.5, 4.0, 0.95),
             robust_enabled: true,
         },
+        FrontierArm {
+            id: "C".into(),
+            star: Triple::new(0.9, 20.0, 0.85),
+            robust: Triple {
+                c: Some(1.0),
+                t: None,
+                q: Some(0.85),
+            },
+            robust_enabled: false,
+        },
     ];
     let f = layer_frontiers(&arms).unwrap();
-    assert_eq!(f.off, vec!["A".to_string(), "B".to_string()]);
+    assert_eq!(
+        f.off,
+        vec!["A".to_string(), "B".to_string(), "C".to_string()]
+    );
     assert_eq!(f.rob, vec!["B".to_string()]);
     assert_eq!(f.rec, vec!["B".to_string()]);
+    assert!(!f.coarse_bill.contains(&"C".to_string()));
     assert!(f.coarse_bill.is_empty());
 }
 

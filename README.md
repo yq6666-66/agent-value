@@ -8,8 +8,13 @@ public leaderboard.
 ## Current state
 
 - A design specification exists (kept outside this repository).
-- This repository is a skeleton. **Nothing is scored yet**; no formula is
-  implemented, and there is no data storage, probing or UI beyond a placeholder page.
+- This repository is an early skeleton. **Nothing is scored yet.**
+- The core crate has the foundations only: the specification's numeric
+  constants, scoring scopes (coding / non-coding), arms as (model, route),
+  time windows with freezing, and weight versions including trial versions.
+  These are covered by unit tests. No cost, time or quality formula, no
+  value score, no data storage, no probing, and no UI beyond a placeholder
+  page exist yet.
 
 ## Layout
 

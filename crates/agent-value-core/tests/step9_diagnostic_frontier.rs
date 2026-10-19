@@ -130,25 +130,37 @@ fn seven_labels_map_to_five_spec_gates() {
 
 #[test]
 fn miss_layer_primary_attribution_drops_spurious_rate_gates() {
-    // Two cells; one miss → complete-case fails; n_sub only from the present
-    // row may also trip rate gates. primary_failures must not list them.
-    let ids = ["a", "b"];
-    let w = CellWeights::new(ids.iter().map(|s| (cell(s), 0.5)).collect()).unwrap();
-    let inputs = [row("a", counts(30, 0))];
+    // a present with heavy cancels: n_comp=10, n_c=12, n_sub=22.
+    // Cancel gate: 5·12=60 > 22 fails; completion gate: 2·10=20 < 22 fails.
+    // b is miss → complete-case fails. Raw `failed` must contain both rate
+    // gates; `primary_failures` must drop both.
+    let w = CellWeights::new(vec![(cell("a"), 0.5), (cell("b"), 0.5)]).unwrap();
+    let inputs = [CellInput {
+        cell: cell("a"),
+        counts: CellCounts {
+            n1: 10,
+            n0: 0,
+            n_c: 12,
+            m: 0,
+        },
+        prior: Prior::Jeffreys,
+    }];
     let st = layer_status(&w, &inputs, &model()).unwrap();
-    assert!(st.n_miss >= 1);
+    assert_eq!(st.n_miss, 1);
+    assert_eq!((st.n_comp, st.n_c, st.n_sub), (10, 12, 22));
     let refs: Vec<(CellId, Triple)> = w
         .support()
         .map(|c| (c.clone(), Triple::new(1.0, 10.0, 0.9)))
         .collect();
     let e = assess_eligibility(&st, &w, AuthenticityGrade::A, true, &refs).unwrap();
     assert!(e.failed.contains(&EligibilityGate::CompleteCase));
-    // Rate gates may or may not appear in raw failed; if they do, primary drops them.
+    assert!(e.failed.contains(&EligibilityGate::CancelRate));
+    assert!(e.failed.contains(&EligibilityGate::CompletionRate));
     let primary = e.primary_failures();
     assert!(primary.contains(&EligibilityGate::CompleteCase));
     assert!(!primary.contains(&EligibilityGate::CancelRate));
     assert!(!primary.contains(&EligibilityGate::CompletionRate));
-    assert!(e.primary_gate_indices().contains(&1));
+    assert!(!e.primary_gate_indices().contains(&3));
 }
 
 // ---- ESS admission (DECISIONS O) ---------------------------------------------
@@ -191,10 +203,12 @@ fn ess_jeffreys_with_valid_cell_is_admitted() {
 }
 
 #[test]
-fn kappa_eff_sums_present_d_plus_priors() {
+fn kappa_eff_is_omega_weighted_average_per_spec_line_87() {
     let cells = [cell("a"), cell("b"), cell("c")];
     let w = CellWeights::equal(&cells).unwrap();
-    // Only a and b present; c is miss (no prior row).
+    // v22 §0: κ_eff = Σ ω_u κ_iu / Σ ω_u over d+. a: DirectPool n_B=4 → κ=4;
+    // b: Jeffreys κ=0; c: miss, no prior supplied → κ=0 (DECISIONS O).
+    // (1/3·4 + 1/3·0 + 1/3·0) / 1 = 4/3.
     let priors = [
         (
             cell("a"),
@@ -205,7 +219,13 @@ fn kappa_eff_sums_present_d_plus_priors() {
         ),
         (cell("b"), Prior::Jeffreys),
     ];
-    close(kappa_eff(&w, &priors).unwrap(), 4.0);
+    close(kappa_eff(&w, &priors).unwrap(), 4.0 / 3.0);
+
+    // Unequal ω pins the weighting (an unweighted mean would give 4/3 again):
+    // ω = (0.5, 0.25, 0.25) → 0.5·4 + 0.25·0 + 0.25·0 = 2.
+    let w2 =
+        CellWeights::new(vec![(cell("a"), 0.5), (cell("b"), 0.25), (cell("c"), 0.25)]).unwrap();
+    close(kappa_eff(&w2, &priors).unwrap(), 2.0);
 }
 
 // ---- Example 6: F_thin diagnostic path, anchor 0.7875 -----------------------
@@ -337,19 +357,11 @@ fn example_8_nine_f_thin_diagnostic_aggregate_is_0_165() {
     let priors: Vec<(CellId, Prior)> = inputs.iter().map(|r| (r.cell.clone(), r.prior)).collect();
     let diag = diagnose_arm(&st, &w, &triples, &priors, None, &eq_w(), &floors()).unwrap();
     assert!(diag.admitted);
-    // worst valid C=0.60; fail fill max(0.02, 0.60)=0.60 for thin cells
-    // → aggregate becomes all 0.60 if we use fail_fill; BUT measured thin is 0.02
-    // and worst valid is 0.60, so max = 0.60.
-    // Wait — that would make A_C = 0.60, not 0.165!
-    //
-    // Re-read §5 fail rule: take worse of measured and worst-valid.
-    // For cost, worse = max. So thin cells with C*=0.02 become 0.60.
-    // That changes the diagnostic aggregate away from the raw A_C=0.165.
-    //
-    // Example 8's 0.165 is the *raw* layer aggregate A_C used for anchoring
-    // (§7), not the diagnostic-table fill-in. The diagnostic table fill-in
-    // applies to arms with miss/fail when producing V_diag.
-    // Pairing: raw weighted mean of measured triples = 0.165.
+    // Raw A_C = 0.165 is pinned through product code in
+    // step6_7_values.rs::example_8_a_c_is_0_165_and_v_is_74_89; the sum
+    // below is only an illustration. The diagnostic fail fill takes the
+    // worse of measured (0.02) and worst valid (0.60) per §5, so every thin
+    // cell becomes 0.60 and the post-fill aggregate is 0.60.
     let raw: f64 = triples.iter().map(|(_, t)| t.c.unwrap()).sum::<f64>() / 12.0;
     close(raw, 0.165);
     prints_as(raw, "0.1650");
@@ -512,4 +524,104 @@ fn robust_frontier_excludes_disabled_and_feeds_rec() {
     // A is in F_off but robust-dominated by B → not in F_rec
     assert!(!f.rec.iter().any(|x| x == "A"));
     assert!(f.rec.iter().any(|x| x == "B"));
+}
+
+// ---- §5 miss-cell diagnostic interval -----------------------------------------
+
+#[test]
+fn diagnostic_miss_cell_interval_v_cons_le_v_opt() {
+    // 4 equal cells; a,b,c valid with C* = 0.4 / 0.6 / 0.9; d miss.
+    // Optimistic miss fill = lower weighted median 0.6 (DECISIONS E);
+    // conservative = worst valid 0.9 (DECISIONS F).
+    // opt aggregate = (0.4+0.6+0.9+0.6)/4 = 0.625; cons = (0.4+0.6+0.9+0.9)/4 = 0.7.
+    // Reference (0.7, 10, 0.8): T and Q ratios are 1.
+    // V_opt = 100·((0.7+0.15)/(0.625+0.15))^(1/3); V_cons = 100·(0.85/0.85)^(1/3) = 100.
+    let ids = [cell("a"), cell("b"), cell("c"), cell("d")];
+    let w = CellWeights::equal(&ids).unwrap();
+    let inputs: Vec<CellInput> = ["a", "b", "c"]
+        .iter()
+        .map(|s| row(s, counts(10, 0)))
+        .collect();
+    let st = layer_status(&w, &inputs, &model()).unwrap();
+    assert_eq!((st.n_miss, st.n_valid), (1, 3));
+    let tr = vec![
+        (cell("a"), Triple::new(0.4, 10.0, 0.8)),
+        (cell("b"), Triple::new(0.6, 10.0, 0.8)),
+        (cell("c"), Triple::new(0.9, 10.0, 0.8)),
+    ];
+    let pr: Vec<(CellId, Prior)> = inputs.iter().map(|r| (r.cell.clone(), r.prior)).collect();
+    let reference = Point {
+        c: 0.7,
+        t: 10.0,
+        q: 0.8,
+    };
+    let d = diagnose_arm(&st, &w, &tr, &pr, Some(reference), &eq_w(), &floors()).unwrap();
+    assert!(d.admitted);
+    let miss = d.filled.iter().find(|f| f.cell == cell("d")).unwrap();
+    close(miss.optimistic.c.unwrap(), 0.6);
+    close(miss.conservative.c.unwrap(), 0.9);
+    close(d.aggregate_opt.unwrap().c.unwrap(), 0.625);
+    close(d.aggregate_cons.unwrap().c.unwrap(), 0.7);
+    let v_opt = d.v_opt.unwrap();
+    let v_cons = d.v_cons.unwrap();
+    close(v_opt, 100.0 * (0.85f64 / 0.775).powf(1.0 / 3.0));
+    close(v_opt, 103.1270055989971);
+    close(v_cons, 100.0);
+    assert!(v_cons <= v_opt);
+}
+
+// ---- §6 dominance at a cost tie -------------------------------------------------
+
+#[test]
+fn cost_tie_dominance_and_frontier() {
+    use agent_value_core::frontier::dominates;
+    let a = Point {
+        c: 1.0,
+        t: 5.0,
+        q: 0.9,
+    };
+    let b = Point {
+        c: 1.0,
+        t: 10.0,
+        q: 0.9,
+    };
+    assert!(dominates(a, b));
+    assert!(!dominates(b, a));
+    let arm = |id: &str, p: Point| FrontierArm {
+        id: id.into(),
+        star: Triple::new(p.c, p.t, p.q),
+        robust: Triple::new(p.c, p.t, p.q),
+        robust_enabled: true,
+    };
+    let f = layer_frontiers(&[arm("A", a), arm("B", b)]).unwrap();
+    assert_eq!(f.off, vec!["A".to_string()]);
+}
+
+// ---- Frontier skips NA triples (DECISIONS Q) ------------------------------------
+
+#[test]
+fn frontier_skips_arms_with_na_triples() {
+    let na_star = Triple {
+        c: Some(0.1),
+        t: None,
+        q: Some(0.99),
+    };
+    let arms = vec![
+        FrontierArm {
+            id: "full".into(),
+            star: Triple::new(1.0, 10.0, 0.8),
+            robust: Triple::new(1.0, 10.0, 0.8),
+            robust_enabled: true,
+        },
+        FrontierArm {
+            id: "na".into(),
+            star: na_star,
+            robust: na_star,
+            robust_enabled: true,
+        },
+    ];
+    let f = layer_frontiers(&arms).unwrap();
+    assert_eq!(f.off, vec!["full".to_string()]);
+    assert_eq!(f.rob, vec!["full".to_string()]);
+    assert_eq!(f.rec, vec!["full".to_string()]);
 }

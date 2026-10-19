@@ -57,7 +57,7 @@ fn dominates_triple(a: &Triple, b: &Triple) -> bool {
 /// Arms whose plain triple is incomplete are skipped for `F_off` (and thus
 /// cannot enter `F_rec`). Arms with `robust_enabled = false` or an incomplete
 /// robust triple are skipped for `F_rob` and never appear in anyone's
-/// robust-dominator set.
+/// robust-dominator set (DECISIONS Q).
 pub fn layer_frontiers(arms: &[FrontierArm]) -> Result<LayerFrontiers> {
     let mut ids = std::collections::BTreeSet::new();
     for a in arms {
@@ -201,6 +201,19 @@ mod frontier_unit_tests {
                 c: 2.0,
                 t: 10.0,
                 q: 0.8
+            }
+        ));
+        // Cost tie: equal cost, faster, equal quality still dominates.
+        assert!(dominates(
+            Point {
+                c: 1.0,
+                t: 5.0,
+                q: 0.9
+            },
+            Point {
+                c: 1.0,
+                t: 10.0,
+                q: 0.9
             }
         ));
     }

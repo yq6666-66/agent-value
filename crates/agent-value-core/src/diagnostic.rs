@@ -1,7 +1,9 @@
 //! Diagnostic table for arms with miss or fail cells (v22 §5; HANDOFF step 9).
 //!
-//! - Admission: `ESS = n_comp + κ_eff ≥ 3` and at least one valid cell
-//!   (DECISIONS O: `κ_eff` = sum of per-cell prior κ over present `d+` rows).
+//! - Admission: `ESS = n_comp + κ_eff ≥ 3` and at least one valid cell.
+//!   `κ_eff` is the §1 prior equivalent sample size `κ_iu` averaged to the
+//!   layer with weights `ω_u` (v22 §0, empty-cell guard). A `d+` cell with
+//!   no prior supplied counts as `κ = 0` (DECISIONS O).
 //! - Miss cells: optimistic = weighted median of valid cells (DECISIONS E);
 //!   conservative = worst valid per dimension (DECISIONS F).
 //! - Fail cells: worse of measured and worst-valid, per dimension.
@@ -66,19 +68,30 @@ pub struct DiagnosticRow {
     pub v_cons: Option<f64>,
 }
 
-/// `κ_eff`: sum of prior κ over present rows whose cell is in `d+` (DECISIONS O).
-pub fn kappa_eff(weights: &CellWeights, present: &[(CellId, Prior)]) -> Result<f64> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut sum = 0.0;
-    for (cell, prior) in present {
+/// `κ_eff = Σ_{u∈d+} ω_u κ_iu / Σ_{u∈d+} ω_u` (v22 §0: §1 prior κ,
+/// `ω_u`-weighted average to the layer). Priors for cells outside `d+` are
+/// ignored; a `d+` cell without a supplied prior counts as `κ = 0`
+/// (DECISIONS O). Duplicate `d+` cells are an error.
+pub fn kappa_eff(weights: &CellWeights, priors: &[(CellId, Prior)]) -> Result<f64> {
+    let mut by_cell = std::collections::BTreeMap::new();
+    for (cell, prior) in priors {
         if weights.omega(cell) <= 0.0 {
             continue;
         }
-        if !seen.insert(cell.clone()) {
+        if by_cell.insert(cell.clone(), *prior).is_some() {
             return Err(CoreError::DuplicateCell {
                 cell: cell.as_str().to_string(),
             });
         }
+    }
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for cell in weights.support() {
+        let w = weights.omega(cell);
+        den += w;
+        let Some(prior) = by_cell.get(cell) else {
+            continue;
+        };
         let k = prior.kappa()?;
         if !k.is_finite() || k < 0.0 {
             return Err(CoreError::OutOfRange {
@@ -88,9 +101,15 @@ pub fn kappa_eff(weights: &CellWeights, present: &[(CellId, Prior)]) -> Result<f
                 max: f64::INFINITY,
             });
         }
-        sum += k;
+        num += w * k;
     }
-    Ok(sum)
+    if den <= 0.0 {
+        return Ok(0.0);
+    }
+    // CellWeights enforces Σ ω_u = 1 over d+; the division is kept as the
+    // literal §0 formula.
+    debug_assert!((den - 1.0).abs() < 1e-6);
+    Ok(num / den)
 }
 
 /// Admission gate: `n_comp + κ_eff ≥ 3` and at least one valid cell.

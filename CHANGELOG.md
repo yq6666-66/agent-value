@@ -7,14 +7,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Core, spec step 9: diagnostic table for arms with miss/fail cells (§5) —
-  ESS admission (`n_comp + κ_eff`, κ_eff = sum of present-cell prior κ),
+  ESS admission (`n_comp + κ_eff`, κ_eff = §1 prior κ averaged to the
+  layer by `ω_u`, per v22 §0; a `d+` cell without a prior counts 0),
   miss fill via weighted lower median (DECISIONS E) and worst-valid per
   dimension (DECISIONS F), fail fill as the worse of measured and
   worst-valid; sort by coverage then model name. Layer frontiers
-  `F_off` / `F_rob` / `F_rec` (§6). Eligibility primary attribution maps
-  seven labels to five §5 gates and suppresses spurious rate gates when
-  complete-case already failed (DECISIONS P). Paired with v22 examples
-  6/7/8 (F_thin / F_bad paths; diagnostic anchor 0.7875).
+  `F_off` / `F_rob` / `F_rec` (§6); arms with an NA triple are skipped.
+  Eligibility primary attribution maps seven labels to five §5 gates and
+  suppresses spurious rate gates when complete-case already failed
+  (DECISIONS P). Paired with v22 examples 6/7/8 (F_thin / F_bad paths;
+  diagnostic anchor 0.7875).
 - Core, spec step 8: layer eligibility set `E_d` (§5). Five gates —
   complete-case (`N^miss=N^fail=0`), sample (`n^comp >= max(30, 3 U_d)`),
   cancel and completion rates via integer comparisons

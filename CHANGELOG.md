@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec steps 6-7: per-cell `C*`, `T*`, `Q*` (§2, §3): winsorized side
+  means, shrinkage to the benchmark (`kappa_C = 5`, none without a
+  benchmark), empty-sample chain benchmark -> layer pool -> NA, cancel
+  amortization with the cancel-mean chain, fallback arm `F_k` (default
+  `R_k`; reference and fallback are terminal), NA propagation, retry-wait
+  term `E[n_W] D`, matched-failure quality `Qbar_F`; cancel-robust versions
+  with per-task / capped / lower-bound excess and the monotone guards.
+  Aggregation over positive-weight cells and layers (NA stays NA) and the
+  value score `V` in log space with per-scope floors (§4).
 - Core, spec steps 4-5: Beta CDF and quantile (own implementation, checked
   against 40-digit references); prior `p_B` / `kappa` exactly as written
   (`rho = 1` direct pooling as its own case, `0/0` gives 0); posterior,

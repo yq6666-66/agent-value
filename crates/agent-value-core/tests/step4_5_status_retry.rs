@@ -151,6 +151,7 @@ fn tiny_pi_has_no_cancellation_error() {
         (1e-6, 2.099_997_900_000_7),
         (1e-10, 2.099_999_999_79),
         (1e-13, 2.099_999_999_999_79),
+        // Not discriminating: closed form and sum differ by ~2.1e-15 < 1e-14 here; 1e-13 is the case that does.
         (1e-15, 2.099_999_999_999_998),
     ] {
         let r = retry_stats(0.3, &k3(pi)).unwrap();

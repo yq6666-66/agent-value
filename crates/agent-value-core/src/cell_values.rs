@@ -358,9 +358,9 @@ fn check_no_cancel_bill(bills: &CancelBills) -> Result<()> {
                 let cap = finite("cancel cap", *cap)?;
                 if cap <= 0.0 {
                     return Err(CoreError::OutOfRange {
-                        what: "cancel cap",
+                        what: "cancel cap (must be > 0)",
                         value: cap,
-                        min: 0.0,
+                        min: f64::MIN_POSITIVE,
                         max: f64::INFINITY,
                     });
                 }
@@ -379,6 +379,44 @@ fn check_no_cancel_bill(bills: &CancelBills) -> Result<()> {
     }
 }
 
+/// Cancel excess upper bound `E^UB` (DECISIONS N / Q10).
+///
+/// Defined only on the feasible set `0 <= total <= n_c * cap` with `cap > 0`.
+/// Each full-cap term uses `max(0, cap - f_price)` so a cap below the failure
+/// unit price cannot produce a negative excess. No tolerance on `floor`:
+/// the bound is continuous where `total / cap` is an integer.
+/// `f_price` must already be finite and non-negative (as produced by
+/// `unit_price`); it is not re-checked here.
+pub(crate) fn cancel_excess_upper_bound(
+    total: f64,
+    cap: f64,
+    n_c: u64,
+    f_price: f64,
+) -> Result<f64> {
+    let cap = finite("cancel cap", cap)?;
+    if cap <= 0.0 {
+        return Err(CoreError::OutOfRange {
+            what: "cancel cap (must be > 0)",
+            value: cap,
+            min: f64::MIN_POSITIVE,
+            max: f64::INFINITY,
+        });
+    }
+    let total = finite("cancel bill total", total)?;
+    let max_total = n_c as f64 * cap;
+    if !(0.0..=max_total).contains(&total) {
+        return Err(CoreError::OutOfRange {
+            what: "cancel bill total (must be within [0, n^C * cap])",
+            value: total,
+            min: 0.0,
+            max: max_total,
+        });
+    }
+    let full = (total / cap).floor();
+    let rest = total - full * cap;
+    Ok(full * (cap - f_price).max(0.0) + (rest - f_price).max(0.0))
+}
+
 /// Cancel excess `E_C` and whether it is only a lower bound.
 fn cancel_excess(d: &DimInputs, n_c: u64, f_price: f64, mean: f64) -> Result<(f64, bool)> {
     Ok(match &d.cancel {
@@ -386,36 +424,10 @@ fn cancel_excess(d: &DimInputs, n_c: u64, f_price: f64, mean: f64) -> Result<(f6
         CancelBills::Aggregate {
             total,
             cap: Some(cap),
-        } => {
-            let cap = finite("cancel cap", *cap)?;
-            if cap <= 0.0 {
-                return Err(CoreError::OutOfRange {
-                    what: "cancel cap",
-                    value: cap,
-                    min: 0.0,
-                    max: f64::INFINITY,
-                });
-            }
-            // E^UB is only defined on the feasible set 0 <= S_C <= n^C U^cap
-            // (DECISIONS N); bills outside it are inconsistent input.
-            let total = finite("cancel bill total", *total)?;
-            let max_total = n_c as f64 * cap;
-            if !(0.0..=max_total).contains(&total) {
-                return Err(CoreError::OutOfRange {
-                    what: "cancel bill total (must be within [0, n^C * cap])",
-                    value: total,
-                    min: 0.0,
-                    max: max_total,
-                });
-            }
-            // No tolerance on floor: E^UB is continuous where S/U is an integer.
-            let full = (total / cap).floor();
-            let rest = total - full * cap;
-            (
-                full * (cap - f_price).max(0.0) + (rest - f_price).max(0.0),
-                false,
-            )
-        }
+        } => (
+            cancel_excess_upper_bound(*total, *cap, n_c, f_price)?,
+            false,
+        ),
         // Aggregate without cap, or no bill (degraded mean): lower bound.
         CancelBills::Aggregate { cap: None, .. } | CancelBills::None => {
             (n_c as f64 * (mean - f_price).max(0.0), true)
@@ -605,4 +617,50 @@ pub fn cell_values(inputs: &CellInputs, role: Role<'_>) -> Result<CellValues> {
             || robust.has_na()),
         notes,
     })
+}
+
+#[cfg(test)]
+mod eub_tests {
+    use super::cancel_excess_upper_bound;
+
+    #[test]
+    fn eub_is_zero_when_cap_is_below_failure_unit_price() {
+        // S=1.0, U=0.2, C~_F=0.3, n^C=5 (feasible: 1.0 <= 5*0.2).
+        // Published formula: floor(1/0.2)*(0.2-0.3)+max(0,1-1-0.3) = -0.5.
+        // Q10: floor(1/0.2)*max(0,0.2-0.3)+max(0,0-0.3) = 0.
+        let e = cancel_excess_upper_bound(1.0, 0.2, 5, 0.3).unwrap();
+        assert!((e - 0.0).abs() < 1e-12, "got {e}, want 0");
+        // The full-cap contribution alone must be zero, not -0.5.
+        let full = (1.0_f64 / 0.2).floor();
+        assert!((full * (0.2_f64 - 0.3).max(0.0) - 0.0).abs() < 1e-12);
+        assert!((full * (0.2 - 0.3) + 0.5).abs() < 1e-12); // original = -0.5
+    }
+
+    #[test]
+    fn eub_is_positive_when_cap_exceeds_failure_unit_price() {
+        // S=1.0, U=0.4, C~_F=0.3, n^C=3: 2*(0.4-0.3)+max(0,0.2-0.3) = 0.2.
+        let e = cancel_excess_upper_bound(1.0, 0.4, 3, 0.3).unwrap();
+        assert!((e - 0.2).abs() < 1e-12, "got {e}, want 0.2");
+        // Same as the published formula when U >= C~_F.
+        let full = (1.0_f64 / 0.4).floor();
+        let rest = 1.0 - full * 0.4;
+        let published = full * (0.4 - 0.3) + (rest - 0.3).max(0.0);
+        assert!((e - published).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eub_includes_a_positive_partial_rest() {
+        // S=0.7, U=0.4, C~_F=0.1, n^C=2: full=1 → 0.3, rest=0.3 → 0.2, total 0.5.
+        // Catches a mutant that drops the rest term.
+        let e = cancel_excess_upper_bound(0.7, 0.4, 2, 0.1).unwrap();
+        assert!((e - 0.5).abs() < 1e-12, "got {e}, want 0.5");
+    }
+
+    #[test]
+    fn eub_rejects_totals_outside_the_feasible_set() {
+        assert!(cancel_excess_upper_bound(25.0, 10.0, 2, 0.3).is_err());
+        assert!(cancel_excess_upper_bound(-1.0, 10.0, 2, 0.3).is_err());
+        assert!(cancel_excess_upper_bound(20.0, 10.0, 2, 0.3).is_ok()); // endpoint
+        assert!(cancel_excess_upper_bound(1.0, 0.0, 2, 0.3).is_err()); // cap <= 0
+    }
 }

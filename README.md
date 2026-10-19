@@ -327,7 +327,7 @@ $$
 {\rm ESS}_{i,d}=n^{\rm comp}_{i,d}+\kappa_{\rm eff}\ge3 .
 $$
 
-Here $\kappa_{\rm eff}$ is the prior strength $\kappa_{iu}$ from section 3, averaged over all of the layer's positive-weight cells with weights $\omega_u$. The specification does not say how to treat a $\mathrm{miss}$ cell; the decision record counts it as $\kappa=0$ and keeps its weight in the denominator. With the Jeffreys prior $\kappa=0$, so $\mathrm{ESS}$ is just $n^{\rm comp}$.
+Here $\kappa_{\rm eff}$ is the prior strength $\kappa_{iu}$ from section 3, averaged over all of the layer's positive-weight cells with weights $\omega_u$. The prior comes from the caller; a cell for which no prior is passed in counts as $\kappa=0$, and its weight stays in the denominator. With the Jeffreys prior $\kappa=0$, so $\mathrm{ESS}$ is just $n^{\rm comp}$.
 
 **Filling the gaps.** Fill values are built from the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ of the arm's own $\mathrm{valid}$ cells in the layer, never from the cancel-robust versions.
 
@@ -376,7 +376,7 @@ $\succ_{\rm off}$ compares the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and $\su
 
 - The caller passes in the arms of $\mathcal E_d$; the frontier function does not check eligibility itself.
 - An arm whose plain triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm off}_d$; an arm whose cancel-robust triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison.
-- The cancel-robust values are $\mathrm{NA}$ exactly where the plain values are, so an arm on the official frontier always has a complete cancel-robust triple and can be judged for $\mathcal F^{\rm rec}_d$. The specification does not cover the opposite case; the library checks that it never happens, but only in debug builds.
+- The cancel-robust values are $\mathrm{NA}$ exactly where the plain values are, so with the library's own values an arm on the official frontier always has a complete cancel-robust triple. The specification does not cover a caller that passes in such an arm without one; the library then leaves it out of $\mathcal F^{\rm rec}_d$, in every build.
 - When an arm's cancellation bills give only a lower bound, the specification turns off cancel-robust dominance for it and tags it "bill too coarse". Such an arm is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison, in both directions. If it is on the official frontier, nothing can beat it on the cancel-robust values, so it stays in $\mathcal F^{\rm rec}_d$, and the result also lists it as having a coarse bill. Showing that tag is planned (step 10).
 - A separate helper returns every arm tied for the highest $V$; the tests check that these arms are on the official frontier.
 - Not implemented yet: showing $\mathcal F^{\rm rob}_d$ as a "cancel-robust alternative" when $\mathcal F^{\rm rec}_d$ is empty (never labelled as the official first choice), the internal check that an overall recommendation sits on at least one layer's frontier, and the overall $V$ with its conditions, which need step 10.

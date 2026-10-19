@@ -1,0 +1,28 @@
+# Secrets: real values live only in .env (never committed). See .env.example.
+.env
+.env.*
+!.env.example
+
+# Rust
+target/
+**/target/
+
+# Node / web
+node_modules/
+**/node_modules/
+web/dist/
+*.tsbuildinfo
+
+# Tauri generated
+src-tauri/gen/
+
+# Local data (SQLite files are user data, never committed)
+*.sqlite
+*.sqlite3
+*.db
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

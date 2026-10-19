@@ -1,0 +1,10 @@
+[package]
+name = "agent-value-core"
+description = "Pure-Rust scoring core for agent-value (no Tauri, no I/O)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]

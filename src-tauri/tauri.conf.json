@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "agent-value",
+  "version": "0.0.0",
+  "identifier": "dev.agentvalue.desktop",
+  "build": {
+    "frontendDist": "../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../web" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../web" }
+  },
+  "app": {
+    "windows": [
+      { "title": "agent-value", "width": 900, "height": 640 }
+    ],
+    "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'" }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}

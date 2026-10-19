@@ -1,0 +1,9 @@
+THIRD-PARTY NOTICES
+
+This file lists third-party source code that has been copied or adapted into
+this repository, with its origin and license.
+
+Currently: none.
+
+Ordinary package dependencies (Rust crates, npm packages) are pulled in by
+their package managers under their own licenses and are not vendored here.

@@ -1,0 +1,18 @@
+# Minimal Tauri 2 desktop shell. Intentionally NOT a member of the root Cargo
+# workspace: building it needs system GUI libraries (WebKitGTK on Linux), while
+# the core crate must build and test without them. Build from this directory.
+[package]
+name = "agent-value-app"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+agent-value-core = { path = "../crates/agent-value-core" }

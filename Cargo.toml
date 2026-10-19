@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+# Only the pure-Rust core is a default workspace member, so
+# `cargo test -p agent-value-core` never needs WebKitGTK or other system GUI libs.
+# The Tauri shell in src-tauri/ is a separate package; see README "Building".
+members = ["crates/agent-value-core"]
+exclude = ["src-tauri"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/yq6666-66/agent-value"
+publish = false

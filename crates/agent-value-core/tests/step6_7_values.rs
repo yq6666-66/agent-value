@@ -521,6 +521,18 @@ fn cancel_robust_excess_and_guards() {
         (own_c + 0.2 / 4.0).max(v.star.c.unwrap()),
     );
     assert!(v.robust_dominance);
+    // Q10 / DECISIONS N: S=1.0, U=0.2, C~_F=0.3.
+    // Original formula: floor(1/0.2)*(0.2-0.3)+max(0,1-1-0.3) = -0.5.
+    // With max(0, U-C~_F) on each full-cap term: 5*0 + 0 = 0.
+    let v = mk(CancelBills::Aggregate {
+        total: 1.0,
+        cap: Some(0.2),
+    });
+    close(
+        v.robust.c.unwrap(),
+        (own_c + 0.0 / 4.0).max(v.star.c.unwrap()),
+    );
+    assert!(v.robust.c.unwrap() >= v.star.c.unwrap());
     // Aggregate without cap: lower bound 2 * max(0, 0.5 - 0.3); robust dominance off.
     let v = mk(CancelBills::Aggregate {
         total: 1.0,

@@ -13,8 +13,9 @@
 //! with NA propagation and cancel-robust versions (§2, §3), and layer /
 //! overall aggregation with the value score `V` (§4), and the layer
 //! eligibility set `E_d` (§5; authenticity / log-integrity are stub
-//! inputs until §11). The anchor tiers (§7), frontier and diagnostic
-//! table are not implemented yet.
+//! inputs until §11), the diagnostic table for miss/fail arms (§5),
+//! and the layer frontiers `F_off` / `F_rob` / `F_rec` (§6). The anchor
+//! tiers (§7) are not implemented yet.
 
 #![forbid(unsafe_code)]
 
@@ -23,8 +24,10 @@ pub mod beta_dist;
 pub mod cell_values;
 pub mod cells;
 pub mod constants;
+pub mod diagnostic;
 pub mod eligibility;
 pub mod error;
+pub mod frontier;
 pub mod outcome;
 pub mod privacy;
 pub mod quality;

@@ -18,7 +18,7 @@ There is no usable app yet. The formulas below exist as a tested Rust library, a
 | 4-5 | Cell states and cell weights $\omega_u$; prior, posterior and retry model | Implemented |
 | 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented ($V$ is correct only when the reference anchor is supplied; see step 10) |
 | 8 | Eligibility gates $\mathcal E_d$ | Implemented (authenticity and log integrity are passed in by the caller until step 13) |
-| 9 | Frontier and diagnostic table | Planned |
+| 9 | Frontier and diagnostic table | Implemented (per layer; the overall recommendation needs step 10, and the display is planned) |
 | 10 | Reference anchor tiers I / II / III, fallback arm selection | Planned |
 | 11 | Weight elicitation from your answers and behaviour | Planned |
 | 12 | Weight sensitivity display | Planned |
@@ -32,7 +32,7 @@ Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 - **Arm.** The unit being compared: a model plus a route. A route is the API host, the protocol (for example Anthropic Messages or OpenAI Chat Completions) and the agent or client. If any of the three differs, it is a different arm. Changing the API key on the same route does not make a new arm.
 - **Cell and layer.** Tasks are grouped into cells $u$ by subtype (for coding by default: fix, add, refactor, explain and review, other). By default there is one layer; optionally, tasks can be split into layers $d$ by size (small, medium, large), measured only on your own input, and a cell is then a subtype within a layer. Each cell has a weight $\omega_u$ equal to its share of the layer's tasks in the previous window.
 - **Task.** One stretch from your submission to delivery, abandonment or cancellation.
-- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are step 10, planned). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated, but the frontier and that label are planned.
+- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are step 10, planned). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated, the library now computes the frontier, but showing it with that label is planned.
 - **Reference arm $R_k$ and fallback arm $F_k$.** $R_k$ is the arm every other arm is compared against. $F_k$ is the arm a task is handed to after an arm fails $K$ times; by default $F_k=R_k$. The reference and fallback arms do not themselves hand off to anyone.
 
 ## How scoring works
@@ -310,15 +310,83 @@ The result lists whether the arm is eligible, every gate it failed, and the "aut
 - All five gates are always evaluated, and every failed gate is listed once, in a fixed order; the check does not stop at the first failure.
 - $n^C$ and $N^{\rm sub}$ are summed over the positive-weight cells that have data; a $\mathrm{miss}$ cell adds 0. In a layer with a $\mathrm{miss}$ cell the failure list may therefore also name a rate gate. The arm is ineligible either way, through the complete-case gate.
 - The reference-base gate takes the reference arm's triples from the caller and does not check that they were really computed from the reference arm. The same cell given twice is an error.
-- The gates have not yet been checked against the specification's worked examples; that comes with the diagnostic table (step 9).
+- For attribution, each failure label maps to one of the five gates, and the primary failures leave out the rate gates when the complete-case gate has already failed (step 9).
+- Step 9 checks the gates against the specification's worked example 6.
 
 </details>
 
-### 7. Planned
+### 7. Diagnostic table
+
+*Spec §5. Implemented as library functions; the table itself is not displayed yet.*
+
+An arm with a $\mathrm{miss}$ or $\mathrm{fail}$ cell in a layer is not in $\mathcal E_d$. The diagnostic table gives such an arm a separate, labelled estimate that is never mixed into the main results.
+
+**Admission.** The arm gets a diagnostic score only if it has at least one $\mathrm{valid}$ cell and
+
+$$
+{\rm ESS}_{i,d}=n^{\rm comp}_{i,d}+\kappa_{\rm eff}\ge3 .
+$$
+
+Here $\kappa_{\rm eff}$ is the prior strength $\kappa_{iu}$ from section 3, averaged over all of the layer's positive-weight cells with weights $\omega_u$. The specification does not say how to treat a $\mathrm{miss}$ cell; the decision record counts it as $\kappa=0$ and keeps its weight in the denominator. With the Jeffreys prior $\kappa=0$, so $\mathrm{ESS}$ is just $n^{\rm comp}$.
+
+**Filling the gaps.** Fill values are built from the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ of the arm's own $\mathrm{valid}$ cells in the layer, never from the cancel-robust versions.
+
+- A $\mathrm{miss}$ cell gets two values. The optimistic one is the weighted median of the valid cells, taken separately for cost, time and quality. It is the lower median: the valid cells' weights are normalized, values are sorted, and the first one whose cumulative weight reaches one half wins. Quality is sorted by its defect $1-Q$, so a tie always picks the better real cell. The conservative one is the worst valid value in each dimension: the highest cost, the highest time and the lowest quality, which may come from different cells. 
+- A $\mathrm{fail}$ cell gets one value: in each dimension, the worse of its measured value and the worst valid value.
+
+The filled cells are aggregated over the layer as in section 5, once with every $\mathrm{miss}$ cell at its optimistic value and once at its conservative value; $\mathrm{fail}$ cells use their single value both times. An arm with $\mathrm{miss}$ cells is shown with the range $[V^{\rm diag,cons},V^{\rm diag,opt}]$; an arm with only $\mathrm{fail}$ cells gets a single $V^{\rm diag}$, labelled with the total weight of its failed cells $w^{\rm fail}_{i,d}$. $V$ is computed against a diagnostic reference that the caller passes in; without one, the row has no $V$.
+
+**Order.** Rows are sorted by valid-cell coverage, highest first, then by model name:
+
+$$
+{\rm cov}_{i,d}:=1-w^{\rm miss}_{i,d}-w^{\rm fail}_{i,d}
+$$
+
+There is no way to sort by diagnostic $V$.
+
+<details>
+<summary>Implementation notes</summary>
+
+- The layer aggregates in a diagnostic row are computed after filling. A raw measured layer mean, such as the $A_C=0.165$ in the specification's example 8, has to be computed by the caller from the measured values; the library does not store it.
+- When an arm is not admitted, the row does not yet say which condition it missed.
+- Bad input returns an error: the same cell given twice, a weight or $\kappa$ that is not a finite number, or a $\mathrm{fail}$ cell without a complete measured triple.
+- Checked against the specification's examples: the $F_{\rm thin}$ cell and diagnostic aggregate 0.7875 in example 6, and the $F_{\rm bad}$ cell and 0.9000 in example 7. The raw mean 0.1650 in example 8 is checked by the tests for steps 6 and 7.
+
+</details>
+
+### 8. Frontier
+
+*Spec §6. Implemented per layer. The overall recommendation depends on the anchor tiers (step 10) and is planned.*
+
+Among the eligible arms of a layer, arm $j$ dominates arm $i$ when it is at least as good in every dimension (cost and time no higher, quality no lower) and strictly better in at least one. The weights $a$, $b$, $g$ play no part here.
+
+$$
+\mathcal F^{\rm off}_d=\{i\in\mathcal E_d:\nexists j\in\mathcal E_d,\ j\succ_{\rm off}i\},\qquad
+\mathcal F^{\rm rob}_d=\{i\in\mathcal E_d:\nexists j\in\mathcal E_d,\ j\succ_{\rm rob}i\}
+$$
+
+$$
+\mathcal F^{\rm rec}_d=\{i\in\mathcal F^{\rm off}_d:\nexists j\in\mathcal E_d,\ j\succ_{\rm rob}i\}
+$$
+
+$\succ_{\rm off}$ compares the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and $\succ_{\rm rob}$ the cancel-robust versions. $\mathcal F^{\rm off}_d$ is the official frontier, $\mathcal F^{\rm rob}_d$ the cancel-robust frontier, and $\mathcal F^{\rm rec}_d$ the recommended set: official frontier arms that no arm beats on the cancel-robust values.
+
+<details>
+<summary>Implementation notes</summary>
+
+- The caller passes in the arms of $\mathcal E_d$; the frontier function does not check eligibility itself.
+- An arm whose plain triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm off}_d$; an arm whose cancel-robust triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison.
+- The cancel-robust values are $\mathrm{NA}$ exactly where the plain values are, so an arm on the official frontier always has a complete cancel-robust triple and can be judged for $\mathcal F^{\rm rec}_d$. The specification does not cover the opposite case; the library checks that it never happens, but only in debug builds.
+- When an arm's cancellation bills give only a lower bound, the specification turns off cancel-robust dominance for it and tags it "bill too coarse". Such an arm is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison, in both directions. If it is on the official frontier, nothing can beat it on the cancel-robust values, so it stays in $\mathcal F^{\rm rec}_d$, and the result also lists it as having a coarse bill. Showing that tag is planned (step 10).
+- A separate helper returns every arm tied for the highest $V$; the tests check that these arms are on the official frontier.
+- Not implemented yet: showing $\mathcal F^{\rm rob}_d$ as a "cancel-robust alternative" when $\mathcal F^{\rm rec}_d$ is empty (never labelled as the official first choice), the internal check that an overall recommendation sits on at least one layer's frontier, and the overall $V$ with its conditions, which need step 10.
+
+</details>
+
+### 9. Planned
 
 These parts of the specification are not implemented:
 
-- **Frontier and diagnostic table** (step 9): the eligible arms that no other eligible arm dominates on cost, time and quality, and a table for arms that do not qualify.
 - **Reference anchors and fallback arm selection** (step 10): the three anchor tiers and the rules for choosing $R_k$ and $F_k$. A fallback arm $F_k$ other than $R_k$ must, in the previous window, pass the authenticity check, have no $F_{\rm bad}$ cell, meet the tier I or tier II conditions, and have at least 3 ratings ($n_q\ge3$) in every cell; otherwise $F_k=R_k$, and the change is noted in the version record.
 - **Weights** (step 11): estimating $a$, $b$, $g$ from pairwise questions and from your behaviour.
 - **Weight sensitivity** (step 12): how results change across the weight grid, plus a check that halves and doubles each noise floor one at a time.
@@ -343,6 +411,7 @@ These parts of the specification are not implemented:
 | Rollback window | 24 hours | A full revert in this period marks a coding task failed |
 | Spot rating | 10%, at most 3 per day | Share of successful tasks selected for a rating request (the prompt itself is planned) |
 | Eligibility thresholds | $n^{\rm comp}\ge\max(30,3U_d)$, cancellations $\le20\%$, completions $\ge50\%$ | Gates 2 and 3 for $\mathcal E_d$ |
+| Diagnostic admission | $\mathrm{ESS}\ge3$ and at least one $\mathrm{valid}$ cell | Below this an arm gets no diagnostic score |
 | Rating-mode threshold | $n_q\ge3$ per arm per cell | Otherwise the layer uses success-rate mode |
 
 ## Usage

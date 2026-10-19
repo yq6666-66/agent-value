@@ -64,14 +64,24 @@ impl Floors {
     }
 }
 
-fn weighted(parts: &[(f64, Triple)]) -> Triple {
+fn weighted(parts: &[(f64, Triple)]) -> Result<Triple> {
     let mut acc = Triple::new(0.0, 0.0, 0.0);
     for (w, t) in parts {
         acc.c = acc.c.zip(t.c).map(|(a, v)| a + w * v);
         acc.t = acc.t.zip(t.t).map(|(a, v)| a + w * v);
         acc.q = acc.q.zip(t.q).map(|(a, v)| a + w * v);
     }
-    acc
+    // Triple fields are public, so a caller can pass NaN or infinity; NA
+    // (None) is fine, a non-finite number is not.
+    for v in [acc.c, acc.t, acc.q].into_iter().flatten() {
+        if !v.is_finite() {
+            return Err(CoreError::NotFinite {
+                what: "aggregate value",
+                value: v,
+            });
+        }
+    }
+    Ok(acc)
 }
 
 /// Layer aggregate over `d+`. A `d+` cell without values counts as NA;
@@ -89,7 +99,7 @@ pub fn aggregate_layer(weights: &CellWeights, cells: &[(CellId, Triple)]) -> Res
         .support()
         .map(|c| (weights.omega(c), map.get(c).map_or(Triple::NA, |t| **t)))
         .collect();
-    Ok(weighted(&parts))
+    weighted(&parts)
 }
 
 /// Overall aggregate over layers `(omega_d, layer triple)`; zero-weight
@@ -120,7 +130,7 @@ pub fn aggregate_overall(layers: &[(f64, Triple)]) -> Result<Triple> {
             max: 1.0,
         });
     }
-    Ok(weighted(&parts))
+    weighted(&parts)
 }
 
 /// A complete `(C, T, Q)` point.

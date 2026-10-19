@@ -242,7 +242,8 @@ pub struct CellInputs {
     pub cost: DimInputs,
     pub time: DimInputs,
     pub delay: DelayInputs,
-    /// `q_hat` of the cell (§3, §3.1).
+    /// `q_hat` of the cell (§3, §3.1). Always defined after step 3: shrunk to
+    /// the layer prior when ratings are thin, 0.99 in success-rate mode.
     pub q_hat: f64,
     /// Size `f` of the matched-failure subset.
     pub matched_failures: u64,
@@ -342,6 +343,42 @@ fn cancel_mean(d: &DimInputs, n_c: u64, f_price: f64) -> Result<Option<f64>> {
     })
 }
 
+/// With `n^C = 0` a cancel bill must be empty: no per-task entries, a zero
+/// aggregate total (DECISIONS N: `S_C <= n^C U^cap`), and a valid cap.
+fn check_no_cancel_bill(bills: &CancelBills) -> Result<()> {
+    match bills {
+        CancelBills::None => Ok(()),
+        CancelBills::PerTask(v) if v.is_empty() => Ok(()),
+        CancelBills::PerTask(v) => Err(CoreError::LengthMismatch {
+            left: v.len(),
+            right: 0,
+        }),
+        CancelBills::Aggregate { total, cap } => {
+            if let Some(cap) = cap {
+                let cap = finite("cancel cap", *cap)?;
+                if cap <= 0.0 {
+                    return Err(CoreError::OutOfRange {
+                        what: "cancel cap",
+                        value: cap,
+                        min: 0.0,
+                        max: f64::INFINITY,
+                    });
+                }
+            }
+            let total = finite("cancel bill total", *total)?;
+            if total != 0.0 {
+                return Err(CoreError::OutOfRange {
+                    what: "cancel bill total (no cancels, must be 0)",
+                    value: total,
+                    min: 0.0,
+                    max: 0.0,
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Cancel excess `E_C` and whether it is only a lower bound.
 fn cancel_excess(d: &DimInputs, n_c: u64, f_price: f64, mean: f64) -> Result<(f64, bool)> {
     Ok(match &d.cancel {
@@ -409,6 +446,7 @@ fn dimension(
     note_price(&f, notes);
     let completed = counts.completed()? as f64;
     let (amort, excess, lb) = if counts.n_c == 0 {
+        check_no_cancel_bill(&d.cancel)?;
         (0.0, 0.0, false)
     } else {
         let Some(mean) = cancel_mean(d, counts.n_c, f.value)? else {
@@ -430,6 +468,10 @@ fn dimension(
     };
     let star = retry.p_k * s.value + retry.e_n_f * f.value + wait_star + fb_star + amort;
     let robust = retry_c.p_k * s.value + retry_c.e_n_f * f.value + wait_robust + fb_robust + excess;
+    // Inputs are finite, but large ones can still overflow; never let the
+    // max guard below hide a NaN or infinity.
+    let star = finite("cell value", star)?;
+    let robust = finite("cancel-robust cell value", robust)?;
     if lb {
         notes.push(CellNote::CancelLowerBoundOnly);
     }
@@ -556,7 +598,11 @@ pub fn cell_values(inputs: &CellInputs, role: Role<'_>) -> Result<CellValues> {
     Ok(CellValues {
         star,
         robust,
-        robust_dominance: !(cost.lower_bound_only || time.lower_bound_only),
+        // Robust dominance needs a complete robust triple (step 9).
+        robust_dominance: !(cost.lower_bound_only
+            || time.lower_bound_only
+            || star.has_na()
+            || robust.has_na()),
         notes,
     })
 }

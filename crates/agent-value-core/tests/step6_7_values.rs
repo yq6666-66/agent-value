@@ -743,3 +743,75 @@ fn value_score_properties_and_input_checks() {
         None
     );
 }
+
+#[test]
+fn bills_are_checked_even_without_cancels_and_overflow_is_rejected() {
+    let r = stats(3, 1);
+    let run = |cancel| {
+        cell_values(
+            &inputs(counts(3, 1, 0), r, cost_with(cancel, None, None)),
+            Role::Terminal,
+        )
+    };
+    assert!(run(CancelBills::None).is_ok());
+    assert!(run(CancelBills::PerTask(vec![])).is_ok());
+    assert!(run(CancelBills::Aggregate {
+        total: 0.0,
+        cap: Some(1.0)
+    })
+    .is_ok());
+    // n^C = 0: any bill entry or a positive total is inconsistent input.
+    assert!(run(CancelBills::PerTask(vec![0.3])).is_err());
+    assert!(run(CancelBills::Aggregate {
+        total: 1.0,
+        cap: Some(10.0)
+    })
+    .is_err());
+    assert!(run(CancelBills::Aggregate {
+        total: 1.0,
+        cap: None
+    })
+    .is_err());
+    assert!(run(CancelBills::Aggregate {
+        total: 0.0,
+        cap: Some(0.0)
+    })
+    .is_err());
+    // Finite but huge inputs that overflow are an error, never a silent value.
+    let mut i = inputs(counts(3, 1, 0), r, cost_with(CancelBills::None, None, None));
+    i.cost.success = vec![f64::MAX; 3];
+    assert!(cell_values(&i, Role::Terminal).is_err());
+}
+
+#[test]
+fn robust_dominance_needs_a_complete_triple() {
+    let r = stats(3, 1);
+    let mut i = inputs(counts(3, 1, 0), r, cost_with(CancelBills::None, None, None));
+    let full = cell_values(&i, Role::Terminal).unwrap();
+    assert!(!full.star.has_na());
+    assert!(full.robust_dominance);
+    // Time has no unit price at all: T is NA, so robust dominance is off.
+    i.time = DimInputs::default();
+    let v = cell_values(&i, Role::Terminal).unwrap();
+    assert_eq!(v.star.t, None);
+    assert!(v.star.c.is_some());
+    assert!(!v.robust_dominance);
+}
+
+#[test]
+fn aggregation_rejects_non_finite_cells() {
+    let a = CellId::user("a").unwrap();
+    let w = CellWeights::new(vec![(a.clone(), 1.0)]).unwrap();
+    let bad = Triple {
+        c: Some(f64::NAN),
+        t: Some(1.0),
+        q: Some(0.5),
+    };
+    assert!(aggregate_layer(&w, &[(a.clone(), bad)]).is_err());
+    let na_t = Triple {
+        c: Some(1.0),
+        t: None,
+        q: Some(0.5),
+    };
+    assert_eq!(aggregate_layer(&w, &[(a, na_t)]).unwrap().t, None);
+}

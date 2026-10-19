@@ -13,10 +13,15 @@ public leaderboard.
   constants, scoring scopes (coding / non-coding), arms as (model, route),
   time windows with freezing, and weight versions including trial versions.
   These are covered by unit tests.
+- The core crate also judges task outcomes (success / failure / cancel /
+  undetermined, with provisional results while the 30-minute redo and
+  24-hour rollback windows are open) and computes the rating-based quality
+  signals, switching a whole layer to "delivery success rate" when ratings
+  are too few. Nothing consumes these yet.
 - The store crate has the local SQLite data model: route metadata per
   request, tasks, behaviour events with available-arm snapshots, probe
   results, frozen cell weights, weight versions and other configuration
-  versions, with the privacy rules below. It is not wired into the desktop
+  versions, a history of outcome judgements, with the privacy rules below. It is not wired into the desktop
   shell yet.
 - No cost, time or quality formula, no value score, no probing, and no UI
   beyond a placeholder page exist yet.

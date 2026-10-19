@@ -25,8 +25,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
 use agent_value_core::cells::{CellId, CellWeights};
+use agent_value_core::outcome::{Judgement, Rule};
 use agent_value_core::privacy::{has_secret_prefix, TextFacts, RETENTION_DAYS};
-use agent_value_core::records::{BehaviorEvent, ProbeResult, RequestRecord, TaskRecord};
+use agent_value_core::records::{BehaviorEvent, Outcome, ProbeResult, RequestRecord, TaskRecord};
 use agent_value_core::scope::ScopeId;
 use agent_value_core::weights::{
     Evidence, FiveLevel, FrozenWindowParts, SelfReportAnswer, TrialResolution, VersionId,
@@ -37,6 +38,14 @@ use agent_value_core::CoreError;
 
 pub use digest::{sha256_hex, DigestKey, MIN_DIGEST_KEY_BYTES};
 pub use error::{StoreError, StoreResult};
+
+/// One stored outcome judgement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredJudgement {
+    pub judged_at_ms: i64,
+    pub judgement: Judgement,
+    pub rules_version: String,
+}
 
 /// Current schema version (`PRAGMA user_version`).
 pub const SCHEMA_VERSION: i64 = schema::MIGRATIONS.len() as i64;
@@ -222,6 +231,120 @@ impl Store {
                 task.rating,
             ],
         )?;
+        Ok(())
+    }
+
+    /// Records a (re-)judgement of a task's outcome (§3.1): appends it to the
+    /// judgement history and sets the task's current outcome, atomically.
+    /// `rules_version` names the frozen classification rules used.
+    pub fn record_judgement(
+        &mut self,
+        task_id: &str,
+        judgement: &Judgement,
+        judged_at_ms: i64,
+        rules_version: &str,
+    ) -> StoreResult<()> {
+        if rules_version.trim().is_empty() {
+            return Err(StoreError::Core(CoreError::EmptyField {
+                field: "rules_version",
+            }));
+        }
+        if has_secret_prefix(rules_version) {
+            return Err(StoreError::Core(CoreError::LooksLikeSecret {
+                field: "rules_version",
+            }));
+        }
+        let tx = self.conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE tasks SET outcome = ?2 WHERE id = ?1",
+            params![task_id, judgement.outcome.as_str()],
+        )?;
+        if updated == 0 {
+            return Err(StoreError::Conflict("judgement for an unknown task"));
+        }
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM outcome_judgements WHERE task_id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO outcome_judgements (task_id, seq, judged_at_ms, outcome, rule,
+                provisional, final_after_ms, rules_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                task_id,
+                seq,
+                judged_at_ms,
+                judgement.outcome.as_str(),
+                judgement.rule.as_str(),
+                judgement.provisional,
+                judgement.final_after_ms,
+                rules_version.trim(),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The judgement history of a task, oldest first.
+    pub fn judgement_history(&self, task_id: &str) -> StoreResult<Vec<StoredJudgement>> {
+        let mut st = self.conn.prepare(
+            "SELECT judged_at_ms, outcome, rule, provisional, final_after_ms, rules_version
+             FROM outcome_judgements WHERE task_id = ?1 ORDER BY seq",
+        )?;
+        let rows = st
+            .query_map([task_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(
+                |(at, outcome, rule, provisional, final_after_ms, rules_version)| {
+                    Ok(StoredJudgement {
+                        judged_at_ms: at,
+                        judgement: Judgement {
+                            outcome: Outcome::parse(&outcome)?,
+                            rule: Rule::parse(&rule)?,
+                            provisional,
+                            final_after_ms,
+                        },
+                        rules_version,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// The task's current outcome.
+    pub fn task_outcome(&self, task_id: &str) -> StoreResult<Option<Outcome>> {
+        let s: Option<String> = self
+            .conn
+            .query_row("SELECT outcome FROM tasks WHERE id = ?1", [task_id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        s.map(|s| Outcome::parse(&s).map_err(StoreError::Core))
+            .transpose()
+    }
+
+    /// Sets (or replaces) the user's 1-5 star rating of a task; one rating
+    /// per task, the latest wins (§3.1). Probe tasks cannot be rated.
+    pub fn set_task_rating(&self, task_id: &str, stars: u8) -> StoreResult<()> {
+        agent_value_core::quality::stars_to_quality(stars)?;
+        let n = self.conn.execute(
+            "UPDATE tasks SET rating = ?2 WHERE id = ?1",
+            params![task_id, stars],
+        )?;
+        if n == 0 {
+            return Err(StoreError::Conflict("rating for an unknown task"));
+        }
         Ok(())
     }
 

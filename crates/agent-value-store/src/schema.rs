@@ -6,7 +6,7 @@
 pub(crate) const PROBE_CELL_SQL: &str = "__probe__";
 
 /// Migration `i` brings the schema from version `i` to `i + 1`.
-pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1];
+pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE arms (
@@ -202,6 +202,7 @@ BEGIN SELECT RAISE(ABORT, 'config_versions rows are immutable'); END;
 pub(crate) const TABLES: &[&str] = &[
     "arms",
     "tasks",
+    "outcome_judgements",
     "requests",
     "behavior_events",
     "event_available_arms",
@@ -213,3 +214,27 @@ pub(crate) const TABLES: &[&str] = &[
     "frozen_windows",
     "config_versions",
 ];
+
+/// Step 3 (v22 §3.1): append-only history of outcome judgements. The
+/// task row carries the current outcome; every (re-)judgement, including a
+/// retroactive flip to failure, is kept here with the rule that fired and
+/// the version of the frozen classification rules.
+const MIGRATION_2: &str = r#"
+CREATE TABLE outcome_judgements (
+    task_id        TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    seq            INTEGER NOT NULL CHECK (seq >= 1),
+    judged_at_ms   INTEGER NOT NULL,
+    outcome        TEXT NOT NULL
+                   CHECK (outcome IN ('pending', 'success', 'failure', 'cancel', 'undetermined')),
+    rule           TEXT NOT NULL CHECK (rule IN ('still-running', 'explicit-abort', 'failed-check',
+                   'redo-within-tau-re', 'rollback-within-tau-keep', 'completed',
+                   'no-completion-signal')),
+    provisional    INTEGER NOT NULL CHECK (provisional IN (0, 1)),
+    final_after_ms INTEGER,
+    rules_version  TEXT NOT NULL CHECK (length(rules_version) > 0),
+    PRIMARY KEY (task_id, seq),
+    CHECK ((provisional = 1) = (final_after_ms IS NOT NULL))
+);
+CREATE TRIGGER outcome_judgements_immutable BEFORE UPDATE ON outcome_judgements
+BEGIN SELECT RAISE(ABORT, 'outcome_judgements rows are immutable'); END;
+"#;

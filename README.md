@@ -16,10 +16,10 @@ There is no usable app yet. The formulas below exist as a tested Rust library, a
 | 2 | Local SQLite data model and privacy rules | Implemented (not yet connected to the desktop shell) |
 | 3 | Task outcome rules and quality signals | Implemented |
 | 4-5 | Cell states and cell weights $\omega_u$; prior, posterior and retry model | Implemented |
-| 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented ($V$ is correct only when the reference anchor is supplied; see step 10) |
+| 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented |
 | 8 | Eligibility gates $\mathcal E_d$ | Implemented (authenticity and log integrity are passed in by the caller until step 13) |
-| 9 | Frontier and diagnostic table | Implemented (per layer; the overall recommendation needs step 10, and the display is planned) |
-| 10 | Reference anchor tiers I / II / III, fallback arm selection | Planned |
+| 9 | Frontier and diagnostic table | Implemented (per layer and overall; the display is planned) |
+| 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Implemented (no display layer yet) |
 | 11 | Weight elicitation from your answers and behaviour | Planned |
 | 12 | Weight sensitivity display | Planned |
 | 13 | Probes and relay checks | Planned |
@@ -32,8 +32,8 @@ Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 - **Arm.** The unit being compared: a model plus a route. A route is the API host, the protocol (for example Anthropic Messages or OpenAI Chat Completions) and the agent or client. If any of the three differs, it is a different arm. Changing the API key on the same route does not make a new arm.
 - **Cell and layer.** Tasks are grouped into cells $u$ by subtype (for coding by default: fix, add, refactor, explain and review, other). By default there is one layer; optionally, tasks can be split into layers $d$ by size (small, medium, large), measured only on your own input, and a cell is then a subtype within a layer. Each cell has a weight $\omega_u$ equal to its share of the layer's tasks in the previous window.
 - **Task.** One stretch from your submission to delivery, abandonment or cancellation.
-- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are step 10, planned). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated. The library computes the frontier, but showing it with that label is planned.
-- **Reference arm $R_k$ and fallback arm $F_k$.** $R_k$ is the arm every other arm is compared against. $F_k$ is the arm a task is handed to after an arm fails $K$ times; by default $F_k=R_k$. The reference and fallback arms do not themselves hand off to anyone.
+- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are in the next item). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated. The library computes the frontier, but showing it with that label is planned.
+- **Reference arm $R_k$ and fallback arm $F_k$.** $R_k$ is the arm every other arm is compared against. $F_k$ is the arm a task is handed to after an arm fails $K$ times. The reference and fallback arms do not themselves hand off to anyone. $R_k$ is the first available arm in this order: the arm you chose, the scope's official direct arm, and the arm with the most tasks in the previous window. An arm is available if in the previous window it passed the authenticity gate and had no $F_{\rm bad}$ cell; equal task counts go to the arm whose id sorts first. If several official direct arms exist they are tried in order of previous-window tasks; when the one with the most tasks is unavailable, the next official direct arm is used, and the most-tasks arm overall is used only when no official direct arm is available. By default $F_k=R_k$. You can choose a different $F_k$. It is kept only if in the previous window it passed the authenticity gate, had no $F_{\rm bad}$ cell, was tier I or tier II (section 5) in every positive-weight layer, and had at least 3 ratings ($n_q\ge3$) in every positive-weight cell. Otherwise, including when it has no positive-weight layer at all, $F_k$ reverts to $R_k$ and the version record notes this with the reasons.
 
 ## How scoring works
 
@@ -250,7 +250,7 @@ with $Q^{\ast,C}_{iu}=p^C_K\hat q+q^C_K\bar Q_F$.
 
 ### 5. Aggregation and the value score $V$
 
-*Spec §4. Implemented, with the reference anchor supplied by the caller until step 10.*
+*Spec §4 and §7. Implemented.*
 
 Cell values are averaged with the cell weights, then layer values with the layer weights:
 
@@ -274,9 +274,27 @@ $$
 - Each factor is a ratio "reference over this arm", so lower cost, shorter time and fewer defects ($1-Q^{\ast}$) all raise $V$.
 - $a$, $b$, $g$ are your weights for cost, time and quality, from the current weight version. They sum to 1 and each is at least $0.05$; without any evidence they are $1/3$ each.
 - $c_0=0.15$ RMB, $t_0=15$ s and $\epsilon=0.02$ are noise floors. They keep tiny differences between very cheap, very fast or near-perfect arms from producing huge ratios.
-- $(C^{\rm ref},T^{\rm ref},Q^{\rm ref})$ is the reference anchor. Choosing it (tier I uses the measured reference values, tier II anchors bounded on both sides for each of cost, time and quality, tier III produces no $V$) is step 10 and is planned. Until then $V$ is correct only when the caller supplies the anchor.
+- $(C^{\rm ref},T^{\rm ref},Q^{\rm ref})$ is the reference anchor. The library certifies it for each layer; see below.
 
 The overall $V_i$ uses the same formula with overall values. A per-cell $V_{iu}$ is a diagnostic only. $V$ is computed in log space and requires $c_0,t_0,\epsilon>0$, $C,T\ge0$ and $Q\in[0,1]$.
+
+**Reference anchor.** The reference arm's cells get the same $\mathrm{miss}$, $\mathrm{fail}$ and $\mathrm{valid}$ states, and the same $F_{\rm thin}$ and $F_{\rm bad}$ kinds, as any other arm. Each layer is then put in one tier, checked in the order III, II, I; the first that applies wins.
+
+- **Tier III, not certified.** The reference has a $\mathrm{miss}$ cell, an $F_{\rm bad}$ cell, a positive-weight cell with an $\mathrm{NA}$ dimension, or fewer than 3 $\mathrm{valid}$ cells. Every reason that applies is listed, in this order. The layer has no $V_{i,d}$, but each arm's $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and the official frontier of section 8 are still produced. Because tier III is checked first, a layer with fewer than 3 positive-weight cells is never certified, even when every cell is valid.
+- **Tier II, clamped.** Not tier III, and the reference has at least one $F_{\rm thin}$ cell. The layer anchor is clamped; the cell values are not:
+
+$$
+X^{\rm anchor}_{R,d}={\rm clip}\bigl(A_X,\ (1-\theta)a_X,\ (1+\theta)a_X\bigr),\qquad
+A_X=\sum_{u\in d^+}\omega_uX^*_{R,u},\qquad
+a_X=\frac{\sum_{u\in{\rm valid}}\omega_uX^*_{R,u}}{\sum_{u\in{\rm valid}}\omega_u},\qquad
+\theta=0.10 .
+$$
+
+$X$ stands for cost and for time. Quality is clamped through its defect $D=1-Q$, with $A_D$ and $a_D$ defined the same way on $D$: $Q_{R,d}^{\rm anchor}=1-{\rm clip}\bigl(A_D,(1-\theta)a_D,(1+\theta)a_D\bigr)$. A layer value inside the window is used as it is; only a value outside it is pulled back to the edge. The cell values never change, so the fallback terms of section 4 still use the measured values. The library keeps $A$, $a$, the clamped value and the weight of the reference's $F_{\rm thin}$ cells for the header. In tier II a pure-route arm (one whose cells equal the reference's) need not score 100, and the legend has to say so.
+
+- **Tier I, certified.** Every other case. The anchor is the reference's measured layer values, and a pure-route arm scores exactly 100.
+
+$V$ is never divided by the pure-route arm's score to bring it back to 100; that would cancel the clamp and undo tier II.
 
 ### 6. Eligibility gates $\mathcal E_d$
 
@@ -334,7 +352,7 @@ Here $\kappa_{\rm eff}$ is the prior strength $\kappa_{iu}$ from section 3, aver
 - A $\mathrm{miss}$ cell gets two values. The optimistic one is the weighted median of the valid cells, taken separately for cost, time and quality. It is the lower median: the valid cells' weights are normalized, values are sorted, and the first one whose cumulative weight reaches one half wins. Quality is sorted by its defect $1-Q$, so a tie always picks the better real cell. The conservative one is the worst valid value in each dimension: the highest cost, the highest time and the lowest quality, which may come from different cells. 
 - A $\mathrm{fail}$ cell gets one value: in each dimension, the worse of its measured value and the worst valid value.
 
-The filled cells are aggregated over the layer as in section 5, once with every $\mathrm{miss}$ cell at its optimistic value and once at its conservative value; $\mathrm{fail}$ cells use their single value both times. An arm with $\mathrm{miss}$ cells is shown with the range $[V^{\rm diag,cons},V^{\rm diag,opt}]$; an arm with only $\mathrm{fail}$ cells gets a single $V^{\rm diag}$, labelled with the total weight of its failed cells $w^{\rm fail}_{i,d}$. $V$ is computed against a diagnostic reference that the caller passes in; without one, the row has no $V$.
+The filled cells are aggregated over the layer as in section 5, once with every $\mathrm{miss}$ cell at its optimistic value and once at its conservative value; $\mathrm{fail}$ cells use their single value both times. An arm with $\mathrm{miss}$ cells is shown with the range $[V^{\rm diag,cons},V^{\rm diag,opt}]$; an arm with only $\mathrm{fail}$ cells gets a single $V^{\rm diag}$, labelled with the total weight of its failed cells $w^{\rm fail}_{i,d}$. $V$ is computed against the diagnostic reference anchor, which does not depend on the tier and is never clamped. In every positive-weight cell, the reference's cost and time are taken as the higher of their own value and the highest value among its $\mathrm{valid}$ cells, and its quality as the lower of its own value and the lowest valid one; a cell with an $\mathrm{NA}$ dimension takes the worst valid value. A library function computes this anchor and the caller passes it to the row. If the reference has no valid cell with a complete triple there is no anchor, and the row has no $V$.
 
 **Order.** Rows are sorted by valid-cell coverage, highest first, then by model name:
 
@@ -348,7 +366,7 @@ There is no way to sort by diagnostic $V$.
 <summary>Implementation notes</summary>
 
 - The layer aggregates in a diagnostic row are computed after filling. A raw measured layer mean, such as the $A_C=0.165$ in the specification's example 8, has to be computed by the caller from the measured values; the library does not store it.
-- When an arm is not admitted, the row does not yet say which condition it missed.
+- When an arm is not admitted, the row lists every reason that applies: $\mathrm{ESS}<3$ (`EssBelowThree`), no $\mathrm{valid}$ cell (`NoValidCell`), or a valid cell without a complete $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$, so no fill values can be built (`ValidCellIncomplete`). The list is empty exactly when the row is admitted.
 - Bad input returns an error: the same cell given twice, a weight or $\kappa$ that is not a finite number, or a $\mathrm{fail}$ cell without a complete measured triple.
 - Checked against the specification's examples: the $F_{\rm thin}$ cell and diagnostic aggregate 0.7875 in example 6, and the $F_{\rm bad}$ cell and 0.9000 in example 7. The raw mean 0.1650 in example 8 is checked by the tests for steps 6 and 7.
 
@@ -356,7 +374,7 @@ There is no way to sort by diagnostic $V$.
 
 ### 8. Frontier
 
-*Spec §6. Implemented per layer. The overall recommendation depends on the anchor tiers (step 10) and is planned.*
+*Spec §6. Implemented as library functions; the display is planned.*
 
 Among the eligible arms of a layer, arm $j$ dominates arm $i$ when it is at least as good in every dimension (cost and time no higher, quality no lower) and strictly better in at least one. The weights $a$, $b$, $g$ play no part here.
 
@@ -371,15 +389,34 @@ $$
 
 $\succ_{\rm off}$ compares the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and $\succ_{\rm rob}$ the cancel-robust versions. $\mathcal F^{\rm off}_d$ is the official frontier, $\mathcal F^{\rm rob}_d$ the cancel-robust frontier, and $\mathcal F^{\rm rec}_d$ the recommended set: official frontier arms that no arm beats on the cancel-robust values.
 
+**Official pick per layer.** In a tier I or tier II layer, the official first choice is every arm tied for the highest $V_{i,d}$ within $\mathcal F^{\rm rec}_d$. A tier III layer still gets its frontiers but no first choice. When $\mathcal F^{\rm rec}_d$ is empty, nobody is first: $\mathcal F^{\rm rob}_d$ is listed separately as the "cancel-robust alternative" and is never labelled the official first choice.
+
+**Bill too coarse.** If any positive-weight cell of an arm has cancellation bills that give only a lower bound (section 4), cancel-robust dominance is turned off for the arm in that layer and it is tagged "bill too coarse". The tag shows on every row of that arm in that layer, whether or not the arm is in $\mathcal F^{\rm rec}_d$. A tagged arm can still be the official first choice and keeps its tag.
+
+**Overall.** An arm's overall $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ are computed and reported whenever all of its positive-weight layer values are defined, together with its valid coverage:
+
+$$
+{\rm cov}_i=\sum_{d\in D^+}\omega_d\bigl(1-w^{\rm miss}_{i,d}-w^{\rm fail}_{i,d}\bigr).
+$$
+
+An arm with ${\rm cov}_i<1$ is marked as not fully covered: it is a diagnostic only, with no frontier, recommendation or rank. The overall reference anchor adds up the layer anchors with the layer weights:
+
+$$
+X^{\rm ref}_R=\sum_{d\in D^+}\omega_dX^{\rm anchor}_{R,d},\qquad X\in\{C,T,Q\}.
+$$
+
+If any positive-weight layer is tier III, the overall reference is $\mathrm{NA}$: there is no overall $V$ and no overall recommendation, only each arm's overall values and the per-layer frontiers, under a header saying the reference is not certified in some layers. If any positive-weight layer is tier III, that is the only header shown; only when the overall reference is certified and some positive-weight layer is tier II does the header say the reference includes a clamped tier II layer. An arm gets an overall $V_i$ only if the overall reference is certified and the arm passes every gate over the whole grid: $n_i^{\rm comp}\ge\max(30,3U_i)$, no $\mathrm{miss}$ or $\mathrm{fail}$ cell, cancellations at most 20%, completions at least 50%, authenticity passed, and a place on the official frontier of at least one positive-weight layer ($i\in\mathcal F^{\rm all}$). The overall first choice is every arm tied for the highest overall $V_i$.
+
 <details>
 <summary>Implementation notes</summary>
 
 - The caller passes in the arms of $\mathcal E_d$; the frontier function does not check eligibility itself.
 - An arm whose plain triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm off}_d$; an arm whose cancel-robust triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison.
 - The cancel-robust values are $\mathrm{NA}$ exactly where the plain values are, so with the library's own values an arm on the official frontier always has a complete cancel-robust triple. The specification does not cover a caller that passes in such an arm without one; the library then leaves it out of $\mathcal F^{\rm rec}_d$, in every build.
-- When an arm's cancellation bills give only a lower bound, the specification turns off cancel-robust dominance for it and tags it "bill too coarse". Such an arm is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison, in both directions. If it is on the official frontier, nothing can beat it on the cancel-robust values, so it stays in $\mathcal F^{\rm rec}_d$, and the result also lists it as having a coarse bill. Showing that tag is planned (step 10).
+- An arm tagged "bill too coarse" is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison, in both directions. If it is on the official frontier, nothing can beat it on the cancel-robust values, so it stays in $\mathcal F^{\rm rec}_d$.
+- The tag is decided by the cell note. The frontier result also lists the tagged arms in $\mathcal F^{\rm rec}_d$, meaning those whose robust dominance is switched off. That switch comes from each cell's robust-dominance flag, not from the notes; for the arms of $\mathcal E_d$ it agrees with the notes. An arm whose dominance is off only because its cancel-robust triple has an $\mathrm{NA}$ is not tagged; it is left out of $\mathcal F^{\rm rec}_d$ as described above.
 - A separate helper returns every arm tied for the highest $V$; the tests check that these arms are on the official frontier.
-- Not implemented yet: showing $\mathcal F^{\rm rob}_d$ as a "cancel-robust alternative" when $\mathcal F^{\rm rec}_d$ is empty (never labelled as the official first choice), the internal check that an overall recommendation sits on at least one layer's frontier, and the overall $V$ with its conditions, which need step 10.
+- The tests check the specification's examples 6, 7 and 8 end to end, from $\mathcal E_d$ through the frontier to the official pick.
 
 </details>
 
@@ -387,7 +424,7 @@ $\succ_{\rm off}$ compares the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and $\su
 
 These parts of the specification are not implemented:
 
-- **Reference anchors and fallback arm selection** (step 10): the three anchor tiers and the rules for choosing $R_k$ and $F_k$. A fallback arm $F_k$ other than $R_k$ must, in the previous window, pass the authenticity check, have no $F_{\rm bad}$ cell, meet the tier I or tier II conditions, and have at least 3 ratings ($n_q\ge3$) in every cell; otherwise $F_k=R_k$, and the change is noted in the version record.
+- **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6). Showing the first window's frontier labelled as not yet calibrated is also planned.
 - **Weights** (step 11): estimating $a$, $b$, $g$ from pairwise questions and from your behaviour.
 - **Weight sensitivity** (step 12): how results change across the weight grid, plus a check that halves and doubles each noise floor one at a time.
 - **Probes and relay checks** (step 13): a fixed probe set that checks whether a route serves the model it claims, plus log-integrity checks.
@@ -405,6 +442,7 @@ These parts of the specification are not implemented:
 | $c_0$ | 0.15 RMB | Cost noise floor |
 | $t_0$ | 15 s | Time noise floor |
 | $\epsilon$ | 0.02 | Quality defect noise floor |
+| $\theta$ | 0.10 | Tier II clamp window for the reference anchor (cost, time and defects) |
 | $a,b,g$ | $1/3$ each by default, each $\ge0.05$ | Weights of cost, time and quality in $V$ |
 | Time window | 30 days | Weights and references are fixed from the previous window |
 | Redo window | 30 minutes | A redo request in this period marks the task failed |
@@ -413,6 +451,8 @@ These parts of the specification are not implemented:
 | Eligibility thresholds | $n^{\rm comp}\ge\max(30,3U_d)$, cancellations $\le20\%$, completions $\ge50\%$ | Gates 2 and 3 for $\mathcal E_d$ |
 | Diagnostic admission | $\mathrm{ESS}\ge3$ and at least one $\mathrm{valid}$ cell | Below this an arm gets no diagnostic score |
 | Rating-mode threshold | $n_q\ge3$ per arm per cell | Otherwise the layer uses success-rate mode |
+| Valid reference cells | at least 3 per layer | Fewer makes the layer tier III |
+| Fallback rating threshold | $n_q\ge3$ in every positive-weight cell | Needed to keep a fallback arm other than $R_k$; defined separately from the rating-mode threshold |
 
 ## Usage
 

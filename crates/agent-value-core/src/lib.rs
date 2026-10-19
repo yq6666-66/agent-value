@@ -11,8 +11,10 @@
 //! (§3.1), the Beta prior/posterior with K-truncated retries and lower
 //! bounds (§1), cell states with `omega_u` (§0), per-cell `C*`, `T*`, `Q*`
 //! with NA propagation and cancel-robust versions (§2, §3), and layer /
-//! overall aggregation with the value score `V` (§4). The anchor tiers
-//! (§7) and the eligibility gates are not implemented yet.
+//! overall aggregation with the value score `V` (§4), and the layer
+//! eligibility set `E_d` (§5; authenticity / log-integrity are stub
+//! inputs until §11). The anchor tiers (§7), frontier and diagnostic
+//! table are not implemented yet.
 
 #![forbid(unsafe_code)]
 
@@ -21,6 +23,7 @@ pub mod beta_dist;
 pub mod cell_values;
 pub mod cells;
 pub mod constants;
+pub mod eligibility;
 pub mod error;
 pub mod outcome;
 pub mod privacy;

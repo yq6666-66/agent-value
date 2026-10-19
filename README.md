@@ -26,14 +26,19 @@ public leaderboard.
   quality (C*, T*, Q*) with cancel amortization, the fallback arm and NA
   propagation (missing data stays NA, never 0), their cancel-robust
   versions, layer and overall aggregates, and the value score V for a
-  given reference anchor. The anchor tiers, eligibility gates and the
-  frontier are not implemented yet, so nothing is scored end to end.
+  given reference anchor.
+- The core crate also assesses the layer eligibility set E_d (§5): the
+  five gates (complete-case, sample, cancel/completion rates with
+  integer comparisons, authenticity and log-integrity stubs, reference
+  base). Authenticity grades and log integrity are caller-supplied until
+  probes exist. The anchor tiers, frontier and diagnostic table are not
+  implemented yet, so nothing is scored end to end.
 - The store crate has the local SQLite data model: route metadata per
   request, tasks, behaviour events with available-arm snapshots, probe
   results, frozen cell weights, weight versions and other configuration
   versions, a history of outcome judgements, with the privacy rules below. It is not wired into the desktop
   shell yet.
-- No anchor certification, eligibility gates, frontier, probing, or UI
+- No anchor certification, frontier, diagnostic table, probing, or UI
   beyond a placeholder page exist yet.
 
 ## Layout

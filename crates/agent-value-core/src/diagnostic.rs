@@ -46,12 +46,37 @@ pub struct FilledCell {
     pub conservative: Triple,
 }
 
+/// Why a diagnostic row is not admitted (DECISIONS X).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NotAdmittedReason {
+    /// `ESS = n_comp + κ_eff < 3`.
+    EssBelowThree,
+    /// No valid cell in the layer.
+    NoValidCell,
+    /// A valid cell has no complete triple, so fills cannot be computed.
+    ValidCellIncomplete,
+}
+
+/// Admission reasons from the two §10 conditions, in enum order.
+pub fn not_admitted_reasons(status: &LayerStatus, kappa_eff: f64) -> Vec<NotAdmittedReason> {
+    let mut r = Vec::new();
+    if (status.n_comp as f64 + kappa_eff) < 3.0 {
+        r.push(NotAdmittedReason::EssBelowThree);
+    }
+    if status.n_valid < 1 {
+        r.push(NotAdmittedReason::NoValidCell);
+    }
+    r
+}
+
 /// Outcome of diagnosing one arm in one layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiagnosticRow {
     /// `ESS = n_comp + κ_eff`.
     pub ess: f64,
     pub admitted: bool,
+    /// Why the row is not admitted; empty when `admitted`.
+    pub not_admitted: Vec<NotAdmittedReason>,
     pub cov: f64,
     pub w_miss: f64,
     pub w_fail: f64,
@@ -112,10 +137,11 @@ pub fn kappa_eff(weights: &CellWeights, priors: &[(CellId, Prior)]) -> Result<f6
     Ok(num / den)
 }
 
-/// Admission gate: `n_comp + κ_eff ≥ 3` and at least one valid cell.
+/// Admission gate: `n_comp + κ_eff ≥ 3` and at least one valid cell (the
+/// two §5 conditions). [`diagnose_arm`] can still refuse a row whose valid
+/// cell has no complete triple (`ValidCellIncomplete`).
 pub fn diagnostic_admitted(status: &LayerStatus, kappa_eff: f64) -> bool {
-    let ess = status.n_comp as f64 + kappa_eff;
-    ess >= 3.0 && status.n_valid >= 1
+    not_admitted_reasons(status, kappa_eff).is_empty()
 }
 
 /// Coverage `cov = 1 - w_miss - w_fail`.
@@ -274,7 +300,13 @@ pub fn diagnose_arm(
     let k_eff = kappa_eff(weights, present_priors)?;
     let ess = status.n_comp as f64 + k_eff;
     let cov = coverage(status);
-    let admitted = diagnostic_admitted(status, k_eff);
+    let base_reasons = not_admitted_reasons(status, k_eff);
+    let admitted = base_reasons.is_empty();
+    let with_incomplete = || {
+        let mut r = base_reasons.clone();
+        r.push(NotAdmittedReason::ValidCellIncomplete);
+        r
+    };
 
     let mut triple_map = std::collections::BTreeMap::new();
     for (c, t) in cell_triples {
@@ -296,6 +328,7 @@ pub fn diagnose_arm(
             return Ok(DiagnosticRow {
                 ess,
                 admitted: false,
+                not_admitted: with_incomplete(),
                 cov,
                 w_miss: status.w_miss,
                 w_fail: status.w_fail,
@@ -311,6 +344,7 @@ pub fn diagnose_arm(
             return Ok(DiagnosticRow {
                 ess,
                 admitted: false,
+                not_admitted: with_incomplete(),
                 cov,
                 w_miss: status.w_miss,
                 w_fail: status.w_fail,
@@ -333,6 +367,7 @@ pub fn diagnose_arm(
         return Ok(DiagnosticRow {
             ess,
             admitted: false,
+            not_admitted: base_reasons.clone(),
             cov,
             w_miss: status.w_miss,
             w_fail: status.w_fail,
@@ -351,6 +386,9 @@ pub fn diagnose_arm(
         return Ok(DiagnosticRow {
             ess,
             admitted: false,
+            // Reached only when admitted (base reasons empty) but no valid cell
+            // had a complete triple.
+            not_admitted: with_incomplete(),
             cov,
             w_miss: status.w_miss,
             w_fail: status.w_fail,
@@ -431,6 +469,7 @@ pub fn diagnose_arm(
     Ok(DiagnosticRow {
         ess,
         admitted: true,
+        not_admitted: Vec::new(),
         cov,
         w_miss: status.w_miss,
         w_fail: status.w_fail,

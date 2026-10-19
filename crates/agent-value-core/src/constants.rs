@@ -56,6 +56,9 @@ pub const SPOT_RATING_RATE: f64 = 0.10;
 pub const SPOT_RATING_MAX_PER_DAY: u32 = 3;
 /// §9 rating-mode threshold: `n_q >= 3` per arm per cell, else success-rate mode.
 pub const RATING_MODE_MIN_RATINGS: u32 = 3;
+/// DECISIONS G item 4: a user-specified fallback arm needs `n_q >= 3`
+/// quality ratings in every positive-weight cell of the previous window.
+pub const FALLBACK_MIN_RATINGS_PER_CELL: u32 = 3;
 /// §9 five-level self-report cut point `delta_1` (in units of the question's Delta).
 pub const SELF_REPORT_DELTA1: f64 = 0.25;
 /// §9 five-level self-report cut point `delta_2` (in units of the question's Delta).

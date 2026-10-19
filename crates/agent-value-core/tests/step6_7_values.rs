@@ -815,3 +815,81 @@ fn aggregation_rejects_non_finite_cells() {
     };
     assert_eq!(aggregate_layer(&w, &[(a, na_t)]).unwrap().t, None);
 }
+
+// ---- step 10: DECISIONS H and I (F != R self-built arm) ---------------------------
+
+/// Self-built arm with `F != R`: cost ratio `((S_R+c0)/(S_R+q_K S_F+c0))^a`.
+fn self_built_with_fallback(s_f: f64, a: f64) -> f64 {
+    let r = q_eighth();
+    // C*_R = 0.6 with x (p_K + E[n_F]) = 1.25 x.
+    let dim = DimInputs {
+        bench_success: Some(0.48),
+        bench_failure: Some(0.48),
+        ..DimInputs::default()
+    };
+    let i = inputs(counts(7, 1, 0), r, dim);
+    let reference = cell_values(&i, Role::Terminal).unwrap();
+    close(reference.star.c.unwrap(), 0.6);
+    let f = CellValues {
+        star: Triple::new(s_f, reference.star.t.unwrap(), reference.star.q.unwrap()),
+        robust: Triple::new(s_f, reference.star.t.unwrap(), reference.star.q.unwrap()),
+        robust_dominance: true,
+        notes: vec![],
+    };
+    let cand = cell_values(
+        &i,
+        Role::Candidate {
+            reference: &reference,
+            fallback: Some(&f),
+        },
+    )
+    .unwrap();
+    let c_i = cand.star.c.unwrap();
+    close(c_i, 0.6 + 0.125 * s_f);
+    let v = value_score(pt(0.6), pt(c_i), &abg(a), &Floors::default()).unwrap();
+    close(v, 100.0 * (0.75 / (0.75 + 0.125 * s_f)).powf(a));
+    v
+}
+
+#[test]
+fn decisions_i_fallback_self_built_values() {
+    for (s_f, a, printed) in [
+        (0.3, 1.0 / 3.0, "98.39"),
+        (0.6, 1.0 / 3.0, "96.87"),
+        (1.2, 1.0 / 3.0, "94.10"),
+        (0.3, 0.2, "99.03"),
+        (1.2, 0.2, "96.42"),
+        (0.3, 0.5, "97.59"),
+        (1.2, 0.5, "91.29"),
+    ] {
+        prints_as(self_built_with_fallback(s_f, a), printed);
+    }
+    // Endpoints: q_K = 0 → 100; q_K = 1 with S_F = S_R → 100 (0.75/1.35)^{1/3}.
+    close(
+        value_score(pt(0.6), pt(0.6), &eq_w(), &Floors::default()).unwrap(),
+        100.0,
+    );
+    close(
+        value_score(pt(0.6), pt(0.6 + 1.0 * 0.6), &eq_w(), &Floors::default()).unwrap(),
+        100.0 * (0.75f64 / 1.35).powf(1.0 / 3.0),
+    );
+}
+
+#[test]
+fn decisions_h_terminal_arms_pay_no_fallback() {
+    // R and F as terminal arms: C* has no q_K C*_F term.
+    let r = q_eighth();
+    let dim = DimInputs {
+        bench_success: Some(0.48),
+        bench_failure: Some(0.48),
+        ..DimInputs::default()
+    };
+    let i = inputs(counts(7, 1, 0), r, dim);
+    let t = cell_values(&i, Role::Terminal).unwrap();
+    close(t.star.c.unwrap(), 0.48 * (r.p_k + r.e_n_f));
+    close(t.star.c.unwrap(), 0.6);
+    assert_eq!(
+        agent_value_core::labels::TERMINAL_ARMS_LEGEND,
+        "参照臂与兜底臂自身不计兜底开销"
+    );
+}

@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec step 10: reference anchor certification (§7). Tiers are
+  decided III → II → I, first match wins; tier III lists every reason
+  (miss, true-fail cell, NA cell, fewer than 3 valid cells), so a layer
+  with fewer than 3 positive-weight cells is never certified. Tier II
+  clamps the layer anchor, never cell values: cost and time
+  `clip(A, (1−θ)a, (1+θ)a)`, quality through defects `D = 1 − Q`,
+  `θ = 0.10`, with the clamp metadata kept. Layer `V` uses the anchor and
+  is never normalized by the pure-route score. Unclamped diagnostic
+  reference anchor per the §7 formula. Layer official #1 is the tie group
+  of highest `V` within `F_rec` (tiers I/II only); with `F_rec` empty,
+  `F_rob` is listed as "取消稳健备选" and nobody is #1. Overall closure
+  (§6): the reference must be tier I or II in every positive-weight
+  layer (overall anchor = `Σ ω_d` of layer anchors in all three
+  dimensions, "含 Ⅱ 档夹逼层" header); an arm gets an overall `V` only when
+  it passes the grid gates and is in `F_all`; overall triple, `cov_i` and
+  the partial-coverage flag are reported. `robust_enabled` and the
+  "账单过粗" tag are now set from cell notes; a tagged arm can be #1 and
+  keeps its tag on every row. §13: `R_k` selection (user → official
+  direct → most tasks, availability = authenticity passed and no
+  `F_bad`, ties by arm id) and `F_k` qualification (authenticity, no
+  `F_bad`, tier I/II, at least 3 quality ratings per cell; otherwise
+  revert to `R_k` with a version note). Diagnostic rows report
+  `not_admitted` reasons. Display strings live in `labels`. Paired with
+  v22 examples 6/7/8 composed from `E_d` to the official pick.
+
 - Core, spec step 9: diagnostic table for arms with miss/fail cells (§5) —
   ESS admission (`n_comp + κ_eff`, κ_eff = §1 prior κ averaged to the
   layer by `ω_u`, per v22 §0; a `d+` cell without a prior counts 0),

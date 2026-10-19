@@ -474,6 +474,7 @@ fn diagnostic_sort_by_cov_then_model_name() {
             DiagnosticRow {
                 ess: 10.0,
                 admitted: true,
+                not_admitted: vec![],
                 cov,
                 w_miss: 0.0,
                 w_fail: 1.0 - cov,

@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anchor;
 pub mod arm;
 pub mod beta_dist;
 pub mod cell_values;
@@ -28,13 +29,16 @@ pub mod diagnostic;
 pub mod eligibility;
 pub mod error;
 pub mod frontier;
+pub mod labels;
 pub mod outcome;
 pub mod privacy;
 pub mod quality;
+pub mod recommend;
 pub mod records;
 pub mod retry;
 pub mod runday;
 pub mod scope;
+pub mod selection;
 pub mod status;
 pub mod value;
 pub mod weights;

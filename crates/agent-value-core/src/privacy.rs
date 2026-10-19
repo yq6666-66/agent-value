@@ -201,15 +201,17 @@ mod tests {
     #[test]
     fn env_var_names_refuse_key_values() {
         // Fake values, split so secret scanners do not flag the source.
+        // Fake, low-entropy values built at runtime so secret scanners do not
+        // flag the source.
         for v in [
-            concat!("sk-", "test-0000aaaa1111bbbb2222"),
-            concat!("AKIA", "ABCDEFGHIJKLMNOP"),
-            concat!("ghp", "_0123456789abcdefABCDEF"),
-            "ABCDEFGHIJ0123456789XY",
+            format!("sk-{}", "a1".repeat(10)),
+            format!("AKIA{}", "A".repeat(16)),
+            format!("ghp_{}", "aB1".repeat(8)),
+            format!("{}{}", "AB".repeat(6), "12".repeat(5)),
         ] {
             assert!(
                 matches!(
-                    KeyEnvVarName::new(v),
+                    KeyEnvVarName::new(&v),
                     Err(CoreError::LooksLikeSecret { .. })
                 ),
                 "{v}"
@@ -219,7 +221,8 @@ mod tests {
 
     #[test]
     fn secret_heuristic() {
-        assert!(looks_like_secret("aB3dE6gH9jK2mN5pQ8sT1vW4"));
+        // Built at runtime: a low-entropy stand-in with upper, lower and digits.
+        assert!(looks_like_secret(&"aB3".repeat(8)));
         assert!(!looks_like_secret("ANTHROPIC_API_KEY_SECONDARY_2024"));
         assert!(!looks_like_secret("short1A"));
         assert!(has_secret_prefix(concat!("token=\"sk-", "abcd1234\" here")));

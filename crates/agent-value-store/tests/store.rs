@@ -21,7 +21,7 @@ const DAY_MS: i64 = 86_400_000;
 const NOW: i64 = 1_792_382_400_000;
 
 fn key() -> DigestKey {
-    DigestKey::from_bytes(b"test-only-digest-key-0123456789ab").unwrap()
+    DigestKey::from_bytes(b"test-only-digest-key-aaaaaaaaaaaa").unwrap()
 }
 
 fn mem() -> Store {
@@ -270,7 +270,7 @@ fn probe_tasks_never_count_as_user_tasks() {
 fn key_values_and_prompt_text_are_never_stored() {
     // A fake key value that a real route would read from RELAY_API_KEY.
     // Split so secret scanners do not flag this fake value in the source.
-    let fake_key_value = concat!("sk-", "test-FAKE-0123456789abcdefFAKE");
+    let fake_key_value = &format!("sk-test-{}", "FAKE".repeat(6));
     let prompt = "Please refactor the payment module; secret marker QX7-PROMPT-TEXT";
     let db = temp_db("no-keys");
     {
@@ -349,7 +349,7 @@ fn key_values_and_prompt_text_are_never_stored() {
             .unwrap();
         assert_eq!(len as usize, prompt.chars().count());
         assert_eq!(digest, key().digest_hex(prompt));
-        let other = DigestKey::from_bytes(b"another-install-key-000000000000").unwrap();
+        let other = DigestKey::from_bytes(b"another-install-key-bbbbbbbbbbbb").unwrap();
         assert_ne!(digest, other.digest_hex(prompt));
 
         let dump = format!("{:?}", s.export().unwrap());

@@ -55,6 +55,16 @@ pub enum CoreError {
     TrialAlreadyResolved { id: u64 },
     /// V is not produced in the first window of a scope (§A).
     VWithheldFirstWindow { window: u32 },
+    /// The probe cell's weight must be exactly 0 (§0).
+    ProbeCellWeightNonZero { value: f64 },
+    /// The same cell appears twice.
+    DuplicateCell { cell: String },
+    /// A value looks like a secret (API key, token) and is refused (§8).
+    LooksLikeSecret { field: &'static str },
+    /// A value could not be parsed.
+    Parse { what: &'static str, value: String },
+    /// Persisted ledger parts are inconsistent.
+    CorruptLedger { reason: &'static str },
 }
 
 impl fmt::Display for CoreError {
@@ -98,6 +108,15 @@ impl fmt::Display for CoreError {
                 f,
                 "V is not produced in window {window}: first window, data collection only"
             ),
+            Self::ProbeCellWeightNonZero { value } => {
+                write!(f, "the probe cell weight must be 0, got {value}")
+            }
+            Self::DuplicateCell { cell } => write!(f, "cell {cell} appears more than once"),
+            Self::LooksLikeSecret { field } => {
+                write!(f, "{field} looks like a secret value and is refused")
+            }
+            Self::Parse { what, value } => write!(f, "cannot parse {what} from {value:?}"),
+            Self::CorruptLedger { reason } => write!(f, "inconsistent weight ledger: {reason}"),
         }
     }
 }

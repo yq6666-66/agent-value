@@ -96,6 +96,32 @@ pub enum WeightSource {
     Manual,
 }
 
+impl WeightSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::SelfReport => "self-report",
+            Self::ConfirmedBehaviorSuggestion => "confirmed-behavior-suggestion",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self> {
+        Ok(match s {
+            "default" => Self::Default,
+            "self-report" => Self::SelfReport,
+            "confirmed-behavior-suggestion" => Self::ConfirmedBehaviorSuggestion,
+            "manual" => Self::Manual,
+            _ => {
+                return Err(CoreError::Parse {
+                    what: "weight source",
+                    value: s.to_string(),
+                })
+            }
+        })
+    }
+}
+
 /// A five-level answer (§10.2): strongly A / slightly A / about the same /
 /// slightly B / strongly B, i.e. `l = +2, +1, 0, -1, -2`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -238,6 +264,39 @@ pub struct WeightVersion {
 }
 
 impl WeightVersion {
+    /// Rebuilds a version from stored parts, re-checking its invariants:
+    /// official versions must have evidence that matches their source; trial
+    /// versions are always manual with no evidence.
+    pub fn from_parts(
+        id: VersionId,
+        scope: ScopeId,
+        weights: Weights,
+        source: WeightSource,
+        evidence: Evidence,
+        status: VersionStatus,
+        previous: Option<VersionId>,
+    ) -> Result<Self> {
+        match status {
+            VersionStatus::Official { .. } => validate_evidence(source, &weights, &evidence)?,
+            VersionStatus::Trial { .. } => {
+                if source != WeightSource::Manual || evidence != Evidence::None {
+                    return Err(CoreError::EvidenceMismatch {
+                        reason: "trial versions are manual and carry no evidence",
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            id,
+            scope,
+            weights,
+            source,
+            evidence,
+            status,
+            previous,
+        })
+    }
+
     pub fn id(&self) -> VersionId {
         self.id
     }
@@ -281,6 +340,15 @@ pub struct TrialPreview {
     pub label: &'static str,
 }
 
+/// Stored form of a frozen window, used by [`WeightLedger::from_parts`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrozenWindowParts {
+    pub window: WindowIndex,
+    pub weight_version: VersionId,
+    pub is_first_window: bool,
+    pub inputs: FrozenInputs,
+}
+
 /// All weight versions and frozen windows of one scoring scope.
 #[derive(Debug, Clone)]
 pub struct WeightLedger {
@@ -317,6 +385,93 @@ impl WeightLedger {
 
     pub fn versions(&self) -> &[WeightVersion] {
         &self.versions
+    }
+
+    /// All frozen windows, in window order.
+    pub fn frozen_windows(&self) -> &[FrozenWindow] {
+        &self.frozen
+    }
+
+    /// Rebuilds a ledger from stored parts and checks that it is one a
+    /// sequence of ledger operations could have produced:
+    /// - version ids are 0, 1, 2, ... and version 0 is the default, official
+    ///   from window 0, with no previous version;
+    /// - every version belongs to `scope`, and `previous` points at an
+    ///   earlier official version;
+    /// - a confirmed trial points at a later official manual version with the
+    ///   same weights;
+    /// - frozen windows are 0, 1, 2, ... and each was frozen with the official
+    ///   version that applies to it.
+    pub fn from_parts(
+        scope: ScopeId,
+        versions: Vec<WeightVersion>,
+        frozen: Vec<FrozenWindowParts>,
+    ) -> Result<Self> {
+        let corrupt = |reason| Err(CoreError::CorruptLedger { reason });
+        let Some(v0) = versions.first() else {
+            return corrupt("no versions");
+        };
+        if v0.source != WeightSource::Default
+            || v0.status
+                != (VersionStatus::Official {
+                    effective_from: WindowIndex::FIRST,
+                })
+            || v0.previous.is_some()
+        {
+            return corrupt("version 0 must be the default, official from window 0");
+        }
+        for (i, v) in versions.iter().enumerate() {
+            if v.id != VersionId(i as u64) {
+                return corrupt("version ids must be 0, 1, 2, ...");
+            }
+            if v.scope != scope {
+                return corrupt("version belongs to another scope");
+            }
+            if let Some(p) = v.previous {
+                let ok = p.0 < v.id.0 && !versions[p.0 as usize].is_trial();
+                if !ok {
+                    return corrupt("previous must be an earlier official version");
+                }
+            }
+            if let VersionStatus::Trial {
+                resolution: TrialResolution::Confirmed(o),
+                ..
+            } = v.status
+            {
+                let ok = o.0 > v.id.0
+                    && versions.get(o.0 as usize).is_some_and(|ov| {
+                        !ov.is_trial()
+                            && ov.source == WeightSource::Manual
+                            && ov.weights == v.weights
+                    });
+                if !ok {
+                    return corrupt("confirmed trial must point at its official version");
+                }
+            }
+        }
+        let mut ledger = Self {
+            scope: scope.clone(),
+            versions,
+            frozen: Vec::new(),
+        };
+        for (i, f) in frozen.into_iter().enumerate() {
+            if f.window != WindowIndex(i as u32) {
+                return corrupt("frozen windows must be 0, 1, 2, ...");
+            }
+            let expected = ledger.official_for(f.window).id;
+            if f.weight_version != expected {
+                return corrupt("frozen window does not use the version that applies to it");
+            }
+            let weight_version = ledger.version(expected)?.clone();
+            ledger.frozen.push(FrozenWindow {
+                scope: scope.clone(),
+                window: f.window,
+                weight_version,
+                is_first_window: f.is_first_window,
+                inputs: f.inputs,
+            });
+        }
+        Ok(ledger)
     }
 
     pub fn version(&self, id: VersionId) -> Result<&WeightVersion> {

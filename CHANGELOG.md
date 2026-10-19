@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec step 8: layer eligibility set `E_d` (§5). Five gates —
+  complete-case (`N^miss=N^fail=0`), sample (`n^comp >= max(30, 3 U_d)`),
+  cancel and completion rates via integer comparisons
+  (`5 n^C <= N^sub`, `2 n^comp >= N^sub`, with `N^sub > 0` first),
+  authenticity / log-integrity (stub inputs; A/A−/B pass, B labelled
+  undetermined, C fails), and reference-base (every `d+` cell has a
+  complete `(C*,T*,Q*)` for R). `LayerStatus` now also exposes `n_c` and
+  `N^sub`. Diagnostic-table rules and F_k eligibility belong to later
+  steps.
 - Core, spec steps 6-7: per-cell `C*`, `T*`, `Q*` (§2, §3): winsorized side
   means, shrinkage to the benchmark (`kappa_C = 5`, none without a
   benchmark), empty-sample chain benchmark -> layer pool -> NA, cancel

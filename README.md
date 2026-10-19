@@ -17,7 +17,7 @@ There is no usable app yet. The formulas below exist as a tested Rust library, a
 | 3 | Task outcome rules and quality signals | Implemented |
 | 4-5 | Cell states and cell weights $\omega_u$; prior, posterior and retry model | Implemented |
 | 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented ($V$ is correct only when the reference anchor is supplied; see step 10) |
-| 8 | Eligibility gates $\mathcal E_d$ | Planned |
+| 8 | Eligibility gates $\mathcal E_d$ | Implemented (authenticity and log integrity are passed in by the caller until step 13) |
 | 9 | Frontier and diagnostic table | Planned |
 | 10 | Reference anchor tiers I / II / III, fallback arm selection | Planned |
 | 11 | Weight elicitation from your answers and behaviour | Planned |
@@ -58,7 +58,7 @@ Quality $q_j\in[0,1]$ is measured only on successful tasks and only from your ra
 
 Each layer uses one of two quality modes per window:
 
-- **Rating mode**, when every arm in the candidate list the caller passes in (this becomes the eligible set $\mathcal E_d$ once step 8 exists) has at least 3 ratings in every positive-weight cell. The reference or fallback arm counts only if it is itself a candidate. Ratings are shrunk toward a pooled mean $q_B$ (the previous window's mean over all arms in that cell, or $0.5$ if there is none):
+- **Rating mode**, when every arm in the candidate list the caller passes in (meant to be the eligible set $\mathcal E_d$ from section 6; the library does not connect the two yet) has at least 3 ratings in every positive-weight cell. The reference or fallback arm counts only if it is itself a candidate. Ratings are shrunk toward a pooled mean $q_B$ (the previous window's mean over all arms in that cell, or $0.5$ if there is none):
 
 $$
 \hat q=\mathrm{clip}\!\left(\frac{\sum_{j=1}^{n_q}q_j+m_0q_B}{n_q+m_0},\ 0.01,\ 0.99\right),\qquad m_0=0.5 .
@@ -278,11 +278,46 @@ $$
 
 The overall $V_i$ uses the same formula with overall values. A per-cell $V_{iu}$ is a diagnostic only. $V$ is computed in log space and requires $c_0,t_0,\epsilon>0$, $C,T\ge0$ and $Q\in[0,1]$.
 
-### 6. Planned
+### 6. Eligibility gates $\mathcal E_d$
+
+*Spec §5. Implemented. Authenticity and log integrity are passed in by the caller until probes exist (step 13).*
+
+An arm takes part in a layer's main comparison, the set $\mathcal E_d$, only if it passes all five gates:
+
+1. **Complete case.** The arm has no $\mathrm{miss}$ and no $\mathrm{fail}$ cell in the layer: $N_{i,d}^{\rm miss}=0$ and $N_{i,d}^{\rm fail}=0$.
+2. **Sample size.** $U_d$ is the number of positive-weight cells in the layer:
+
+$$
+n^{\rm comp}_{i,d}=\sum_{u\in d^+}\bigl(n^1_{iu}+n^0_{iu}\bigr)\ge\max(30,\,3U_d).
+$$
+
+3. **Cancellation and completion rates.** $N^{\rm sub}_{i,d}$ is the number of tasks submitted to the arm in the layer:
+
+$$
+\frac{n^C_{i,d}}{N^{\rm sub}_{i,d}}\le0.20,\qquad
+\frac{n^1_{i,d}+n^0_{i,d}}{N^{\rm sub}_{i,d}}\ge0.50 .
+$$
+
+4. **Authenticity and log integrity.** Authenticity grades A, A− and B pass and C fails; an arm that passes on grade B is flagged "authenticity undetermined". The log-integrity check must pass. For now both results are passed in by the caller, so these two gates are only as reliable as the caller's input.
+5. **Reference base.** In every positive-weight cell of the layer, the reference arm's $C^{\ast}$, $T^{\ast}$ and $Q^{\ast}$ are all defined (not $\mathrm{NA}$). The reference arm having no $\mathrm{miss}$ cell is necessary but not enough, since a cell with samples can still end up $\mathrm{NA}$.
+
+The result lists whether the arm is eligible, every gate it failed, and the "authenticity undetermined" flag.
+
+<details>
+<summary>Implementation notes</summary>
+
+- The rate gates are compared in integers, $5n^C\le N^{\rm sub}$ and $2n^{\rm comp}\ge N^{\rm sub}$, so there is no rounding at the boundaries. If $N^{\rm sub}=0$, both rate gates fail without dividing.
+- All five gates are always evaluated, and every failed gate is listed once, in a fixed order; the check does not stop at the first failure.
+- $n^C$ and $N^{\rm sub}$ are summed over the positive-weight cells that have data; a $\mathrm{miss}$ cell adds 0. In a layer with a $\mathrm{miss}$ cell the failure list may therefore also name a rate gate. The arm is ineligible either way, through the complete-case gate.
+- The reference-base gate takes the reference arm's triples from the caller and does not check that they were really computed from the reference arm. The same cell given twice is an error.
+- The gates have not yet been checked against the specification's worked examples; that comes with the diagnostic table (step 9).
+
+</details>
+
+### 7. Planned
 
 These parts of the specification are not implemented:
 
-- **Eligibility gates $\mathcal E_d$** (step 8): which arms qualify for the main comparison in a layer, based on sample size, cancellation and completion rates, and cell states.
 - **Frontier and diagnostic table** (step 9): the eligible arms that no other eligible arm dominates on cost, time and quality, and a table for arms that do not qualify.
 - **Reference anchors and fallback arm selection** (step 10): the three anchor tiers and the rules for choosing $R_k$ and $F_k$. A fallback arm $F_k$ other than $R_k$ must, in the previous window, pass the authenticity check, have no $F_{\rm bad}$ cell, meet the tier I or tier II conditions, and have at least 3 ratings ($n_q\ge3$) in every cell; otherwise $F_k=R_k$, and the change is noted in the version record.
 - **Weights** (step 11): estimating $a$, $b$, $g$ from pairwise questions and from your behaviour.
@@ -307,6 +342,7 @@ These parts of the specification are not implemented:
 | Redo window | 30 minutes | A redo request in this period marks the task failed |
 | Rollback window | 24 hours | A full revert in this period marks a coding task failed |
 | Spot rating | 10%, at most 3 per day | Share of successful tasks selected for a rating request (the prompt itself is planned) |
+| Eligibility thresholds | $n^{\rm comp}\ge\max(30,3U_d)$, cancellations $\le20\%$, completions $\ge50\%$ | Gates 2 and 3 for $\mathcal E_d$ |
 | Rating-mode threshold | $n_q\ge3$ per arm per cell | Otherwise the layer uses success-rate mode |
 
 ## Usage

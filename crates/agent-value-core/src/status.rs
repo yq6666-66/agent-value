@@ -131,6 +131,11 @@ pub struct LayerStatus {
     pub w_bad: f64,
     /// `n^comp = sum over d+ of (n1 + n0)`.
     pub n_comp: u64,
+    /// `n^C` summed over present `d+` rows (miss cells contribute 0).
+    pub n_c: u64,
+    /// `N^sub = n1 + n0 + nC + m` summed over present `d+` rows
+    /// (miss cells contribute 0; with complete-case this equals the §5 sum).
+    pub n_sub: u64,
 }
 
 impl LayerStatus {
@@ -171,6 +176,8 @@ pub fn layer_status(
         w_thin: 0.0,
         w_bad: 0.0,
         n_comp: 0,
+        n_c: 0,
+        n_sub: 0,
     };
     for cell in weights.support() {
         let w = weights.omega(cell);
@@ -180,6 +187,14 @@ pub fn layer_status(
                     .n_comp
                     .checked_add(row.counts.completed()?)
                     .ok_or(CoreError::Overflow { what: "n_comp" })?;
+                out.n_c = out
+                    .n_c
+                    .checked_add(row.counts.n_c)
+                    .ok_or(CoreError::Overflow { what: "n_c" })?;
+                out.n_sub = out
+                    .n_sub
+                    .checked_add(row.counts.submitted()?)
+                    .ok_or(CoreError::Overflow { what: "n_sub" })?;
                 assess_cell(&row.counts, &row.prior, model)?
             }
             None => CellAssessment {

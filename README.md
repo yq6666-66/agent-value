@@ -22,13 +22,18 @@ public leaderboard.
   the K-truncated retry quantities (p_K, q_K, E[n_F], E[n_W]) with their
   lower bounds, the cell states (miss / fail: too few samples or truly
   failing / valid) and the cell weights omega_u from the previous window.
-  Nothing consumes these yet.
+- The core crate also computes each cell's delivered cost, time and
+  quality (C*, T*, Q*) with cancel amortization, the fallback arm and NA
+  propagation (missing data stays NA, never 0), their cancel-robust
+  versions, layer and overall aggregates, and the value score V for a
+  given reference anchor. The anchor tiers, eligibility gates and the
+  frontier are not implemented yet, so nothing is scored end to end.
 - The store crate has the local SQLite data model: route metadata per
   request, tasks, behaviour events with available-arm snapshots, probe
   results, frozen cell weights, weight versions and other configuration
   versions, a history of outcome judgements, with the privacy rules below. It is not wired into the desktop
   shell yet.
-- No cost, time or quality formula, no value score, no probing, and no UI
+- No anchor certification, eligibility gates, frontier, probing, or UI
   beyond a placeholder page exist yet.
 
 ## Layout

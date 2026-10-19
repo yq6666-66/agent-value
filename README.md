@@ -42,8 +42,8 @@ npm run build
 Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be
 tested without GUI libraries. Building it needs the Tauri 2 system prerequisites
 (on Linux: WebKitGTK 4.1 and related development packages). Build the web app
-first, then run `cargo build` from inside `src-tauri/`. The shell is not built
-in CI yet.
+first, then run `cargo build` from inside `src-tauri/`. CI installs these
+prerequisites and runs `cargo check` and `cargo clippy` for the shell.
 
 ## Secrets
 

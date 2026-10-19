@@ -46,6 +46,35 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
-  # The Tauri shell (src-tauri/) is intentionally not built in CI yet: it needs
-  # WebKitGTK and other system GUI libraries, and it holds no logic of its own.
-  # It is outside the default Cargo workspace, so the jobs above never touch it.
+  tauri:
+    name: Tauri shell (check, clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri 2 Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libssl-dev pkg-config build-essential curl wget file libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # tauri.conf.json points frontendDist at ../web/dist, which
+      # tauri::generate_context!() requires to exist at compile time.
+      - name: Build web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings

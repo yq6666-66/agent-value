@@ -10,7 +10,9 @@ use agent_value_core::anchor::{
 };
 use agent_value_core::cell_values::{CellNote, CellValues, Triple};
 use agent_value_core::cells::{CellId, CellWeights};
-use agent_value_core::diagnostic::{diagnostic_admitted, not_admitted_reasons, NotAdmittedReason};
+use agent_value_core::diagnostic::{
+    diagnose_arm, diagnostic_admitted, not_admitted_reasons, DiagnosticRow, NotAdmittedReason,
+};
 use agent_value_core::eligibility::{assess_eligibility, AuthenticityGrade};
 use agent_value_core::frontier::{layer_frontiers, FrontierArm};
 use agent_value_core::labels;
@@ -349,7 +351,8 @@ fn tier_ii_clamps_time_and_defect_not_quality() {
 
 #[test]
 fn theta_window_boundaries_are_inclusive_and_exact() {
-    // Thin cell chosen so A_C lands exactly on (1+θ)a: not "clamped".
+    // Inside and outside the window (the exact edge is tested in
+    // theta_window_exact_edges_are_inclusive).
     let cells = ids(10);
     let w = CellWeights::equal(&cells).unwrap();
     let mut c = vec![Some(VALID); 9];
@@ -368,6 +371,40 @@ fn theta_window_boundaries_are_inclusive_and_exact() {
     let k = a.clamp.unwrap()[0];
     assert!(k.clamped);
     close(k.clipped, 1.1);
+}
+
+#[test]
+fn theta_window_exact_edges_are_inclusive() {
+    // 5 cells, 4 valid at a = 2.0, one thin cell x. A_C = (8 + x)/5:
+    // x = 3.0 → A_C = 2.2 = (1+θ)a exactly; x = 1.0 → 1.8 = (1−θ)a.
+    let cells = ids(5);
+    let w = CellWeights::equal(&cells).unwrap();
+    let mut c = vec![Some(VALID); 4];
+    c.push(Some(THIN));
+    let st = status(&w, &cells, &c);
+    for (x, edge) in [(3.0, 2.2), (1.0, 1.8)] {
+        let mut v = vec![tc(2.0); 4];
+        v.push(tc(x));
+        let a = certify_reference_layer(&st, &w, &triples(&cells, &v)).unwrap();
+        let k = a.clamp.unwrap()[0];
+        // The setup really sits on the edge, bit for bit.
+        assert_eq!(k.measured, if x > 2.0 { k.upper } else { k.lower });
+        close(k.measured, edge);
+        // Closed window: kept as measured, not flagged as clamped.
+        assert_eq!(k.clipped, k.measured);
+        assert!(!k.clamped, "x = {x}");
+    }
+    // Just past each edge: clamped to the edge.
+    for (x, edge) in [(3.05, 2.2), (0.95, 1.8)] {
+        let mut v = vec![tc(2.0); 4];
+        v.push(tc(x));
+        let k = certify_reference_layer(&st, &w, &triples(&cells, &v))
+            .unwrap()
+            .clamp
+            .unwrap()[0];
+        assert!(k.clamped, "x = {x}");
+        close(k.clipped, edge);
+    }
 }
 
 // ---- diagnostic reference anchor (DECISIONS Y) ------------------------------------
@@ -583,6 +620,87 @@ fn official_top_comes_from_rec_not_off() {
     let scores = vec![("A".to_string(), 150.0), ("C".to_string(), 101.0)];
     let pick = layer_pick(&arms, &f, &anchor, &scores).unwrap();
     assert_eq!(pick.official_top, vec!["C".to_string()]);
+}
+
+fn two_rec_arms() -> (Vec<LayerArm>, agent_value_core::frontier::LayerFrontiers) {
+    // A cheaper, B faster: neither dominates on plain or robust triples.
+    let fa = vec![
+        FrontierArm {
+            id: "A".into(),
+            star: Triple::new(0.5, 12.0, 0.8),
+            robust: Triple::new(0.5, 12.0, 0.8),
+            robust_enabled: true,
+        },
+        FrontierArm {
+            id: "B".into(),
+            star: Triple::new(0.8, 6.0, 0.8),
+            robust: Triple::new(0.8, 6.0, 0.8),
+            robust_enabled: true,
+        },
+    ];
+    let f = layer_frontiers(&fa).unwrap();
+    let arms = fa
+        .into_iter()
+        .map(|arm| LayerArm {
+            arm,
+            coarse_bill: false,
+        })
+        .collect();
+    (arms, f)
+}
+
+#[test]
+fn layer_official_top_keeps_tie_group() {
+    let (w, _, st, tr) = all_valid(3, tc(1.0));
+    let anchor = certify_reference_layer(&st, &w, &tr).unwrap();
+    assert_eq!(anchor.tier, AnchorTier::I);
+    let (arms, f) = two_rec_arms();
+    assert_eq!(f.rec, vec!["A".to_string(), "B".to_string()]);
+    let tie = vec![("A".to_string(), 101.0), ("B".to_string(), 101.0)];
+    let pick = layer_pick(&arms, &f, &anchor, &tie).unwrap();
+    assert_eq!(pick.official_top, vec!["A".to_string(), "B".to_string()]);
+    // Control: B ahead by 1e-6 → B alone; A ahead → A alone.
+    let b_ahead = vec![("A".to_string(), 101.0), ("B".to_string(), 101.000001)];
+    let pick = layer_pick(&arms, &f, &anchor, &b_ahead).unwrap();
+    assert_eq!(pick.official_top, vec!["B".to_string()]);
+    let a_ahead = vec![("A".to_string(), 101.000001), ("B".to_string(), 101.0)];
+    let pick = layer_pick(&arms, &f, &anchor, &a_ahead).unwrap();
+    assert_eq!(pick.official_top, vec!["A".to_string()]);
+}
+
+#[test]
+fn tier_iii_with_empty_rec_lists_robust_alternative_without_top() {
+    // Tier III does not suppress the frontier output (line 495), so the
+    // F_rob alternative (line 461) is listed too; nobody is #1.
+    let (w, _, st, tr) = all_valid(2, tc(1.0));
+    let anchor = certify_reference_layer(&st, &w, &tr).unwrap();
+    assert_eq!(anchor.tier, AnchorTier::III);
+    let fa = vec![
+        FrontierArm {
+            id: "A".into(),
+            star: tc(0.5),
+            robust: tc(3.0),
+            robust_enabled: true,
+        },
+        FrontierArm {
+            id: "B".into(),
+            star: tc(1.0),
+            robust: tc(1.0),
+            robust_enabled: true,
+        },
+    ];
+    let f = layer_frontiers(&fa).unwrap();
+    assert!(f.rec.is_empty());
+    let arms: Vec<LayerArm> = fa
+        .iter()
+        .map(|a| LayerArm {
+            arm: a.clone(),
+            coarse_bill: false,
+        })
+        .collect();
+    let pick = layer_pick(&arms, &f, &anchor, &[]).unwrap();
+    assert!(pick.official_top.is_empty());
+    assert_eq!(pick.robust_alternative, vec!["B".to_string()]);
 }
 
 #[test]
@@ -877,6 +995,25 @@ fn reference_order_user_then_official_then_most_tasks() {
 }
 
 #[test]
+fn reference_skips_unavailable_top_official_to_next_official() {
+    // DECISIONS Z: several official direct arms; the one with most tasks is
+    // unavailable → the next official direct arm by tasks, not step 3.
+    let mut c = vec![
+        rc("o1", false, true, 500),
+        rc("o2", false, true, 20),
+        rc("x", false, false, 900),
+    ];
+    c[0].prev_has_bad = true;
+    assert_eq!(select_reference(&c).unwrap().as_deref(), Some("o2"));
+    c[0].prev_has_bad = false;
+    c[0].prev_authenticity = AuthenticityGrade::C;
+    assert_eq!(select_reference(&c).unwrap().as_deref(), Some("o2"));
+    // Only when no official direct arm is available does step 3 apply.
+    c[1].prev_has_bad = true;
+    assert_eq!(select_reference(&c).unwrap().as_deref(), Some("x"));
+}
+
+#[test]
 fn reference_ties_go_to_smaller_id_and_grade_b_is_available() {
     let mut c = vec![
         rc("z", false, true, 50),
@@ -1051,6 +1188,84 @@ fn not_admitted_lists_each_reason() {
     let st3 = status(&w, &cells, &[Some(VALID); 3]);
     assert!(not_admitted_reasons(&st3, 0.0).is_empty());
     assert!(diagnostic_admitted(&st3, 0.0));
+}
+
+fn diag_row(c: &[Option<CellCounts>], t: &[Triple]) -> DiagnosticRow {
+    let cells = ids(c.len());
+    let w = CellWeights::equal(&cells).unwrap();
+    let st = status(&w, &cells, c);
+    let present: Vec<(CellId, Triple)> = cells
+        .iter()
+        .cloned()
+        .zip(t.iter().copied())
+        .filter(|(_, t)| *t != Triple::NA)
+        .collect();
+    // No priors passed: κ_eff = 0, so ESS = n_comp.
+    diagnose_arm(&st, &w, &present, &[], None, &eq_w(), &floors()).unwrap()
+}
+
+#[test]
+fn diagnose_arm_reports_valid_cell_incomplete() {
+    // ESS = 30 ≥ 3 and three valid cells, but c02 lacks its time value.
+    let row = diag_row(
+        &[Some(VALID); 3],
+        &[tc(1.0), Triple { t: None, ..tc(1.0) }, tc(1.0)],
+    );
+    assert!(!row.admitted);
+    assert_eq!(
+        row.not_admitted,
+        vec![NotAdmittedReason::ValidCellIncomplete]
+    );
+    assert!(row.filled.is_empty() && row.aggregate_cons.is_none());
+}
+
+#[test]
+fn diagnostic_rows_admitted_iff_no_reason() {
+    let rows = [
+        // Admitted: one thin cell, two valid, complete triples.
+        (
+            "admitted",
+            diag_row(
+                &[Some(VALID), Some(VALID), Some(THIN)],
+                &[tc(1.0), tc(1.0), tc(2.0)],
+            ),
+            vec![],
+        ),
+        // Valid cell missing one dimension.
+        (
+            "incomplete dimension",
+            diag_row(
+                &[Some(VALID); 3],
+                &[tc(1.0), tc(1.0), Triple { q: None, ..tc(1.0) }],
+            ),
+            vec![NotAdmittedReason::ValidCellIncomplete],
+        ),
+        // Valid cell with no triple row at all.
+        (
+            "missing triple row",
+            diag_row(&[Some(VALID); 3], &[tc(1.0), Triple::NA, tc(1.0)]),
+            vec![NotAdmittedReason::ValidCellIncomplete],
+        ),
+        // Three thin cells: ESS = 3, no valid cell.
+        (
+            "no valid",
+            diag_row(&[Some(THIN); 3], &[tc(1.0); 3]),
+            vec![NotAdmittedReason::NoValidCell],
+        ),
+        // Two thin cells: ESS = 2 < 3 and no valid cell.
+        (
+            "ess and no valid",
+            diag_row(&[Some(THIN); 2], &[tc(1.0); 2]),
+            vec![
+                NotAdmittedReason::EssBelowThree,
+                NotAdmittedReason::NoValidCell,
+            ],
+        ),
+    ];
+    for (name, row, want) in rows {
+        assert_eq!(row.not_admitted, want, "{name}");
+        assert_eq!(row.admitted, row.not_admitted.is_empty(), "{name}");
+    }
 }
 
 // ---- composed: E_d → frontier → official pick, examples 6/7/8 ----------------------

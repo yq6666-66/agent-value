@@ -9,8 +9,9 @@
 //! 4. authenticity and log-integrity (stub interface until §11);
 //! 5. reference base: every `u in d+` has non-NA `(C*, T*, Q*)` for `R`.
 //!
-//! Diagnostic-table rules (DECISIONS E/F) and fallback-arm selection
-//! (DECISIONS G) belong to later steps.
+//! Fallback-arm selection (DECISIONS G) belongs to a later step.
+//! Gate-index mapping and primary attribution (DECISIONS P) live here;
+//! the diagnostic fill-in itself is in `diagnostic`.
 
 use std::collections::BTreeMap;
 
@@ -76,6 +77,18 @@ impl EligibilityGate {
             Self::ReferenceBase => "reference-base",
         }
     }
+
+    /// Spec §5 gate number 1..=5 (DECISIONS P). Cancel and completion share
+    /// gate 3; authenticity and log-integrity share gate 4.
+    pub fn gate_index(self) -> u8 {
+        match self {
+            Self::CompleteCase => 1,
+            Self::Sample => 2,
+            Self::CancelRate | Self::CompletionRate => 3,
+            Self::Authenticity | Self::LogIntegrity => 4,
+            Self::ReferenceBase => 5,
+        }
+    }
 }
 
 /// Result of assessing one arm (or the reference-as-candidate) for `E_d`.
@@ -95,6 +108,36 @@ impl Eligibility {
             failed: Vec::new(),
             authenticity_undetermined,
         }
+    }
+
+    /// Failures for diagnostic attribution (DECISIONS P): when complete-case
+    /// already failed, drop CancelRate / CompletionRate because `n_sub` only
+    /// sums present rows and those rate failures are often spurious.
+    pub fn primary_failures(&self) -> Vec<EligibilityGate> {
+        let complete_failed = self.failed.contains(&EligibilityGate::CompleteCase);
+        self.failed
+            .iter()
+            .copied()
+            .filter(|g| {
+                !(complete_failed
+                    && matches!(
+                        g,
+                        EligibilityGate::CancelRate | EligibilityGate::CompletionRate
+                    ))
+            })
+            .collect()
+    }
+
+    /// Distinct §5 gate indices (1..=5) from [`Self::primary_failures`].
+    pub fn primary_gate_indices(&self) -> Vec<u8> {
+        let mut idxs: Vec<u8> = self
+            .primary_failures()
+            .into_iter()
+            .map(EligibilityGate::gate_index)
+            .collect();
+        idxs.sort_unstable();
+        idxs.dedup();
+        idxs
     }
 }
 
@@ -250,5 +293,49 @@ mod gate_unit_tests {
     fn rate_helpers_handle_u64_overflow() {
         assert!(!cancel_rate_ok(u64::MAX, u64::MAX));
         assert!(completion_rate_ok(u64::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn gate_index_maps_seven_labels_to_five_gates() {
+        assert_eq!(EligibilityGate::CompleteCase.gate_index(), 1);
+        assert_eq!(EligibilityGate::Sample.gate_index(), 2);
+        assert_eq!(EligibilityGate::CancelRate.gate_index(), 3);
+        assert_eq!(EligibilityGate::CompletionRate.gate_index(), 3);
+        assert_eq!(EligibilityGate::Authenticity.gate_index(), 4);
+        assert_eq!(EligibilityGate::LogIntegrity.gate_index(), 4);
+        assert_eq!(EligibilityGate::ReferenceBase.gate_index(), 5);
+    }
+
+    #[test]
+    fn primary_failures_suppress_rates_when_complete_case_failed() {
+        let e = Eligibility {
+            eligible: false,
+            failed: vec![
+                EligibilityGate::CompleteCase,
+                EligibilityGate::CancelRate,
+                EligibilityGate::CompletionRate,
+                EligibilityGate::Sample,
+            ],
+            authenticity_undetermined: false,
+        };
+        assert_eq!(
+            e.primary_failures(),
+            vec![EligibilityGate::CompleteCase, EligibilityGate::Sample]
+        );
+        assert_eq!(e.primary_gate_indices(), vec![1, 2]);
+    }
+
+    #[test]
+    fn primary_failures_keep_rates_without_complete_case() {
+        let e = Eligibility {
+            eligible: false,
+            failed: vec![EligibilityGate::CancelRate, EligibilityGate::Sample],
+            authenticity_undetermined: false,
+        };
+        assert_eq!(
+            e.primary_failures(),
+            vec![EligibilityGate::CancelRate, EligibilityGate::Sample]
+        );
+        assert_eq!(e.primary_gate_indices(), vec![2, 3]);
     }
 }

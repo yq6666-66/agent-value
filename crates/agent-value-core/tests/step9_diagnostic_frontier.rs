@@ -526,6 +526,37 @@ fn robust_frontier_excludes_disabled_and_feeds_rec() {
     assert!(f.rec.iter().any(|x| x == "B"));
 }
 
+// ---- §6: complete plain + NA robust is excluded from F_rec (DECISIONS R) -----
+
+#[test]
+fn na_robust_arm_is_excluded_from_rec_in_every_build() {
+    // A: plain complete, robust NA (only buildable through the public
+    // FrontierArm fields). B: complete both. Neither plain-dominates the other.
+    let arms = vec![
+        FrontierArm {
+            id: "A".into(),
+            star: Triple::new(1.0, 10.0, 0.9),
+            robust: Triple {
+                c: Some(1.0),
+                t: None,
+                q: Some(0.9),
+            },
+            robust_enabled: true,
+        },
+        FrontierArm {
+            id: "B".into(),
+            star: Triple::new(2.0, 5.0, 0.8),
+            robust: Triple::new(0.5, 4.0, 0.95),
+            robust_enabled: true,
+        },
+    ];
+    let f = layer_frontiers(&arms).unwrap();
+    assert_eq!(f.off, vec!["A".to_string(), "B".to_string()]);
+    assert_eq!(f.rob, vec!["B".to_string()]);
+    assert_eq!(f.rec, vec!["B".to_string()]);
+    assert!(f.coarse_bill.is_empty());
+}
+
 // ---- §2 line 307: lower-bound-only arm stays in F_rec, tagged (DECISIONS S) ---
 
 #[test]

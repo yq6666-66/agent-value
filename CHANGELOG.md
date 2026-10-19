@@ -12,7 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   miss fill via weighted lower median (DECISIONS E) and worst-valid per
   dimension (DECISIONS F), fail fill as the worse of measured and
   worst-valid; sort by coverage then model name. Layer frontiers
-  `F_off` / `F_rob` / `F_rec` (§6); arms with an NA triple are skipped;
+  `F_off` / `F_rob` / `F_rec` (§6); arms with an NA triple are skipped,
+  and an NA robust triple also keeps an arm out of `F_rec`;
   lower-bound-only cancel-bill arms stay in `F_rec` and are listed in
   `coarse_bill` for the "账单过粗" tag (§2).
   Eligibility primary attribution maps seven labels to five §5 gates and

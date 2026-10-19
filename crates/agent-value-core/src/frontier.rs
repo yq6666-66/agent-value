@@ -65,20 +65,12 @@ fn dominates_triple(a: &Triple, b: &Triple) -> bool {
 /// robust triple are skipped for `F_rob` and never appear in anyone's
 /// robust-dominator set (DECISIONS Q).
 ///
-/// Invariant (DECISIONS R): an arm with a complete plain triple also has a
-/// complete robust triple. `cell_values` sets each robust dimension NA
-/// exactly when the plain one is NA, and `aggregate_layer` propagates NA per
-/// dimension, so "complete star, NA robust" cannot be built from product
-/// values. It is checked with a debug assertion; v22 §6 does not say how
-/// `F_rec` treats it.
+/// An `F_off` arm whose robust triple has an NA is excluded from `F_rec`
+/// (DECISIONS R): `≻_rob` against it is undefined, so `R_d(i) = ∅` is not
+/// established. Product values cannot produce this (`cell_values` makes each
+/// robust dimension NA exactly when the plain one is), but `FrontierArm` is
+/// public, so the exclusion holds in every build.
 pub fn layer_frontiers(arms: &[FrontierArm]) -> Result<LayerFrontiers> {
-    for a in arms {
-        debug_assert!(
-            point(&a.star).is_none() || point(&a.robust).is_some(),
-            "arm {}: complete plain triple with NA robust triple (DECISIONS R)",
-            a.id
-        );
-    }
     let mut ids = std::collections::BTreeSet::new();
     for a in arms {
         if a.id.trim().is_empty() {
@@ -135,11 +127,11 @@ pub fn layer_frontiers(arms: &[FrontierArm]) -> Result<LayerFrontiers> {
                 && point(&a.robust).is_some()
                 && dominates_triple(&j.robust, &a.robust)
         });
-        // An F_off arm always has a complete robust triple (DECISIONS R
-        // invariant). When its robust dominance is disabled (lower-bound
-        // cancel bill, v22 §2 "禁用稳健支配"), no j can robust-dominate it,
-        // R_d(i) is empty, and it is tagged "账单过粗" (DECISIONS S).
-        if r_empty {
+        // NA robust triple: R_d(i) = ∅ cannot be established → not in F_rec
+        // (DECISIONS R). Robust dominance disabled (lower-bound cancel bill,
+        // v22 §2 "禁用稳健支配"): no j can robust-dominate it, R_d(i) is
+        // empty, and it is tagged "账单过粗" (DECISIONS S).
+        if r_empty && point(&a.robust).is_some() {
             rec.push(id.clone());
             if !a.robust_enabled {
                 coarse_bill.push(id.clone());
@@ -246,19 +238,6 @@ mod frontier_unit_tests {
                 q: 0.9
             }
         ));
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "DECISIONS R")]
-    fn complete_star_with_na_robust_violates_invariant() {
-        let mut a = arm("A", 1.0, 10.0, 0.9);
-        a.robust = Triple {
-            c: Some(1.0),
-            t: None,
-            q: Some(0.9),
-        };
-        let _ = layer_frontiers(&[a]);
     }
 
     #[test]

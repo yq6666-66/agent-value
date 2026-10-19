@@ -666,6 +666,23 @@ fn layer_official_top_keeps_tie_group() {
     let a_ahead = vec![("A".to_string(), 101.000001), ("B".to_string(), 101.0)];
     let pick = layer_pick(&arms, &f, &anchor, &a_ahead).unwrap();
     assert_eq!(pick.official_top, vec!["A".to_string()]);
+    // Tie tolerance is 1e-12: a 1e-9 gap is not a tie ...
+    let gap_1e9 = vec![("A".to_string(), 101.0), ("B".to_string(), 101.0 + 1e-9)];
+    let pick = layer_pick(&arms, &f, &anchor, &gap_1e9).unwrap();
+    assert_eq!(pick.official_top, vec!["B".to_string()]);
+    // ... while a gap of a few ulps (≈ 5.7e-14 at 101) still is.
+    let gap_ulp = vec![("A".to_string(), 101.0), ("B".to_string(), 101.0 + 5e-14)];
+    let pick = layer_pick(&arms, &f, &anchor, &gap_ulp).unwrap();
+    assert_eq!(pick.official_top, vec!["A".to_string(), "B".to_string()]);
+    // Boundary around 1e-12, in exact ulps (ulp(101) = 2^-46): 70 ulps
+    // ≈ 9.95e-13 ties, 71 ulps ≈ 1.009e-12 does not.
+    let up = |n: u64| f64::from_bits(101.0f64.to_bits() + n);
+    let tied = vec![("A".to_string(), 101.0), ("B".to_string(), up(70))];
+    let pick = layer_pick(&arms, &f, &anchor, &tied).unwrap();
+    assert_eq!(pick.official_top, vec!["A".to_string(), "B".to_string()]);
+    let apart = vec![("A".to_string(), 101.0), ("B".to_string(), up(71))];
+    let pick = layer_pick(&arms, &f, &anchor, &apart).unwrap();
+    assert_eq!(pick.official_top, vec!["B".to_string()]);
 }
 
 #[test]

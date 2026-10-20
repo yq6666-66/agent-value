@@ -438,7 +438,7 @@ fn fit(events: &[Prepared]) -> Option<Fit> {
         }
         // Backstop that ends the iteration early (DECISIONS G7). Removing it
         // gave the same output on every data set built for it: separable data
-        // stop at the pre-check, and of 18 non-separable probe sets 16 hit
+        // stop at the pre-check, and of 18 non-separable probe sets 16 reach
         // the cap; without it the fit ends in the same `None`,
         // through the information floor or the iteration limit. Why: a
         // finite maximum this far out needs data that are almost separable,

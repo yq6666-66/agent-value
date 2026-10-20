@@ -59,6 +59,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cut-point pairs and all 171 honest sessions with the reference script.
 
 ### Changed
+- README section 9 (English and Chinese): in a question's equal dimension
+  both options show the base up to at most 1 ulp of (base + noise floor).
 - Core: `resolve_fallback` validates the candidate (finite, non-negative
   layer weights; no duplicate rating cells) also when the user chose the
   reference arm itself; valid input still gives `Default`.

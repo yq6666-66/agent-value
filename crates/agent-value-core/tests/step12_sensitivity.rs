@@ -8,7 +8,7 @@
 use agent_value_core::behavior::{calibrate, Behavior, ChoiceEvent, EventOption, SplitMix64};
 use agent_value_core::cell_values::Triple;
 use agent_value_core::cells::CellId;
-use agent_value_core::constants::{BOOTSTRAP_RESAMPLES, GRID_POINTS};
+use agent_value_core::constants::{BOOTSTRAP_RESAMPLES, C0_YUAN, EPSILON, GRID_POINTS, T0_SECONDS};
 use agent_value_core::error::CoreError;
 use agent_value_core::frontier::{layer_frontiers, FrontierArm};
 use agent_value_core::sensitivity::{
@@ -1974,9 +1974,9 @@ fn bootstrap_golden_draws_match_independent_reference() {
 // --- End to end with step 11 (DECISIONS 12.3): Ω_b as step 11 produces it.
 
 /// `n` choice events with 3 random options each, chosen by the logit model
-/// at `theta` (§10.3). Test data only; the fit is step 11's `calibrate`.
+/// at `theta` (§10.3), with the same floors `calibrate` uses. Test data
+/// only; the fit is step 11's `calibrate`.
 fn choice_events(n: usize, theta: [f64; 3], seed: u64) -> Vec<ChoiceEvent> {
-    let fl = Floors::default();
     let mut rng = SplitMix64::new(seed);
     let mut u = move || (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
     (0..n)
@@ -1992,9 +1992,9 @@ fn choice_events(n: usize, theta: [f64; 3], seed: u64) -> Vec<ChoiceEvent> {
                 .iter()
                 .map(|p| {
                     let x = [
-                        (p.c + fl.c0()).ln(),
-                        (p.t + fl.t0()).ln(),
-                        (1.0 - p.q + fl.eps()).ln(),
+                        (p.c + C0_YUAN).ln(),
+                        (p.t + T0_SECONDS).ln(),
+                        (1.0 - p.q + EPSILON).ln(),
                     ];
                     (-(theta[0] * x[0] + theta[1] * x[1] + theta[2] * x[2])).exp()
                 })
@@ -2027,8 +2027,12 @@ fn choice_events(n: usize, theta: [f64; 3], seed: u64) -> Vec<ChoiceEvent> {
 /// The caller's glue: no signal → `None`; a signal → `Some(Ω_b)`, the
 /// support set exactly as step 11 returns it (possibly empty).
 fn omega_b_of(b: &Behavior) -> Option<Vec<Weights>> {
-    b.has_signal()
-        .then(|| b.support.iter().map(|p| p.weights().unwrap()).collect())
+    b.has_signal().then(|| {
+        b.support
+            .iter()
+            .map(|p| p.weights().expect("step 11 grid point is a valid weight"))
+            .collect()
+    })
 }
 
 #[test]
@@ -2041,11 +2045,12 @@ fn step11_empty_omega_b_is_accepted_end_to_end() {
     // of the maximum. Step 11 reports a signal with an empty support set.
     let b = calibrate(&choice_events(600, [6.0, 0.0, 6.0], 11), w0, w1, 1).unwrap();
     assert!(b.has_signal(), "{:?}", b.no_signal);
+    assert!(b.ll_hat.is_some() && b.profile.len() == GRID_POINTS);
     assert!(b.w_b.unwrap()[1] < 0.05, "{:?}", b.w_b);
     assert!(b.support.is_empty());
-    let omega_b = omega_b_of(&b).unwrap();
+    let omega_b_empty = omega_b_of(&b).unwrap();
     let mut i = input(&arms, Weights::equal(), None);
-    i.omega_b = Some(&omega_b);
+    i.omega_b = Some(omega_b_empty.as_slice());
     // Accepted, not an error, and reported as "signal, no grid point".
     let r = report(&i);
     assert_eq!(r.behaviour_region, BehaviourRegion::NoGridPoint);
@@ -2056,19 +2061,33 @@ fn step11_empty_omega_b_is_accepted_end_to_end() {
     // Contrast 1: no signal from step 11 (19 events) is `None` → NoSignal.
     let few = calibrate(&choice_events(19, [2.0, 3.0, 5.0], 3), w0, w1, 1).unwrap();
     assert!(!few.has_signal());
-    assert!(omega_b_of(&few).is_none());
-    assert_eq!(base.behaviour_region, BehaviourRegion::NoSignal);
+    let omega_b_none = omega_b_of(&few);
+    assert!(omega_b_none.is_none());
+    i.omega_b = omega_b_none.as_deref();
+    let r = report(&i);
+    assert_eq!(r.behaviour_region, BehaviourRegion::NoSignal);
+    assert_eq!(r.map, base.map);
     // Contrast 2: a signal with grid points flags exactly those points.
     let good = calibrate(&choice_events(600, [2.0, 3.0, 5.0], 7), w0, w1, 1).unwrap();
     assert!(good.has_signal() && !good.support.is_empty());
-    let omega_b = omega_b_of(&good).unwrap();
-    i.omega_b = Some(&omega_b);
+    let omega_b_points = omega_b_of(&good).unwrap();
+    i.omega_b = Some(omega_b_points.as_slice());
     let r = report(&i);
     assert_eq!(
         r.behaviour_region,
         BehaviourRegion::Points(good.support.len())
     );
-    let flagged = r.map.iter().filter(|p| p.in_omega_b).count();
-    assert_eq!(flagged, good.support.len());
     assert_eq!(r.map.len(), GRID_POINTS);
+    // Exactly step 11's points are flagged (compared in twentieths).
+    let key = |w: &Weights| ((w.a() * 20.0).round() as u32, (w.b() * 20.0).round() as u32);
+    let mut flagged: Vec<_> = r
+        .map
+        .iter()
+        .filter(|p| p.in_omega_b)
+        .map(|p| key(&p.weights))
+        .collect();
+    let mut want: Vec<_> = omega_b_points.iter().map(key).collect();
+    flagged.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(flagged, want);
 }

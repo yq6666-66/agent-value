@@ -29,6 +29,12 @@ pub const THETA_DIVERGENCE: f64 = 1e6;
 /// Smallest eigenvalue of the information matrix per event below this means
 /// the maximum is not identified (DECISIONS G7).
 pub const INFORMATION_FLOOR: f64 = 1e-8;
+/// Tolerance of the separation pre-check (DECISIONS G7). Each constraint
+/// `x_l - x_chosen` is scaled so its largest component is 1, and directions
+/// lie on the simplex, so the tolerance is on a dimensionless quantity of
+/// order 1: far above double rounding in the polygon clipping (about 1e-15)
+/// and far below any meaningful log difference.
+pub const SEPARATION_TOLERANCE: f64 = 1e-9;
 /// Fewer successful bootstrap resamples than this is flagged (DECISIONS G8).
 pub const BOOTSTRAP_MIN_OK: usize = 100;
 
@@ -284,6 +290,77 @@ struct Fit {
     ll: f64,
 }
 
+fn dot(d: &[f64; 3], v: &[f64; 3]) -> f64 {
+    d[0] * v[0] + d[1] * v[1] + d[2] * v[2]
+}
+
+/// Separation pre-check (DECISIONS G7). The maximum of the likelihood on
+/// `theta >= 0` is not attained exactly when some `d >= 0`, `d != 0`, has
+/// `d . (x_l - x_chosen) >= 0` for every event and every other option, with
+/// at least one inequality strict: moving along `d` then never lowers and
+/// somewhere raises the likelihood. Identical values give differences of
+/// exactly 0, which constrain nothing.
+fn separated(events: &[Prepared]) -> bool {
+    let mut constraints = Vec::new();
+    for e in events {
+        let xj = e.xs[e.chosen];
+        for (l, x) in e.xs.iter().enumerate() {
+            if l == e.chosen {
+                continue;
+            }
+            let v = [x[0] - xj[0], x[1] - xj[1], x[2] - xj[2]];
+            let m = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+            if m > 0.0 {
+                constraints.push([v[0] / m, v[1] / m, v[2] / m]);
+            }
+        }
+    }
+    separating_direction(&constraints)
+}
+
+/// Is there `d` on the simplex with `d . v >= 0` for every `v` and `> 0`
+/// for some? The feasible set is the simplex cut by one half-plane per
+/// constraint, kept as a convex polygon (possibly an edge or a point) of
+/// barycentric vertices. A linear function that is 0 at every vertex is 0
+/// on the whole polygon, so strictness is checked at the vertices.
+fn separating_direction(constraints: &[[f64; 3]]) -> bool {
+    let tol = SEPARATION_TOLERANCE;
+    let mut poly: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for v in constraints {
+        let f: Vec<f64> = poly.iter().map(|d| dot(d, v)).collect();
+        if f.iter().all(|&x| x >= -tol) {
+            continue;
+        }
+        let k = poly.len();
+        let mut out: Vec<[f64; 3]> = Vec::with_capacity(k + 1);
+        for i in 0..k {
+            let (a, fa) = (poly[i], f[i]);
+            let (b, fb) = (poly[(i + 1) % k], f[(i + 1) % k]);
+            if fa >= -tol {
+                out.push(a);
+            }
+            if (fa > tol && fb < -tol) || (fa < -tol && fb > tol) {
+                let t = fa / (fa - fb);
+                out.push([
+                    a[0] + t * (b[0] - a[0]),
+                    a[1] + t * (b[1] - a[1]),
+                    a[2] + t * (b[2] - a[2]),
+                ]);
+            }
+        }
+        out.dedup();
+        while out.len() > 1 && out.first() == out.last() {
+            out.pop();
+        }
+        if out.is_empty() {
+            return false;
+        }
+        poly = out;
+    }
+    poly.iter()
+        .any(|d| constraints.iter().any(|v| dot(d, v) > tol))
+}
+
 /// Information on the free coordinates (`-H`) minus
 /// `INFORMATION_FLOOR * n * I` must be positive definite (DECISIONS G7).
 fn identified(h: &[[f64; 3]; 3], free: &[usize], n: f64) -> bool {
@@ -302,6 +379,9 @@ fn identified(h: &[[f64; 3]; 3], free: &[usize], n: f64) -> bool {
 /// Projected Newton on `theta >= 0` (DECISIONS G7). `None` when the
 /// maximum is not identified.
 fn fit(events: &[Prepared]) -> Option<Fit> {
+    if separated(events) {
+        return None;
+    }
     let n = events.len().max(1) as f64;
     let mut theta = [1.0 / 3.0; 3];
     let (mut ll, mut g, mut h) = loglik(events, theta);
@@ -679,5 +759,150 @@ mod tests {
             n
         ));
         assert!(identified(&[[0.0; 3]; 3], &[], n));
+    }
+
+    fn sep(c: &[[f64; 3]]) -> bool {
+        separating_direction(c)
+    }
+
+    #[test]
+    fn separation_polygon_edge_cases() {
+        // No constraints, or only zero differences: nothing strict.
+        assert!(!sep(&[]));
+        // One strict constraint: the whole simplex is feasible.
+        assert!(sep(&[[1.0, 0.0, 0.0]]));
+        // Every direction lowers some choice: empty.
+        assert!(!sep(&[[-1.0, -1.0, -1.0]]));
+        assert!(!sep(&[
+            [1.0, -1.0, 0.0],
+            [-1.0, 0.0, 1.0],
+            [0.0, 1.0, -1.0],
+            [-0.5, -0.5, 0.2]
+        ]));
+        // Cut through a vertex: d1 >= d2 keeps a triangle with strict points.
+        assert!(sep(&[[0.0, 1.0, -1.0]]));
+        // Two opposite cuts through vertex e0 leave the segment d1 = d2, on
+        // which both are equalities: not separated.
+        assert!(!sep(&[[0.0, 1.0, -1.0], [0.0, -1.0, 1.0]]));
+        // ... plus a constraint strict at e0: separated.
+        assert!(sep(&[[0.0, 1.0, -1.0], [0.0, -1.0, 1.0], [1.0, 0.0, 0.0]]));
+        // Reduced to the single vertex e0, only equalities there.
+        assert!(!sep(&[[0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]));
+        // ... and with a constraint strict at e0 (the e^25 shape).
+        assert!(sep(&[
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [1.0, -1.0, -1.0]
+        ]));
+        // Reduced to the centre point, where every constraint is 0.
+        let centre = [
+            [1.0, -1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [0.0, 1.0, -1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        assert!(!sep(&centre));
+        let mut more = centre.to_vec();
+        more.push([1.0, 1.0, -2.0]);
+        assert!(!sep(&more));
+        more.push([1.0, 0.5, 0.0]);
+        assert!(sep(&more));
+        // Order of constraints does not matter.
+        let mut rev = more.clone();
+        rev.reverse();
+        assert!(sep(&rev));
+    }
+
+    fn prep(xs: Vec<[f64; 3]>, chosen: usize) -> Prepared {
+        Prepared {
+            xs,
+            chosen,
+            chosen_arm: chosen.to_string(),
+        }
+    }
+
+    #[test]
+    fn identical_values_give_exact_zero_differences() {
+        // Same cell values give the same logs, so the difference is exactly
+        // 0 and is not a constraint; only the real difference counts.
+        let x = attributes(&Point {
+            c: 0.37,
+            t: 61.0,
+            q: 0.83,
+        })
+        .unwrap();
+        let y = attributes(&Point {
+            c: 0.37,
+            t: 75.0,
+            q: 0.83,
+        })
+        .unwrap();
+        // Chosen has the lower time: separated along time.
+        assert!(separated(&[prep(vec![x, y], 0)]));
+        // Equal options: no constraint at all.
+        assert!(!separated(&[prep(vec![x, x], 0)]));
+        // One choice each way along time: not separated.
+        assert!(!separated(&[prep(vec![x, y], 0), prep(vec![x, y], 1)]));
+    }
+
+    #[test]
+    fn separation_is_scale_invariant() {
+        // Differences of about 1e-10 still separate: each constraint is
+        // scaled to a largest component of 1 before the tolerance applies.
+        let a = [0.5, 4.0, -1.0];
+        let b = [0.5 + 1e-10, 4.0, -1.0];
+        assert!(separated(&[prep(vec![a, b], 0)]));
+        assert!(!separated(&[prep(vec![a, b], 0), prep(vec![a, b], 1)]));
+    }
+
+    #[test]
+    fn equalities_only_at_a_rounded_point_are_not_separation() {
+        // Each pair of options is chosen once each way, so the feasible set
+        // is the single direction orthogonal to both differences (inside
+        // the simplex for these values), where every constraint is 0 up to
+        // rounding. The tolerance keeps rounding from counting as strict.
+        let sets = [
+            [(0.13, 129.0, 0.75), (0.79, 30.0, 0.84), (0.34, 88.0, 0.81)],
+            [(0.19, 111.0, 0.61), (0.12, 168.0, 0.60), (0.89, 85.0, 0.94)],
+            [
+                (0.47, 121.0, 0.75),
+                (0.10, 168.0, 0.82),
+                (0.65, 147.0, 0.81),
+            ],
+            [(0.37, 112.0, 0.77), (0.20, 109.0, 0.74), (0.48, 78.0, 0.69)],
+            [(0.94, 118.0, 0.92), (0.85, 166.0, 0.77), (0.99, 90.0, 0.62)],
+        ];
+        for set in sets {
+            let x: Vec<[f64; 3]> = set
+                .iter()
+                .map(|&(c, t, q)| attributes(&Point { c, t, q }).unwrap())
+                .collect();
+            let events = [
+                prep(vec![x[0], x[1]], 0),
+                prep(vec![x[0], x[1]], 1),
+                prep(vec![x[0], x[2]], 0),
+                prep(vec![x[0], x[2]], 1),
+            ];
+            assert!(!separated(&events));
+            // One more event strict at that direction makes it separated.
+            let mut more = events.to_vec();
+            let n = cross(sub(x[1], x[0]), sub(x[2], x[0]));
+            let s = if n[0] > 0.0 { 1.0 } else { -1.0 };
+            let better = [x[0][0] - s * n[0], x[0][1] - s * n[1], x[0][2] - s * n[2]];
+            more.push(prep(vec![better, x[0]], 0));
+            assert!(separated(&more));
+        }
+    }
+
+    fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
+    fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
     }
 }

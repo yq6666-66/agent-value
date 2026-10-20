@@ -1125,20 +1125,22 @@ fn quasi_separated(n_sep: usize, n_tie: usize, seed: u64, ratio: Option<f64>) ->
 
 #[test]
 fn quasi_complete_separation_is_not_identifiable() {
-    // DECISIONS G7. Along the separating direction the information goes to
-    // 0 while the other directions keep O(1) information, so the matrix
-    // stays rank 3 but its smallest eigenvalue falls below the floor
-    // (1e-8 * n): the check is on the smallest eigenvalue (Cholesky of
-    // info - floor * n * I), not on a norm or determinant. The last case
-    // (cost ratio 1 + 1e-6) drives |theta|_1 past the 1e6 cap; without the
-    // cap the fit stops at about 8e6 and the same check rejects it, so the
-    // cap does not change the result (mutant M33 is equivalent).
+    // DECISIONS G7. Every case is quasi-separated along d = (1, 0, 0), so the
+    // separation pre-check rejects it before the fit. Without the pre-check
+    // the first five are still rejected by the information floor (smallest
+    // eigenvalue below 1e-8 * n); the case with ratio 1 + 1e-6 reaches the
+    // 1e6 cap, and without the cap the same floor rejects it (M33 is
+    // equivalent). The last case is caught only by the pre-check.
     let cases = [
         quasi_separated(15, 15, 1, None),
         quasi_separated(20, 20, 2, None),
         quasi_separated(30, 30, 3, None),
         quasi_separated(15, 15, 6, Some(1.0 + 1e-6)),
         quasi_separated(15, 15, 7, Some(1.0 + 1e-5)),
+        // Cost ratio about e^25: the gradient is already below the stopping
+        // tolerance at small theta and the information floor passes; only
+        // the separation pre-check rejects it.
+        quasi_separated(15, 15, 10, Some(7.2e10)),
     ];
     for ev in &cases {
         let b = calibrate(ev, W0, W1, 9).unwrap();

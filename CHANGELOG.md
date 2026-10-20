@@ -5,19 +5,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-- Core, step 10 review follow-up: the diagnostic reference anchor takes
-  the worst valid value per dimension, so a valid reference cell with one
-  NA dimension still contributes its other dimensions (§7 line 570).
-- Core: stricter input checks. All six `overall_arm` counters (`n_comp`,
-  `u`, `n_c`, `n_sub`, `n_miss`, `n_fail`) use checked addition and return
-  an overflow error instead of wrapping; fallback layer weights that are
-  NaN, infinite or negative are an error (`fallback_failures` and
-  `resolve_fallback` now return `Result`); a non-finite `κ_eff` is not
-  admitted; duplicate cells in fallback ratings, duplicate arm ids in
-  `layer_pick` scores and duplicate arm ids passed to `overall_top` are
-  rejected.
-
 ### Added
 - Core, spec step 12: weight sensitivity data (§12), new module
   `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
@@ -50,7 +37,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wins 93 grid points, X 78; Y wins 14 of 14 in the self-report region).
 - README (English and Chinese): section 10, weight sensitivity (§12),
   and its roadmap row and constants; built on the step 11 README.
+- Core, spec step 11: five-level self-report (§10.2). The 171-point weight
+  grid in exact twentieths, the 96-question bank, five-level banding (u
+  rounded to 1e-9, closed bands), core and wide regions with one level of
+  slack, adaptive question choice, the stop rule (4–10 questions,
+  `|Omega_s| <= 15`), the point estimate `w_s`, the contradiction flag, and
+  displayed values for a question (positive on both sides, defect rate at
+  most 1, otherwise skipped).
+- Core: behaviour calibration (§10.3), suggestions only. Choice events
+  with whole-event dropping, constrained maximum likelihood for
+  `theta >= 0`, the no-signal gates (events < 20, one chosen arm, rank < 3,
+  `lambda_hat < 0.5`, not identifiable), profile likelihood, `Omega_b`,
+  and a seeded 200-resample bootstrap. Behaviour from the scored window or
+  later is an error.
+  Separable choice data (some direction d >= 0 explains every choice at
+  least as well as each alternative) are reported as not identifiable
+  before the fit; bootstrap resamples that are separable count as failed.
+- Core: the §10.4 merge table. Behaviour never changes the weights in
+  effect.
+- Tests compare the bank, every (question, grid point) level, the 528
+  cut-point pairs and all 171 honest sessions with the reference script.
 
+### Changed
+- Core: `resolve_fallback` validates the candidate (finite, non-negative
+  layer weights; no duplicate rating cells) also when the user chose the
+  reference arm itself; valid input still gives `Default`.
+- Core, step 10 review follow-up: the diagnostic reference anchor takes
+  the worst valid value per dimension, so a valid reference cell with one
+  NA dimension still contributes its other dimensions (§7 line 570).
+- Core: stricter input checks. All six `overall_arm` counters (`n_comp`,
+  `u`, `n_c`, `n_sub`, `n_miss`, `n_fail`) use checked addition and return
+  an overflow error instead of wrapping; fallback layer weights that are
+  NaN, infinite or negative are an error (`fallback_failures` and
+  `resolve_fallback` now return `Result`); a non-finite `κ_eff` is not
+  admitted; duplicate cells in fallback ratings, duplicate arm ids in
+  `layer_pick` scores and duplicate arm ids passed to `overall_top` are
+  rejected.
+
+### Added
 - Core, spec step 10: reference anchor certification (§7). Tiers are
   decided III → II → I, first match wins; tier III lists every reason
   (miss, true-fail cell, NA cell, fewer than 3 valid cells), so a layer

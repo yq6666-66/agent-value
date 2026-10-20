@@ -311,8 +311,13 @@ pub fn overall_arm(
 }
 
 /// Overall official #1: tie group of highest overall `V` among arms that
-/// have one.
+/// have one. Duplicate arm ids are an error, as in [`layer_pick`].
 pub fn overall_top(arms: &[OverallArm]) -> Result<Vec<String>> {
+    for (i, a) in arms.iter().enumerate() {
+        if arms[..i].iter().any(|b| b.id == a.id) {
+            return Err(CoreError::DuplicateCell { cell: a.id.clone() });
+        }
+    }
     let scores: Vec<(String, f64)> = arms
         .iter()
         .filter_map(|a| a.v.map(|v| (a.id.clone(), v)))

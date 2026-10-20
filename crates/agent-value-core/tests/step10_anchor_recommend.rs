@@ -443,6 +443,59 @@ fn diagnostic_reference_anchor_is_unclamped_symmetric_worst() {
 }
 
 #[test]
+fn diagnostic_reference_anchor_ignores_zero_weight_cells() {
+    // The status lists c04 as valid, but the weights passed in give it 0:
+    // its cost 5.0, time 50 and quality 0.1 must not enter the worst values.
+    let cells = ids(4);
+    let w_all = CellWeights::equal(&cells).unwrap();
+    let st = status(&w_all, &cells, &[Some(VALID); 4]);
+    let third = 1.0 / 3.0;
+    let w = CellWeights::new(vec![
+        (cells[0].clone(), third),
+        (cells[1].clone(), third),
+        (cells[2].clone(), third),
+        (cells[3].clone(), 0.0),
+    ])
+    .unwrap();
+    let tr = triples(
+        &cells,
+        &[
+            Triple::new(0.6, 10.0, 0.8),
+            Triple::new(0.7, 12.0, 0.9),
+            Triple::new(0.5, 8.0, 0.75),
+            Triple::new(5.0, 50.0, 0.1),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr).unwrap().unwrap();
+    close(d.c, 0.7);
+    close(d.t, 12.0);
+    close(d.q, 0.75);
+}
+
+#[test]
+fn diagnostic_reference_anchor_all_valid_is_worst_per_dimension() {
+    // Every positive-weight cell valid; worst C, T and Q come from three
+    // different cells. Every cell is lifted to the worst value, so the
+    // anchor equals (max C, max T, min Q).
+    let cells = ids(4);
+    let w = CellWeights::equal(&cells).unwrap();
+    let st = status(&w, &cells, &[Some(VALID); 4]);
+    let tr = triples(
+        &cells,
+        &[
+            Triple::new(0.9, 5.0, 0.9),
+            Triple::new(0.5, 15.0, 0.85),
+            Triple::new(0.6, 8.0, 0.6),
+            Triple::new(0.7, 10.0, 0.95),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr).unwrap().unwrap();
+    close(d.c, 0.9);
+    close(d.t, 15.0);
+    close(d.q, 0.6);
+}
+
+#[test]
 fn diagnostic_reference_anchor_takes_each_dimension_on_its_own() {
     // c01 is valid with time NA: its cost 0.9 and quality 0.9 still count
     // (line 570 is per dimension; DECISIONS F, Y).
@@ -1515,6 +1568,79 @@ fn example_8_composed_lower_clamp() {
 }
 
 // ---- PR #9 review follow-ups (Codex comments, 2026-10-20) ---------------------------
+
+/// Layer 1 has a positive value in every counter; layer 2 sets exactly one
+/// counter to its maximum, so the sum overflows only in that counter.
+fn overall_counter_overflows(set: impl Fn(&mut OverallArmLayer)) -> bool {
+    let l1 = tier_i(tc(1.0));
+    let l2 = tier_ii_ex6();
+    let r = overall_reference(&[(0.5, &l1), (0.5, &l2)]).unwrap();
+    let mut first = arm_layer(0.5, counts(400, 0, 100), 12, tc(0.8), true);
+    first.status.n_miss = 1;
+    first.status.n_fail = 1;
+    let st = &first.status;
+    assert!(first.u_d > 0 && st.n_comp > 0 && st.n_c > 0 && st.n_sub > 0);
+    let mut big = arm_layer(0.5, counts(400, 0, 100), 12, tc(0.6), false);
+    set(&mut big);
+    let layers = vec![first, big];
+    matches!(
+        overall_arm("X", &layers, AuthenticityGrade::A, &r, &eq_w(), &floors()),
+        Err(agent_value_core::error::CoreError::Overflow { .. })
+    )
+}
+
+#[test]
+fn overall_arm_u_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.u_d = usize::MAX));
+}
+
+#[test]
+fn overall_arm_n_c_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_c = u64::MAX));
+}
+
+#[test]
+fn overall_arm_n_sub_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_sub = u64::MAX));
+}
+
+#[test]
+fn overall_arm_n_miss_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_miss = usize::MAX));
+}
+
+#[test]
+fn overall_arm_n_fail_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_fail = usize::MAX));
+}
+
+#[test]
+fn overall_top_rejects_duplicate_arm_ids() {
+    let l1 = tier_i(tc(1.0));
+    let r = overall_reference(&[(1.0, &l1)]).unwrap();
+    let mk = |id: &str, c: f64, off: bool| {
+        overall_arm(
+            id,
+            &[arm_layer(1.0, VALID, 12, tc(c), off)],
+            AuthenticityGrade::A,
+            &r,
+            &eq_w(),
+            &floors(),
+        )
+        .unwrap()
+    };
+    let dup_scored = vec![mk("X", 0.5, true), mk("Y", 0.6, true), mk("X", 0.7, true)];
+    assert!(matches!(
+        overall_top(&dup_scored),
+        Err(agent_value_core::error::CoreError::DuplicateCell { ref cell }) if cell == "X"
+    ));
+    // A duplicate without an overall V is rejected too.
+    let dup_unscored = vec![mk("X", 0.5, true), mk("Z", 0.1, false), mk("Z", 0.2, false)];
+    assert!(matches!(
+        overall_top(&dup_unscored),
+        Err(agent_value_core::error::CoreError::DuplicateCell { ref cell }) if cell == "Z"
+    ));
+}
 
 #[test]
 fn overall_arm_counter_overflow_is_an_error_not_a_wrap() {

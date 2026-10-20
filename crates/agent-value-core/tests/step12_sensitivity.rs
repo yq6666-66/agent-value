@@ -1425,7 +1425,8 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
     for (wk, (dc, dt), always, crosses) in cases {
         let arms = low_v_pair(dc, dt);
         let gap = low_v_gap(&arms, &wk);
-        assert!(gap > 1e-13 && gap < 5e-13, "{gap:e}");
+        // ≫ the f64 noise of V here (ulp ≈ 7e-18), and inside the tolerance.
+        assert!(gap > 1e-14 && gap < 1e-12, "{gap:e}");
         let f = low_v_flip(&arms, wk);
         assert!(f.tied_now);
         assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
@@ -1454,7 +1455,10 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
                     panic!("{st:?}");
                 };
                 assert_eq!((over, under), (Dim::Quality, crosses.1));
-                assert!((ratio - 0.425).abs() < 1e-3, "{ratio}");
+                // Closed form with the exact Δ: root = 8.5e-12 / 3e-11, ratio
+                // = root / (0.95 − root) = 0.425; Δ carries ~1e-16 absolute
+                // error, i.e. ~1e-5 relative on the ratio.
+                assert!((ratio - 0.425).abs() < 1e-4, "{ratio}");
                 // No tie note on a crossing sentence, even when tied now.
                 assert!(!flip_sentence(&f, st).contains(ALWAYS_WITHIN_TIE_NOTE));
             }
@@ -1479,10 +1483,12 @@ fn parallel_segment_with_runner_up_a_hair_ahead_is_always() {
     let arms = vec![a, b];
     let wk = Weights::equal();
     let gap = low_v_gap(&arms, &wk);
-    assert!(gap > 3e-13 && gap < 7e-13, "{gap:e}");
+    assert!(gap > 1e-14 && gap < 1e-12, "{gap:e}");
     let f = low_v_flip(&arms, wk);
     assert!(f.tied_now);
     assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
+    // Quality fixed: slope = Δ_T − Δ_C, within SLOPE_TOL (1e-12), so the
+    // parallel branch is the one taken.
     assert!((f.delta[0] - f.delta[1]).abs() <= 1e-12, "{:?}", f.delta);
     for st in &f.statements {
         assert_eq!(st.kind, FlipKind::Always, "{st:?}");
@@ -1596,10 +1602,11 @@ fn assert_every_stratum_is_resampled(
         // Resampled in EVERY round, not just some: count the rounds with a
         // repeated task. Per round P(repeat) = 1 − n!/nⁿ (1/2 for n = 2,
         // 7/9 for n = 3), so over 200 rounds the count is Binomial(200, p):
-        // mean 100 / 155.6. Bounds 70 / 130 fail for a correct draw with
-        // probability 6.9e-6 / 1.3e-5 per stratum and seed (exact binomial
-        // tail). Freezing half the rounds gives Binomial(100, p): mean
-        // 50 / 77.8, above the bound with probability 3.9e-5 / 0.
+        // mean 100 / 155.6. Bounds 70 / 120 fail for a correct draw with
+        // probability 6.9e-6 / 5.2e-9 per stratum and seed (exact binomial
+        // tail). A stratum copied untouched in half the rounds never repeats
+        // there, so its count is Binomial(100, p): mean 50 / 77.8, at most
+        // 100; above the bound with probability 3.9e-5 / 0.
         for (seed, slices) in [("a", &sa), ("b", &sb)] {
             let reps = slices
                 .iter()
@@ -1610,9 +1617,10 @@ fn assert_every_stratum_is_resampled(
                     y.len() < n
                 })
                 .count();
+            assert_eq!(slices.len(), 200);
             let bound = match n {
                 2 => 70,
-                3 => 130,
+                3 => 120,
                 _ => panic!("fixture strata have 2 or 3 tasks"),
             };
             assert!(reps >= bound, "stratum {st:?} seed {seed}: {reps} repeats");

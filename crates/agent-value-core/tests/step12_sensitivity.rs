@@ -1333,6 +1333,12 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
     // leads and B is a hair ahead at W_k. Along the segments below B
     // stays ahead (by up to ~32 points), so the sentence must be
     // "都高于", not "不会超过" and not a ratio outside the segment.
+    // How the numbers were found: A is placed so that aΔ_C + bΔ_T + gΔ_D
+    // is a tiny positive number at W_k, whose free weight sits on the
+    // segment end (0.05). The root then lies just past that end, inside
+    // (hi, s) or (0, lo), which is the "always" branch. The V gap must stay
+    // below the 1e-12 tie tolerance (to be "tied now") and far above f64
+    // noise (~1e-16) so the root/end comparison is stable.
     let b = arm("B", 1.0, 45.0, 0.8);
     let cases = [
         // Quality fixed: slope < 0 with the root beyond the upper end.
@@ -1340,14 +1346,14 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
             w(0.05, 0.50, 0.45),
             arm("A", 2.9760241027279015, 39.29024508215757, 0.8),
             [Dim::Time, Dim::Quality],
-            Dim::Cost,
+            (Dim::Cost, Dim::Time),
         ),
         // Quality fixed: slope > 0 with the root below the lower end.
         (
             w(0.50, 0.05, 0.45),
             arm("A", 0.8905630307413533, 148.09690970754303, 0.8),
             [Dim::Cost, Dim::Quality],
-            Dim::Time,
+            (Dim::Time, Dim::Cost),
         ),
     ];
     for (wk, a, always, crosses) in cases {
@@ -1358,6 +1364,14 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
         let f = flip(&arms, wk);
         assert!(f.tied_now);
         assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
+        assert_eq!(f.statements.len(), 3);
+        assert_eq!(
+            f.statements
+                .iter()
+                .filter(|s| s.kind == FlipKind::Always)
+                .count(),
+            2
+        );
         for st in &f.statements {
             if always.contains(&st.fixed) {
                 assert_eq!(st.kind, FlipKind::Always, "{:?}", st);
@@ -1375,18 +1389,12 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
                     )
                 );
             } else {
-                assert_eq!(st.fixed, crosses);
-                assert!(
-                    matches!(
-                        st.kind,
-                        FlipKind::Crosses {
-                            over: Dim::Quality,
-                            ..
-                        }
-                    ),
-                    "{:?}",
-                    st
-                );
+                assert_eq!(st.fixed, crosses.0);
+                let FlipKind::Crosses { over, under, ratio } = st.kind else {
+                    panic!("{st:?}");
+                };
+                assert_eq!((over, under), (Dim::Quality, crosses.1));
+                assert!((ratio - 0.9).abs() < 1e-9, "{ratio}");
             }
         }
         // B really is ahead along each "always" segment.
@@ -1456,6 +1464,11 @@ fn assert_every_stratum_is_resampled(
             d.iter().map(|x| x[at..at + n].to_vec()).collect()
         };
         let (sa, sb) = (slices(&a), slices(&b));
+        for x in sa.iter().chain(&sb) {
+            assert!(x.iter().all(|k| st.contains(k)), "{x:?} outside {st:?}");
+        }
+        // A single-task stratum can never repeat; the checks below need n ≥ 2.
+        assert!(n >= 2, "fixture strata must have at least two tasks");
         let repeated = sa.iter().any(|x| {
             let mut y = x.clone();
             y.sort_unstable();
@@ -1473,11 +1486,9 @@ fn assert_every_stratum_is_resampled(
 #[test]
 fn every_stratum_is_actually_resampled() {
     let fx = fixture();
-    assert_every_stratum_is_resampled(
-        &fx.tasks,
-        &ids(),
-        &[vec![0, 1], vec![2, 3, 4], vec![5, 6], vec![7, 8]],
-    );
+    let strata = vec![vec![0, 1], vec![2, 3, 4], vec![5, 6], vec![7, 8]];
+    assert_eq!(bootstrap_strata(&fx.tasks).unwrap(), strata);
+    assert_every_stratum_is_resampled(&fx.tasks, &ids(), &strata);
 }
 
 #[test]

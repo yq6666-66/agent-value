@@ -715,6 +715,7 @@ fn bootstrap_counts_failed_resamples_and_flags_instability() {
     assert!(b.has_signal(), "{:?} {:?}", b.no_signal, b.lambda);
     let bs = b.bootstrap.unwrap();
     assert!(bs.failed > 0, "{bs:?}");
+    assert!(bs.ok > 0, "{bs:?}");
     assert_eq!(bs.ok + bs.failed, BOOTSTRAP_RESAMPLES as usize);
     assert!(bs.ok < 100, "{bs:?}");
     assert!(bs.unstable);

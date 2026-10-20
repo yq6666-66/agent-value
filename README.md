@@ -452,7 +452,7 @@ $u$ is rounded to 9 decimal places first, so a value that is exactly $0.25$ or $
 - The next question is the unanswered one that splits $\Omega_s$ most evenly over the five levels; on a tie, the first one in the bank. Questions stop once at least 4 are answered and $\Omega_s$ has at most 15 points, or after 10 questions.
 - The result is shown mainly as $\Omega_s$ and its range in each dimension. The default point $w_s$ is the grid point nearest the centroid of the core region.
 - If $m\ge2$, the answers are flagged as contradicting each other, with a list of the questions that are two or more levels off at some core point. The list may be empty.
-- The amounts in a question are computed one dimension at a time from a base value: the previous window's median (in the first window, 0.5 RMB and 120 s) for cost and time, and a defect rate passed in by the caller for quality. In each dimension, the option that is better in that dimension shows the base, and the worse option's value is computed from the ratio, so both values stay positive; in the equal dimension both show the base. A question whose computed defect rate would go above 1 is skipped, not clamped.
+- The amounts in a question are computed one dimension at a time from a base value: the previous window's median (in the first window, 0.5 RMB and 120 s) for cost and time, and a defect rate passed in by the caller for quality. In each dimension, the option that is better in that dimension shows the base, and the worse option's value is computed from the ratio, so cost and time stay positive and a defect rate is never negative; in the equal dimension both show the base. A question whose computed defect rate would go above 1 is skipped, not clamped.
 - The cut points $0.25$ and $0.50$ and the "one answer may be a level off" error model have been checked in simulation only, not with real users.
 
 **Behaviour suggestions.** These use the choice events of the previous window: which arms you could pick and which one you picked. Only real choices between at least 2 arms count, and an event is dropped whole if any of its arms lacks values. Using the noise floors $c_0$, $t_0$, $\epsilon$ from the constants table and the arm's cell values from the previous window, set $x_l=\bigl(\ln(C^{\ast}_l+c_0),\ \ln(T^{\ast}_l+t_0),\ \ln(1-Q^{\ast}_l+\epsilon)\bigr)$, a choice model is fitted with $\vartheta\ge0$:
@@ -484,7 +484,7 @@ $$
 - The core works with ratios only. Turning a question into amounts and times is done from the ratios; a question that cannot be shown is skipped and not asked again. A defect base of 0 is valid.
 - The rank is computed by elimination with full pivoting and a relative tolerance of $10^{-9}$. "Different arms" are counted by arm id.
 - $\hat\vartheta$ is found by projected Newton steps on $\vartheta\ge0$. No finite maximum, a nearly singular information matrix, or no convergence gives "no signal: not identifiable" instead of an error.
-- Bootstrap resamples that fail numerically are skipped and counted. The random seed is passed in by the caller.
+- A bootstrap resample that fails (difference rank below 3, or no finite fit with $\lVert\vartheta\rVert_1>0$) is skipped and counted. The random seed is passed in by the caller.
 - The profile log-likelihood of $w$ is the maximum of the log-likelihood $L$ along $\lambda w$ for $\lambda>0$. If $L$ does not increase from $\lambda=0$, the value at $\lambda=0$ is used. The threshold for $\Omega_b$ uses $L(\hat\vartheta)$ directly; $w_b$ is not moved onto the grid.
 
 </details>

@@ -32,7 +32,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0 rejected), caller recomputes each resample; reports winner frequency
   at `W_k`, `F_off` frequency, ties and resamples with an anchor. Flip
   line between the top two arms (`aΔ_C + bΔ_T + gΔ_D = 0`) with one
-  statement per fixed dimension, evaluated on the feasible segment.
+  statement per fixed dimension, evaluated on the feasible segment; the
+  printed threshold is rounded up so the sentence is a sufficient
+  condition. Withheld as well when there is no arm to compare.
   Noise-floor robustness at `W_k` under `c0`, `t0`, `ε` × 0.5 and × 2.
   All counters use checked addition. Paired with the spec example (Y
   wins 93 grid points, X 78; Y wins 14 of 14 in the self-report region).

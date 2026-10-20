@@ -10,10 +10,10 @@ use agent_value_core::constants::{BOOTSTRAP_RESAMPLES, GRID_POINTS};
 use agent_value_core::error::CoreError;
 use agent_value_core::frontier::{layer_frontiers, FrontierArm};
 use agent_value_core::sensitivity::{
-    flip_line, flip_sentence, grid_points, sensitivity, statistical_robustness, winners, Dim,
-    FlipKind, FlipLine, FloorVariant, NoFlipLine, ResampleLayer, RobustRegion, SensitivityArm,
-    SensitivityInput, SensitivityReport, Withheld, Xorshift64, CURRENT_ESTIMATE_NOTE,
-    WEIGHT_ROBUST_EVERYWHERE,
+    flip_line, flip_sentence, grid_points, printed_ratio, sensitivity, statistical_robustness,
+    winners, Dim, FlipKind, FlipLine, FloorVariant, NoFlipLine, ResampleLayer, RobustRegion,
+    SensitivityArm, SensitivityInput, SensitivityReport, Withheld, Xorshift64,
+    CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
 };
 use agent_value_core::value::{value_score, Floors, Point};
 use agent_value_core::weights::Weights;
@@ -193,6 +193,15 @@ fn neighbourhood_radius_is_inclusive_at_0_10() {
 }
 
 #[test]
+fn no_arms_withholds_the_map_instead_of_claiming_robustness() {
+    let none: Vec<SensitivityArm> = Vec::new();
+    assert_eq!(
+        sensitivity(&input(&none, Weights::equal(), None)).unwrap(),
+        Err(Withheld::NoArms)
+    );
+}
+
+#[test]
 fn first_window_and_tier_iii_withhold_the_map() {
     let arms = example_arms();
     let mut i = input(&arms, Weights::equal(), None);
@@ -296,8 +305,18 @@ fn omega_b_points_are_flagged_on_the_map() {
     let mut i = input(&arms, Weights::equal(), None);
     i.omega_b = Some(&b);
     let r = report(&i);
-    let flagged: Vec<_> = r.map.iter().filter(|p| p.in_omega_b).collect();
+    let flagged: Vec<Weights> = r
+        .map
+        .iter()
+        .filter(|p| p.in_omega_b)
+        .map(|p| p.weights)
+        .collect();
     assert_eq!(flagged.len(), 2);
+    let keys: Vec<(i64, i64)> = flagged
+        .iter()
+        .map(|p| ((p.a() * 20.0).round() as i64, (p.b() * 20.0).round() as i64))
+        .collect();
+    assert_eq!(keys, vec![(1, 1), (4, 7)]);
     assert!(r.map.iter().all(|p| !p.in_omega_s));
 }
 
@@ -319,6 +338,10 @@ fn bad_regions_and_arm_ids_are_errors() {
         sensitivity(&input(&twice, Weights::equal(), None)),
         Err(CoreError::DuplicateCell { .. })
     ));
+    i.omega_b = Some(&empty);
+    assert!(sensitivity(&i).is_err());
+    i.omega_b = Some(&dup);
+    assert!(sensitivity(&i).is_err());
     let blank = vec![arm(" ", 0.3, 120.0, 0.8)];
     assert!(matches!(
         sensitivity(&input(&blank, Weights::equal(), None)),
@@ -380,14 +403,29 @@ fn decisions_k_only_halves_and_doubles() {
             (g.c0(), g.t0(), g.eps())
         })
         .collect();
+    let expect = [
+        (0.15, 15.0, 0.02),
+        (0.075, 15.0, 0.02),
+        (0.30, 15.0, 0.02),
+        (0.15, 7.5, 0.02),
+        (0.15, 30.0, 0.02),
+        (0.15, 15.0, 0.01),
+        (0.15, 15.0, 0.04),
+    ];
     assert_eq!(vals.len(), 7);
-    close(vals[0].0, 0.15);
-    close(vals[1].0, 0.075);
-    close(vals[2].0, 0.30);
-    close(vals[3].1, 7.5);
-    close(vals[4].1, 30.0);
-    close(vals[5].2, 0.01);
-    close(vals[6].2, 0.04);
+    for (g, e) in vals.iter().zip(expect) {
+        close(g.0, e.0);
+        close(g.1, e.1);
+        close(g.2, e.2);
+    }
+    // The base is the scope's floors (§A override), not the §9 constants.
+    let custom = Floors::new(0.4, 20.0, 0.05).unwrap();
+    let d = FloorVariant::C0Double.apply(&custom).unwrap();
+    close(d.c0(), 0.8);
+    close(d.t0(), 20.0);
+    close(d.eps(), 0.05);
+    let h = FloorVariant::EpsHalf.apply(&custom).unwrap();
+    close(h.eps(), 0.025);
 }
 
 #[test]
@@ -464,29 +502,40 @@ fn flip_statements_with_each_dimension_fixed() {
         }
         k => panic!("{k:?}"),
     }
+    // 1.0023… is printed rounded up (1.01), so the sentence stays true.
     let s = flip_sentence(&f, &f.statements[2]);
     assert_eq!(
         s,
-        format!("保持质量权重不变，只要时间权重超过成本权重的 1.00 倍，Y 就会超过 X；{CURRENT_ESTIMATE_NOTE}")
+        "保持质量权重不变，只要时间权重超过成本权重的 1.01 倍，Y 就会超过 X；这是在当前估计值下的结论"
     );
+    assert_eq!(CURRENT_ESTIMATE_NOTE, "这是在当前估计值下的结论");
 }
 
 /// For each crossing statement, step just past the threshold on both sides
 /// and check who is ahead with the real `V`.
-fn check_statements(arms: &[SensitivityArm], current: Weights) {
+fn check_statements(arms: &[SensitivityArm], current: Weights) -> usize {
     let f = flip(arms, current);
     let reference = example_reference();
     let floors = Floors::default();
     let by_id = |id: &str| arms.iter().find(|a| a.id == id).unwrap().point;
     let (pi, pj) = (by_id(&f.leader), by_id(&f.runner_up));
     let cur = [current.a(), current.b(), current.g()];
+    let mut checked = 0;
     for s in &f.statements {
+        assert_eq!(s.fixed_weight, cur[s.fixed as usize], "{s:?}");
         let FlipKind::Crosses { over, under, ratio } = s.kind else {
             continue;
         };
         let rest = 1.0 - s.fixed_weight;
-        for (factor, runner_ahead) in [(1.001, true), (0.999, false)] {
-            let r = ratio * factor;
+        // Either side of the exact threshold, and just above the printed
+        // (rounded-up) one: the sentence must be a sufficient condition.
+        let printed = printed_ratio(ratio);
+        assert!(printed >= ratio);
+        for (r, runner_ahead) in [
+            (ratio * 1.001, true),
+            (ratio * 0.999, false),
+            (printed * (1.0 + 1e-9), true),
+        ] {
             let wu = rest / (1.0 + r);
             let wo = rest - wu;
             if wu < 0.05 || wo < 0.05 {
@@ -499,17 +548,21 @@ fn check_statements(arms: &[SensitivityArm], current: Weights) {
             let wt = w(v[0], v[1], v[2]);
             let vi = value_score(reference, pi, &wt, &floors).unwrap();
             let vj = value_score(reference, pj, &wt, &floors).unwrap();
-            assert_eq!(vj > vi, runner_ahead, "{s:?} factor {factor}");
+            assert_eq!(vj > vi, runner_ahead, "{s:?} at ratio {r}");
+            checked += 1;
         }
     }
+    checked
 }
 
 #[test]
 fn flip_statements_agree_with_v_on_both_sides() {
-    check_statements(&example_arms(), Weights::equal());
-    check_statements(&example_arms(), w(0.2, 0.35, 0.45));
-    check_statements(&four_arms(), w(0.5, 0.2, 0.3));
-    check_statements(&four_arms(), w(0.1, 0.1, 0.8));
+    // Each example has crossings inside the segment, so probes really run
+    // (3 statements × 3 probes for the two-arm example).
+    assert_eq!(check_statements(&example_arms(), Weights::equal()), 9);
+    assert!(check_statements(&example_arms(), w(0.2, 0.35, 0.45)) > 0);
+    assert!(check_statements(&four_arms(), w(0.5, 0.2, 0.3)) > 0);
+    assert!(check_statements(&four_arms(), w(0.1, 0.1, 0.8)) > 0);
 }
 
 #[test]
@@ -552,6 +605,40 @@ fn flip_line_needs_two_arms_and_an_unambiguous_runner_up() {
     );
     let tied_top = vec![arm("B", 0.5, 60.0, 0.80), arm("A", 0.5, 60.0, 0.80)];
     let f = flip(&tied_top, Weights::equal());
+    assert!(f.tied_now);
+    assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
+    // Identical arms tie on every segment.
+    assert!(f.statements.iter().all(|s| s.kind == FlipKind::Tied));
+    assert!(flip_sentence(&f, &f.statements[0]).contains("B 与 A 在任何可行权重下都并列"));
+    // A top tie group of three is not a pair either.
+    let three_top = vec![
+        arm("C", 0.5, 60.0, 0.80),
+        arm("A", 0.5, 60.0, 0.80),
+        arm("B", 0.5, 60.0, 0.80),
+    ];
+    assert_eq!(
+        flip_line(
+            &three_top,
+            example_reference(),
+            &Weights::equal(),
+            &Floors::default()
+        )
+        .unwrap(),
+        Err(NoFlipLine::AmbiguousRunnerUp)
+    );
+}
+
+#[test]
+fn near_tie_at_the_top_is_ordered_by_id_not_by_float_noise() {
+    // "A" is a few ulps more expensive than "B": V_B > V_A by ~1e-14,
+    // inside the tie tolerance, so the pair is tied and listed A, B.
+    let a = arm("A", 0.5 + 4.0 * f64::EPSILON, 60.0, 0.80);
+    let b = arm("B", 0.5, 60.0, 0.80);
+    let fl = Floors::default();
+    let va = value_score(example_reference(), a.point, &Weights::equal(), &fl).unwrap();
+    let vb = value_score(example_reference(), b.point, &Weights::equal(), &fl).unwrap();
+    assert!(vb > va && vb - va <= 1e-12, "{va} {vb}");
+    let f = flip(&[b, a], Weights::equal());
     assert!(f.tied_now);
     assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
 }
@@ -630,6 +717,7 @@ fn bootstrap_runs_200_resamples_and_is_reproducible_by_seed() {
     let a = run_bootstrap(20261020);
     let b = run_bootstrap(20261020);
     assert_eq!(a, b);
+    assert_eq!(a.seed, 20261020);
     assert_eq!(a.resamples, BOOTSTRAP_RESAMPLES);
     assert_eq!(a.resamples, 200);
     assert_eq!(a.with_value, 200);
@@ -643,6 +731,7 @@ fn bootstrap_runs_200_resamples_and_is_reproducible_by_seed() {
         "{a:?}"
     );
     let c = run_bootstrap(7);
+    assert_eq!(c.seed, 7);
     assert_ne!(a, c);
 }
 
@@ -650,15 +739,13 @@ fn bootstrap_runs_200_resamples_and_is_reproducible_by_seed() {
 fn bootstrap_counts_frontier_without_anchor_and_dominant_wins_all() {
     let ids = vec!["A".to_string(), "B".to_string()];
     let mut calls = 0u32;
+    let mut with_anchor = false;
     let r = statistical_robustness(&[3], 1, &ids, &Weights::equal(), &Floors::default(), |_| {
         calls += 1;
+        with_anchor = !with_anchor;
         Ok(ResampleLayer {
             arms: vec![arm("A", 0.2, 30.0, 0.95), arm("B", 0.5, 60.0, 0.80)],
-            reference: if calls.is_multiple_of(2) {
-                None
-            } else {
-                Some(example_reference())
-            },
+            reference: with_anchor.then(example_reference),
         })
     })
     .unwrap();
@@ -716,4 +803,45 @@ fn xorshift_draws_cover_every_index() {
     }
     assert!(hits.iter().all(|&h| (800..=1200).contains(&h)), "{hits:?}");
     assert!(Xorshift64::new(0).is_err());
+}
+
+#[test]
+fn bootstrap_three_way_tie_counts_every_member() {
+    let ids = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+    let r = statistical_robustness(&[2], 3, &ids, &Weights::equal(), &Floors::default(), |_| {
+        Ok(ResampleLayer {
+            arms: vec![
+                arm("A", 0.5, 60.0, 0.8),
+                arm("B", 0.5, 60.0, 0.8),
+                arm("C", 0.5, 60.0, 0.8),
+            ],
+            reference: Some(example_reference()),
+        })
+    })
+    .unwrap();
+    assert_eq!((r.with_value, r.tied), (200, 200));
+    let wins: u32 = r.arms.iter().map(|x| x.winner).sum();
+    assert_eq!(wins, 600, "Σ|Win| = 3 × 200, not with_value + tied");
+    assert!(r.arms.iter().all(|x| x.winner == 200 && x.frontier == 200));
+}
+
+#[test]
+fn bootstrap_needs_arm_ids_and_skips_empty_resamples_for_winners() {
+    let fl = Floors::default();
+    let eq = Weights::equal();
+    let empty: Vec<String> = Vec::new();
+    let nothing = |_: &[Vec<usize>]| {
+        Ok(ResampleLayer {
+            arms: Vec::new(),
+            reference: Some(example_reference()),
+        })
+    };
+    assert!(matches!(
+        statistical_robustness(&[1], 1, &empty, &eq, &fl, nothing),
+        Err(CoreError::EmptyField { .. })
+    ));
+    let ids = vec!["A".to_string()];
+    let r = statistical_robustness(&[1], 1, &ids, &eq, &fl, nothing).unwrap();
+    assert_eq!((r.resamples, r.with_value, r.tied), (200, 0, 0));
+    assert_eq!((r.arms[0].winner, r.arms[0].frontier), (0, 0));
 }

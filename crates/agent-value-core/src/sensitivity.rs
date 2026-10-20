@@ -86,11 +86,19 @@ fn grid_key(w: &Weights) -> Option<(u32, u32, u32)> {
     for (slot, v) in key.iter_mut().zip([w.a(), w.b(), w.g()]) {
         let scaled = v * f64::from(GRID_DEN);
         let r = scaled.round();
-        if (scaled - r).abs() > GRID_TOL * f64::from(GRID_DEN) || r < f64::from(GRID_MIN) {
+        if (scaled - r).abs() > GRID_TOL * f64::from(GRID_DEN)
+            || r < f64::from(GRID_MIN)
+            || r > f64::from(GRID_DEN - 2 * GRID_MIN)
+        {
             return None;
         }
-        // r is in [1, 18] here because Weights enforce the floor and sum.
+        // r is an integer in [1, 18] here, so the cast is exact.
         *slot = r as u32;
+    }
+    // Checked explicitly rather than relying on the `Weights` invariant.
+    let sum = key.iter().try_fold(0u32, |acc, &k| acc.checked_add(k))?;
+    if sum != GRID_DEN {
+        return None;
     }
     Some((key[0], key[1], key[2]))
 }
@@ -165,6 +173,9 @@ pub enum Withheld {
     /// The reference is tier III for this layer (or the overall reference
     /// is NA): no `V` (§7).
     NoReference,
+    /// No arm to compare (empty `E_d`): nothing to colour, and no
+    /// robustness label may be shown.
+    NoArms,
 }
 
 /// Inputs of one layer (or the scope overall).
@@ -276,9 +287,12 @@ pub enum FlipKind {
     Crosses { over: Dim, under: Dim, ratio: f64 },
     /// The runner-up never overtakes the leader on the segment.
     Never,
-    /// The runner-up is ahead on the whole segment (only when the two are
-    /// tied at `W_k` or the input sits on the line).
+    /// The runner-up is ahead on the whole segment. Only reachable when the
+    /// two are within the tie tolerance at `W_k` (the leader is then the
+    /// smaller id, not necessarily the higher `V`).
     Always,
+    /// The two arms tie on the whole segment (the line contains it).
+    Tied,
 }
 
 /// One statement with a fixed dimension (§12 display item 5).
@@ -380,6 +394,10 @@ pub struct SensitivityReport {
 }
 
 /// The §12 display for one layer, or why it is withheld.
+///
+/// When withheld (first window, tier III) §12 still shows the frontier;
+/// this function does not produce it — take it from
+/// [`crate::frontier::layer_frontiers`].
 pub fn sensitivity(
     input: &SensitivityInput<'_>,
 ) -> Result<std::result::Result<SensitivityReport, Withheld>> {
@@ -398,6 +416,9 @@ pub fn sensitivity(
     let Some(reference) = input.reference else {
         return Ok(Err(Withheld::NoReference));
     };
+    if input.arms.is_empty() {
+        return Ok(Err(Withheld::NoArms));
+    }
 
     let grid = grid_points()?;
     let mut map = Vec::with_capacity(grid.len());
@@ -534,7 +555,10 @@ fn flip_statement(fixed: Dim, current: &Weights, delta: [f64; 3]) -> FlipStateme
     let f = |wq: f64| wq * dq + (s - wq) * dp + wk * dk;
     let slope = dq - dp;
     let kind = if slope.abs() <= SLOPE_TOL {
-        if f(lo) > 0.0 {
+        let v = f(lo);
+        if v.abs() <= SLOPE_TOL {
+            FlipKind::Tied
+        } else if v > 0.0 {
             FlipKind::Always
         } else {
             FlipKind::Never
@@ -590,18 +614,20 @@ pub fn flip_line(
         scored.push((value_score(reference, a.point, current, floors)?, a));
     }
     scored.sort_by(|x, y| y.0.total_cmp(&x.0).then_with(|| x.1.id.cmp(&y.1.id)));
-    let top: Vec<(String, f64)> = scored
-        .iter()
-        .map(|(v, a)| (a.id.clone(), *v))
-        .collect::<Vec<_>>();
     let tie = |x: f64, y: f64| -> Result<bool> {
         let g = highest_v_group(&[("x".to_string(), x), ("y".to_string(), y)])?;
         Ok(g.len() == 2)
     };
-    if scored.len() >= 3 && tie(top[1].1, top[2].1)? {
+    // Rank 2 tied with rank 3 (this includes a top tie group of three or
+    // more): "the top two" is not a pair.
+    if scored.len() >= 3 && tie(scored[1].0, scored[2].0)? {
         return Ok(Err(NoFlipLine::AmbiguousRunnerUp));
     }
-    let tied_now = tie(top[0].1, top[1].1)?;
+    let tied_now = tie(scored[0].0, scored[1].0)?;
+    if tied_now && scored[1].1.id < scored[0].1.id {
+        // Within the tie tolerance the order is display-only: by id.
+        scored.swap(0, 1);
+    }
     let (i, j) = (scored[0].1, scored[1].1);
     let delta = log_deltas(i.point, j.point, floors)?;
     let statements = Dim::ALL
@@ -617,19 +643,35 @@ pub fn flip_line(
     }))
 }
 
+/// The threshold as printed: rounded **up** to two decimals, so "超过
+/// 印出的倍数" is a sufficient condition (a rounded-down or nearest value
+/// could make the sentence false just above it).
+pub fn printed_ratio(ratio: f64) -> f64 {
+    let up = (ratio * 100.0).ceil() / 100.0;
+    // ceil of a value that is already x.yz (up to float noise) stays x.yz.
+    if (ratio * 100.0 - (ratio * 100.0).round()).abs() <= GRID_TOL {
+        (ratio * 100.0).round() / 100.0
+    } else {
+        up
+    }
+}
+
 /// One-sentence explanation of a flip statement, e.g. "保持质量权重不变，
 /// 只要时间权重超过成本权重的 1.40 倍，B 就会超过 A；这是在当前估计值下的结论".
+/// The ratio is [`printed_ratio`].
 pub fn flip_sentence(line: &FlipLine, s: &FlipStatement) -> String {
     let (i, j) = (&line.leader, &line.runner_up);
     let head = format!("保持{}权重不变，", s.fixed.label());
     let body = match s.kind {
         FlipKind::Crosses { over, under, ratio } => format!(
-            "只要{}权重超过{}权重的 {ratio:.2} 倍，{j} 就会超过 {i}",
+            "只要{}权重超过{}权重的 {:.2} 倍，{j} 就会超过 {i}",
             over.label(),
-            under.label()
+            under.label(),
+            printed_ratio(ratio)
         ),
         FlipKind::Never => format!("{j} 在任何可行权重下都不会超过 {i}"),
         FlipKind::Always => format!("{j} 在任何可行权重下都高于 {i}"),
+        FlipKind::Tied => format!("{j} 与 {i} 在任何可行权重下都并列"),
     };
     format!("{head}{body}；{CURRENT_ESTIMATE_NOTE}")
 }
@@ -659,9 +701,11 @@ pub struct StatisticalRobustness {
     pub seed: u64,
     /// Always [`BOOTSTRAP_RESAMPLES`] (200).
     pub resamples: u32,
-    /// Resamples with a numerator anchor, i.e. with a winner set.
+    /// Resamples with a numerator anchor and at least one arm, i.e. with a
+    /// non-empty winner set.
     pub with_value: u32,
-    /// Resamples whose `Win(W_k)` had more than one arm.
+    /// Resamples whose `Win(W_k)` had more than one arm. The winner counts
+    /// add up to `Σ |Win(W_k)|` over resamples, not `with_value + tied`.
     pub tied: u32,
     /// One entry per arm of `arm_ids`, in that order.
     pub arms: Vec<ArmFrequency>,
@@ -716,7 +760,9 @@ impl Xorshift64 {
 }
 
 /// Task bootstrap (§12 line 810): 200 resamples. `strata` gives the task
-/// count of each stratum; each resample draws, independently in every
+/// count of each stratum (one stratum holding every task of the layer is
+/// the plain task bootstrap; how to stratify is the caller's choice and is
+/// not fixed by the spec); each resample draws, independently in every
 /// stratum, as many task indices as it has, with replacement. `eval` gets
 /// the drawn indices per stratum and returns that resample's `E_d` arms
 /// and anchor. `arm_ids` lists every arm to report; an arm returned by
@@ -732,6 +778,11 @@ pub fn statistical_robustness<F>(
 where
     F: FnMut(&[Vec<usize>]) -> Result<ResampleLayer>,
 {
+    if arm_ids.is_empty() {
+        return Err(CoreError::EmptyField {
+            field: "bootstrap arm ids",
+        });
+    }
     let mut seen = BTreeSet::new();
     for id in arm_ids {
         if id.trim().is_empty() {
@@ -793,7 +844,7 @@ where
                 bump(&mut e.1, "bootstrap frontier count")?;
             }
         }
-        if let Some(reference) = layer.reference {
+        if let (Some(reference), false) = (layer.reference, layer.arms.is_empty()) {
             bump(&mut with_value, "bootstrap resamples with V")?;
             let win = winners(&layer.arms, reference, current, floors)?;
             if win.len() > 1 {

@@ -619,3 +619,65 @@ pub fn calibrate(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn neg(info: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+        let mut h = info;
+        for row in &mut h {
+            for v in row.iter_mut() {
+                *v = -*v;
+            }
+        }
+        h
+    }
+
+    /// The check is on the smallest eigenvalue of the information on the
+    /// free coordinates, against an absolute floor of 1e-8 * n (DECISIONS
+    /// G7): a matrix that is singular along one direction only fails it,
+    /// and so does one that shrinks evenly in every direction.
+    #[test]
+    fn identified_is_a_smallest_eigenvalue_floor() {
+        let n = 30.0;
+        let all = [0, 1, 2];
+        // Rank 3 but tiny along e1 (quasi-complete separation).
+        assert!(!identified(
+            &neg([[1e-9, 0.0, 0.0], [0.0, 1.0, 0.2], [0.0, 0.2, 1.0]]),
+            &all,
+            n
+        ));
+        // Same, tiny along (1, 1, 0) / sqrt(2): eigenvalues 1e-9, 2, 1.
+        let (a, b) = ((2.0 + 1e-9) / 2.0, (1e-9 - 2.0) / 2.0);
+        assert!(!identified(
+            &neg([[a, b, 0.0], [b, a, 0.0], [0.0, 0.0, 1.0]]),
+            &all,
+            n
+        ));
+        // Shrinks evenly (complete separation): min/max ratio is 1, still rejected.
+        assert!(!identified(
+            &neg([[1e-8, 0.0, 0.0], [0.0, 1e-8, 0.0], [0.0, 0.0, 1e-8]]),
+            &all,
+            n
+        ));
+        // Just above and below the floor 3e-7 along e1.
+        assert!(identified(
+            &neg([[3.1e-7, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            &all,
+            n
+        ));
+        assert!(!identified(
+            &neg([[2.9e-7, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            &all,
+            n
+        ));
+        // Only free coordinates count.
+        assert!(identified(
+            &neg([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            &[1, 2],
+            n
+        ));
+        assert!(identified(&[[0.0; 3]; 3], &[], n));
+    }
+}

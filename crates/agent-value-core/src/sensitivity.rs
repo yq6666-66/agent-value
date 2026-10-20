@@ -104,8 +104,12 @@ fn grid_key(w: &Weights) -> Option<(u32, u32, u32)> {
     Some((key[0], key[1], key[2]))
 }
 
-fn region_keys(points: &[Weights], what: &'static str) -> Result<BTreeSet<(u32, u32, u32)>> {
-    if points.is_empty() {
+fn region_keys(
+    points: &[Weights],
+    what: &'static str,
+    allow_empty: bool,
+) -> Result<BTreeSet<(u32, u32, u32)>> {
+    if points.is_empty() && !allow_empty {
         return Err(CoreError::InvalidField {
             field: what,
             reason: "region must not be empty",
@@ -190,9 +194,13 @@ pub struct SensitivityInput<'a> {
     pub first_window: bool,
     /// The effective weights `W_k`.
     pub current: Weights,
-    /// `Ω_s` from the self-report (step 11), if any.
+    /// `Ω_s` from the self-report (step 11); `None` without a
+    /// self-report. Never empty by definition (it holds the points with
+    /// `Δℓ = m`), so an empty slice is an error.
     pub omega_s: Option<&'a [Weights]>,
-    /// `Ω_b` from behaviour calibration (step 11), if any.
+    /// `Ω_b` from behaviour calibration (step 11). `None`: behaviour has
+    /// no signal. `Some(&[])`: there is a signal but no grid point
+    /// qualifies (e.g. `w_b` off the grid); accepted, flags no point.
     pub omega_b: Option<&'a [Weights]>,
     /// Floors of the scope (§A).
     pub floors: Floors,
@@ -205,6 +213,17 @@ pub struct MapPoint {
     pub winners: Vec<String>,
     pub in_omega_s: bool,
     pub in_omega_b: bool,
+}
+
+/// What the behaviour region `Ω_b` amounts to on the map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviourRegion {
+    /// `omega_b` was `None`: behaviour has no signal.
+    NoSignal,
+    /// `omega_b` was empty: a signal, but no grid point qualifies.
+    NoGridPoint,
+    /// This many grid points are flagged `in_omega_b`.
+    Points(usize),
 }
 
 /// Which region the weight-robust winner was computed on.
@@ -387,6 +406,8 @@ pub struct SensitivityReport {
     /// 171 points in [`grid_points`] order.
     pub map: Vec<MapPoint>,
     pub current: Weights,
+    /// How `Ω_b` showed up on the map.
+    pub behaviour_region: BehaviourRegion,
     /// `Win(W_k)`.
     pub current_winners: Vec<String>,
     pub weight_robust: WeightRobustness,
@@ -405,11 +426,11 @@ pub fn sensitivity(
     check_ids(input.arms)?;
     let s_keys = input
         .omega_s
-        .map(|p| region_keys(p, "omega_s"))
+        .map(|p| region_keys(p, "omega_s", false))
         .transpose()?;
     let b_keys = input
         .omega_b
-        .map(|p| region_keys(p, "omega_b"))
+        .map(|p| region_keys(p, "omega_b", true))
         .transpose()?;
     if input.first_window {
         return Ok(Err(Withheld::FirstWindow));
@@ -460,9 +481,15 @@ pub fn sensitivity(
             });
         }
     }
+    let behaviour_region = match &b_keys {
+        None => BehaviourRegion::NoSignal,
+        Some(k) if k.is_empty() => BehaviourRegion::NoGridPoint,
+        Some(k) => BehaviourRegion::Points(k.len()),
+    };
     Ok(Ok(SensitivityReport {
         map,
         current: input.current,
+        behaviour_region,
         current_winners,
         weight_robust,
         flip,

@@ -24,7 +24,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   group of highest `V` among the compared arms, ties reported whole;
   withheld in the first window and when the reference has no anchor
   (tier III). Each grid point is flagged for `Ω_s` and `Ω_b`, which are
-  inputs (validated: non-empty, on the 0.05 grid, no duplicates).
+  inputs (validated: on the 0.05 grid, no duplicates; `Ω_s` must be
+  non-empty; an empty `Ω_b` means a behaviour signal with no qualifying
+  grid point and is accepted, `None` means no behaviour signal; the
+  report says which).
   Weight-robust winner over `Ω_s`, or over `max|w − W_k| ≤ 0.10` when
   there is no self-report, with per-arm shares and "在你的权重范围内都是它"
   only for a sole winner at every point. Statistical robustness: 200-resample

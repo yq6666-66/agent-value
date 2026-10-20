@@ -12,9 +12,9 @@ use agent_value_core::error::CoreError;
 use agent_value_core::frontier::{layer_frontiers, FrontierArm};
 use agent_value_core::sensitivity::{
     bootstrap_strata, flip_line, flip_sentence, grid_points, printed_ratio, sensitivity,
-    statistical_robustness, winners, BootstrapTask, Dim, FlipKind, FlipLine, FloorVariant,
-    NoFlipLine, ResampleLayer, RobustRegion, SensitivityArm, SensitivityInput, SensitivityReport,
-    Withheld, Xorshift64, CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
+    statistical_robustness, winners, BehaviourRegion, BootstrapTask, Dim, FlipKind, FlipLine,
+    FloorVariant, NoFlipLine, ResampleLayer, RobustRegion, SensitivityArm, SensitivityInput,
+    SensitivityReport, Withheld, Xorshift64, CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
 };
 use agent_value_core::value::{value_score, Floors, Point};
 use agent_value_core::weights::Weights;
@@ -324,6 +324,46 @@ fn omega_b_points_are_flagged_on_the_map() {
 }
 
 #[test]
+fn empty_omega_b_means_a_signal_with_no_grid_point() {
+    // Step 11 can produce an empty Ω_b (behaviour has a signal but no grid
+    // point qualifies, e.g. w_b off the grid). Accepted: no point is
+    // flagged, and the report says so, distinct from "no signal".
+    let arms = example_arms();
+    let empty: Vec<Weights> = Vec::new();
+    let mut i = input(&arms, Weights::equal(), None);
+    i.omega_b = Some(&empty);
+    let r = report(&i);
+    assert_eq!(r.behaviour_region, BehaviourRegion::NoGridPoint);
+    assert!(r.map.iter().all(|p| !p.in_omega_b));
+    // The rest of the report is the same as without Ω_b.
+    i.omega_b = None;
+    let none = report(&i);
+    assert_eq!(none.behaviour_region, BehaviourRegion::NoSignal);
+    assert!(none.map.iter().all(|p| !p.in_omega_b));
+    assert_eq!(r.map, none.map);
+    assert_eq!(r.weight_robust, none.weight_robust);
+    assert_eq!(r.current_winners, none.current_winners);
+    // With points: counted.
+    let b = vec![w(0.05, 0.05, 0.90), w(0.20, 0.35, 0.45)];
+    i.omega_b = Some(&b);
+    assert_eq!(report(&i).behaviour_region, BehaviourRegion::Points(2));
+}
+
+#[test]
+fn empty_omega_s_is_an_error() {
+    // Ω_s always holds the Δℓ = m points, so empty means a caller bug.
+    let arms = example_arms();
+    let empty: Vec<Weights> = Vec::new();
+    assert!(matches!(
+        sensitivity(&input(&arms, Weights::equal(), Some(&empty))),
+        Err(CoreError::InvalidField {
+            field: "omega_s",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn bad_regions_and_arm_ids_are_errors() {
     let arms = example_arms();
     let empty: Vec<Weights> = Vec::new();
@@ -341,8 +381,6 @@ fn bad_regions_and_arm_ids_are_errors() {
         sensitivity(&input(&twice, Weights::equal(), None)),
         Err(CoreError::DuplicateCell { .. })
     ));
-    i.omega_b = Some(&empty);
-    assert!(sensitivity(&i).is_err());
     i.omega_b = Some(&dup);
     assert!(sensitivity(&i).is_err());
     let blank = vec![arm(" ", 0.3, 120.0, 0.8)];

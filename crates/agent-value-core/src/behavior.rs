@@ -304,7 +304,9 @@ fn dot(d: &[f64; 3], v: &[f64; 3]) -> f64 {
 /// likelihood, and its maximum is not attained. Conversely, without such a
 /// `d` the likelihood tends to minus infinity along every ray and the
 /// maximum is attained. Identical values give differences of exactly 0,
-/// which constrain nothing.
+/// which constrain nothing. Data within the tolerance of separable but not
+/// separable put the maximum at very large `theta`, where the information
+/// floor rejects them; the outcome is the same.
 fn separated(events: &[Prepared]) -> bool {
     let mut constraints = Vec::new();
     for e in events {
@@ -382,6 +384,8 @@ fn identified(h: &[[f64; 3]; 3], free: &[usize], n: f64) -> bool {
 /// Projected Newton on `theta >= 0` (DECISIONS G7). `None` when the
 /// maximum is not identified.
 fn fit(events: &[Prepared]) -> Option<Fit> {
+    // The pre-check relies on this; callers check it first.
+    debug_assert!(difference_rank(events) >= BEHAVIOR_MIN_RANK);
     if separated(events) {
         return None;
     }

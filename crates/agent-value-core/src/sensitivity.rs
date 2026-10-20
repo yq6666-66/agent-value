@@ -862,6 +862,11 @@ pub fn bootstrap_strata(tasks: &[BootstrapTask]) -> Result<Vec<Vec<usize>>> {
 /// [`bootstrap_strata`] order) and returns that resample's recomputed
 /// `E_d` arms and anchor. `arm_ids` lists every arm to report; every task
 /// arm and every arm returned by `eval` must be in it.
+///
+/// Because task arms must be in `arm_ids`, a reference or fallback arm
+/// whose tasks are passed in also appears in the returned frequency list,
+/// even when it is not in `E_d` (its counts may then be 0). There is no
+/// caller yet; how the app presents such an entry is not decided or tested.
 pub fn statistical_robustness<F>(
     tasks: &[BootstrapTask],
     seed: u64,

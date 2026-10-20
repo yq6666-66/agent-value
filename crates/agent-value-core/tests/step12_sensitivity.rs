@@ -1325,3 +1325,192 @@ fn bootstrap_needs_arm_ids_and_skips_empty_resamples_for_winners() {
     assert_eq!((r.resamples, r.with_value, r.tied), (200, 0, 0));
     assert_eq!((r.arms[0].winner, r.arms[0].frontier), (0, 0));
 }
+
+#[test]
+fn runner_up_ahead_on_the_whole_segment_is_always() {
+    // W_k has a weight at the 0.05 edge and the top two are tied within
+    // the 1e-12 tolerance (V_B − V_A ≈ 2.8e-14 and 1.4e-14), so by id A
+    // leads and B is a hair ahead at W_k. Along the segments below B
+    // stays ahead (by up to ~32 points), so the sentence must be
+    // "都高于", not "不会超过" and not a ratio outside the segment.
+    let b = arm("B", 1.0, 45.0, 0.8);
+    let cases = [
+        // Quality fixed: slope < 0 with the root beyond the upper end.
+        (
+            w(0.05, 0.50, 0.45),
+            arm("A", 2.9760241027279015, 39.29024508215757, 0.8),
+            [Dim::Time, Dim::Quality],
+            Dim::Cost,
+        ),
+        // Quality fixed: slope > 0 with the root below the lower end.
+        (
+            w(0.50, 0.05, 0.45),
+            arm("A", 0.8905630307413533, 148.09690970754303, 0.8),
+            [Dim::Cost, Dim::Quality],
+            Dim::Time,
+        ),
+    ];
+    for (wk, a, always, crosses) in cases {
+        let arms = vec![a.clone(), b.clone()];
+        let va = value_score(example_reference(), a.point, &wk, &Floors::default()).unwrap();
+        let vb = value_score(example_reference(), b.point, &wk, &Floors::default()).unwrap();
+        assert!(vb > va && vb - va < 1e-12, "{va} {vb}");
+        let f = flip(&arms, wk);
+        assert!(f.tied_now);
+        assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
+        for st in &f.statements {
+            if always.contains(&st.fixed) {
+                assert_eq!(st.kind, FlipKind::Always, "{:?}", st);
+                assert_eq!(
+                    flip_sentence(&f, st),
+                    format!(
+                        "保持{}权重不变，B 在任何可行权重下都高于 A；这是在当前估计值下的结论",
+                        if st.fixed == Dim::Quality {
+                            "质量"
+                        } else if st.fixed == Dim::Time {
+                            "时间"
+                        } else {
+                            "成本"
+                        }
+                    )
+                );
+            } else {
+                assert_eq!(st.fixed, crosses);
+                assert!(
+                    matches!(
+                        st.kind,
+                        FlipKind::Crosses {
+                            over: Dim::Quality,
+                            ..
+                        }
+                    ),
+                    "{:?}",
+                    st
+                );
+            }
+        }
+        // B really is ahead along each "always" segment.
+        for st in f.statements.iter().filter(|s| s.kind == FlipKind::Always) {
+            let free: Vec<Dim> = [Dim::Cost, Dim::Time, Dim::Quality]
+                .into_iter()
+                .filter(|d| *d != st.fixed)
+                .collect();
+            let s_free = 1.0 - st.fixed_weight;
+            for k in 1..=99 {
+                let u = 0.05 + (s_free - 0.10) * f64::from(k) / 100.0;
+                let mut ws = [0.0; 3];
+                for (d, x) in [
+                    (st.fixed, st.fixed_weight),
+                    (free[0], u),
+                    (free[1], s_free - u),
+                ] {
+                    ws[d as usize] = x;
+                }
+                let ww = Weights::new(ws[0], ws[1], ws[2]).unwrap();
+                let va =
+                    value_score(example_reference(), a.point, &ww, &Floors::default()).unwrap();
+                let vb =
+                    value_score(example_reference(), b.point, &ww, &Floors::default()).unwrap();
+                assert!(vb >= va - 1e-12, "{:?} {u}", st.fixed);
+            }
+        }
+    }
+}
+
+/// Runs the bootstrap on `tasks` and returns every resample's draw.
+fn draws_of(tasks: &[BootstrapTask], seed: u64, arm_ids: &[String]) -> Vec<Vec<usize>> {
+    let mut draws = Vec::new();
+    statistical_robustness(
+        tasks,
+        seed,
+        arm_ids,
+        &Weights::equal(),
+        &Floors::default(),
+        |d| {
+            draws.push(d.to_vec());
+            Ok(ResampleLayer {
+                arms: Vec::new(),
+                reference: None,
+            })
+        },
+    )
+    .unwrap();
+    draws
+}
+
+/// For each stratum (as written out by the test), whether some resample
+/// drew a repeated task in it (an untouched copy never repeats), and
+/// whether two seeds give different draws in it.
+fn assert_every_stratum_is_resampled(
+    tasks: &[BootstrapTask],
+    arm_ids: &[String],
+    strata: &[Vec<usize>],
+) {
+    let a = draws_of(tasks, 20261020, arm_ids);
+    let b = draws_of(tasks, 7, arm_ids);
+    assert_eq!(a.len(), 200);
+    let mut at = 0;
+    for st in strata {
+        let n = st.len();
+        let slices = |d: &Vec<Vec<usize>>| -> Vec<Vec<usize>> {
+            d.iter().map(|x| x[at..at + n].to_vec()).collect()
+        };
+        let (sa, sb) = (slices(&a), slices(&b));
+        let repeated = sa.iter().any(|x| {
+            let mut y = x.clone();
+            y.sort_unstable();
+            y.dedup();
+            y.len() < n
+        });
+        assert!(repeated, "stratum {st:?} never resampled: {:?}", &sa[..3]);
+        assert!(sa.iter().any(|x| x != st), "stratum {st:?} always copied");
+        assert_ne!(sa, sb, "stratum {st:?} ignores the seed");
+        at += n;
+    }
+    assert_eq!(at, tasks.len());
+}
+
+#[test]
+fn every_stratum_is_actually_resampled() {
+    let fx = fixture();
+    assert_every_stratum_is_resampled(
+        &fx.tasks,
+        &ids(),
+        &[vec![0, 1], vec![2, 3, 4], vec![5, 6], vec![7, 8]],
+    );
+}
+
+#[test]
+fn reference_and_fallback_arms_are_resampled_like_the_others() {
+    // The core does not know which arm is R or F; they are ordinary arms
+    // in arm_ids. Put R first and F last in arm_ids (a frozen first or last
+    // arm would show), and give each a 2- and a 3-task cell.
+    let mut tasks = Vec::new();
+    for (a, c, n) in [
+        ("R", "fix", 2),
+        ("R", "new", 3),
+        ("X", "fix", 2),
+        ("X", "new", 2),
+        ("F", "fix", 3),
+        ("F", "new", 2),
+    ] {
+        for _ in 0..n {
+            tasks.push(BootstrapTask {
+                arm: a.into(),
+                cell: cell(c),
+            });
+        }
+    }
+    let arm_ids = vec!["R".to_string(), "X".to_string(), "F".to_string()];
+    // Key order: F < R < X.
+    let strata = vec![
+        vec![9, 10, 11],
+        vec![12, 13],
+        vec![0, 1],
+        vec![2, 3, 4],
+        vec![5, 6],
+        vec![7, 8],
+    ];
+    assert_eq!(bootstrap_strata(&tasks).unwrap(), strata);
+    assert_every_stratum_is_resampled(&tasks, &arm_ids, &strata);
+}

@@ -504,7 +504,7 @@ $$
 - A tie is reported as the whole group; it is never broken by name.
 - There is no map in the first window, in a layer whose reference anchor is tier III, or when there is no arm to compare. The frontier of section 8 is still produced in those cases.
 - Each grid point is marked as inside or outside $\Omega_s$ and $\Omega_b$ from section 9. The caller passes these sets in.
-- Because $a$, $b$, $g$ are all positive, an arm dominated on the official frontier always has a lower $V$, so the winner is always on $\mathcal F^{\rm off}_d$: changing the weights only changes which frontier arm wins.
+- Because $a$, $b$, $g$ are all positive, an arm dominated on the official frontier always has a lower $V$, so the winning group always contains an arm of $\mathcal F^{\rm off}_d$. Apart from ties within the tolerance (see the implementation notes), changing the weights only changes which frontier arm wins.
 - The winner does not depend on the reference anchor's tier I or tier II value, because that part is the same for every arm in the layer. Changing the reference or fallback arm can change the winner, because the fallback arm's cell values enter every arm's score.
 
 **Robust to your weights.** The region $\Omega$ is $\Omega_s$ if you have answered the questions. Otherwise it is the grid points whose largest difference from $W_k$ in any of the three weights is at most $0.10$, edge included; $W_k$ itself need not be on the grid.

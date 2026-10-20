@@ -20,8 +20,8 @@ There is no usable app yet. The formulas below exist as a tested Rust library, a
 | 8 | Eligibility gates $\mathcal E_d$ | Implemented (authenticity and log integrity are passed in by the caller until step 13) |
 | 9 | Frontier and diagnostic table | Implemented (per layer and overall; the display is planned) |
 | 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Implemented (no display layer yet) |
-| 11 | Weight elicitation from your answers and behaviour | Planned |
-| 12 | Weight sensitivity display | Planned |
+| 11 | Weight elicitation from your answers and behaviour | Implemented (library only; no question screen or suggestion display yet) |
+| 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Implemented (library only) |
 | 13 | Probes and relay checks | Planned |
 
 Changes by version are in [CHANGELOG.md](CHANGELOG.md).
@@ -420,13 +420,149 @@ If any positive-weight layer is tier III, the overall reference is $\mathrm{NA}$
 
 </details>
 
-### 9. Planned
+### 9. Weights from your answers and behaviour
+
+*Spec §10. Implemented as library functions; the question screen and the suggestion display are planned.*
+
+**Self-report.** You answer pairwise questions. Each question offers two options, A and B, that differ in two of cost, time and quality, pulling in opposite directions; the third dimension is equal. With the noise floors $c_0$, $t_0$, $\epsilon$, the ratios between A and B are $\rho_C=(C_A+c_0)/(C_B+c_0)$, $\rho_T=(T_A+t_0)/(T_B+t_0)$ and $\rho_D=(1-Q_A+\epsilon)/(1-Q_B+\epsilon)$; the equal dimension has ratio 1.
+
+$$
+s(w)=a\ln\rho_C+b\ln\rho_T+g\ln\rho_D,\qquad
+\Delta=\tfrac12\bigl(|\ln\rho_C|+|\ln\rho_T|+|\ln\rho_D|\bigr),\qquad
+u(w)=-s(w)/\Delta .
+$$
+
+You answer on five levels: strongly A ($+2$), slightly A ($+1$), about the same ($0$), slightly B ($-1$), strongly B ($-2$). A weight $w$ predicts the level
+
+$$
+\ell(w)=\begin{cases}
++2, & u(w)>\delta_2,\\
++1, & \delta_1<u(w)\le\delta_2,\\
+0, & |u(w)|\le\delta_1,\\
+-1, & -\delta_2\le u(w)<-\delta_1,\\
+-2, & u(w)<-\delta_2,
+\end{cases}\qquad \delta_1=0.25,\ \delta_2=0.50 .
+$$
+
+$u$ is rounded to 9 decimal places first, so a value that is exactly $0.25$ or $0.50$ stays inside the closed band.
+
+- Candidate weights are a grid: $a$, $b$, $g$ each from $0.05$ to $0.90$ in steps of $0.05$, with $a+b+g=1$. That gives 171 points.
+- The question bank has 96 questions: 3 pairs of dimensions, ratios from $\{1.3, 1.5, 2, 3\}$ for each of the two dimensions, and 2 directions.
+- Let $m$ be the smallest total level deviation from your answers over the grid. The core region $\Omega^{\rm core}_s$ holds the grid points with deviation $m$. The weight region $\Omega_s$ holds the points with deviation at most $m+1$, so one answer may be a level off.
+- The next question is the unanswered one that splits $\Omega_s$ most evenly over the five levels; on a tie, the first one in the bank. Questions stop once at least 4 are answered and $\Omega_s$ has at most 15 points, or after 10 questions.
+- The result is shown mainly as $\Omega_s$ and its range in each dimension. The default point $w_s$ is the grid point nearest the centroid of the core region.
+- If $m\ge2$, the answers are flagged as contradicting each other, with a list of the questions that are two or more levels off at some core point. The list may be empty.
+- The amounts in a question are computed one dimension at a time from a base value: the previous window's median (in the first window, 0.5 RMB and 120 s) for cost and time, and a defect rate passed in by the caller for quality. In each dimension, the option that is better in that dimension shows the base, and the worse option's value is computed from the ratio, so cost and time stay positive and a defect rate is never negative; in the equal dimension both show the base. A question whose computed defect rate would go above 1 is skipped, not clamped.
+- The cut points $0.25$ and $0.50$ and the "one answer may be a level off" error model have been checked in simulation only, not with real users.
+
+**Behaviour suggestions.** These use the choice events of the previous window: which arms you could pick and which one you picked. Only real choices between at least 2 arms count, and an event is dropped whole if any of its arms lacks values. Using the noise floors $c_0$, $t_0$, $\epsilon$ from the constants table and the arm's cell values from the previous window, set $x_l=\bigl(\ln(C^{\ast}_l+c_0),\ \ln(T^{\ast}_l+t_0),\ \ln(1-Q^{\ast}_l+\epsilon)\bigr)$, a choice model is fitted with $\vartheta\ge0$:
+
+$$
+\Pr(j_e\mid S_e;\vartheta)=\frac{\exp(-\vartheta\cdot x_{j_e})}{\sum_{l\in S_e}\exp(-\vartheta\cdot x_l)},\qquad
+w_b=\frac{\hat\vartheta}{\lVert\hat\vartheta\rVert_1},\qquad \hat\lambda=\lVert\hat\vartheta\rVert_1 .
+$$
+
+- There is no signal, and so no suggestion, when there are fewer than 20 events, fewer than 2 different arms were ever picked, the differences $x_{j_e}-x_l$ between the chosen arm and each other option have rank below 3, $\hat\lambda<0.5$, or the fit has no well-defined maximum.
+- Otherwise the support set $\Omega_b$ holds the grid points whose profile log-likelihood is within $3.0$ of the maximum. It is a heuristic set, not a confidence region, and it can be empty: $w_b$ may lie off the grid (a component below 0.05), or the likelihood may be so sharp that even the nearest grid point is more than 3.0 below the maximum. An empty $\Omega_b$ is not an error: with a self-report there is then no overlap, so the "no overlap" row below applies; without one, the "no self-report, behaviour signal" row applies.
+- 200 bootstrap resamples report the 5%, 50% and 95% points of $w_b$. If fewer than 100 resamples succeed, the result is marked unstable.
+- The first window gives no signal. Behaviour from the window being scored, or from a later one, is refused with an error.
+
+**How they combine.** Behaviour never changes the weights. The weights in effect are $w_s$ if you have answered the questions, otherwise $1/3$ each. Behaviour only adds a suggestion:
+
+| Situation | Weights in effect | Suggestion |
+|---|---|---|
+| Self-report, no behaviour signal | $w_s$ | none |
+| Self-report, $\Omega_s$ and $\Omega_b$ overlap | $w_s$ | "behaviour agrees", plus the point of $\Omega_s$ with the highest profile log-likelihood |
+| Self-report, no overlap | $w_s$ | the conflict, plus $w_b$ |
+| No self-report, behaviour signal | $1/3$ each | $w_b$ |
+| Neither | $1/3$ each | a prompt to answer the questions |
+
+<details>
+<summary>Implementation notes</summary>
+
+- On a tie for nearest grid point, $w_s$ is the point with the smallest $(a, b)$ in dictionary order. The distance is compared exactly in integers.
+- The core works with ratios only. Turning a question into amounts and times is done from the ratios; a question that cannot be shown is skipped and not asked again. A defect base of 0 is valid.
+- The rank is computed by elimination with full pivoting and a relative tolerance of $10^{-9}$. "Different arms" are counted by arm id.
+- $\hat\vartheta$ is found by projected Newton steps on $\vartheta\ge0$. No finite maximum, a nearly singular information matrix, or no convergence gives "no signal: not identifiable" instead of an error.
+- A bootstrap resample that fails (difference rank below 3, or no finite fit with $\lVert\vartheta\rVert_1>0$) is skipped and counted. The random seed is passed in by the caller.
+- The profile log-likelihood of $w$ is the maximum of the log-likelihood $L$ along $\lambda w$ for $\lambda>0$. If $L$ does not increase from $\lambda=0$, the value at $\lambda=0$ is used. The threshold for $\Omega_b$ uses $L(\hat\vartheta)$ directly; $w_b$ is not moved onto the grid.
+
+</details>
+
+### 10. Weight sensitivity
+
+*Spec §12. Implemented as library functions; the winner map display is planned.*
+
+This shows how the result would change with other weights. Everything here is computed at fixed values: one layer (or the scope's overall result), its eligible arms $\mathcal E_d$, each arm's cost, time and quality, and the fallback arm's cell values. $W_k$ below is the weights in effect from section 9.
+
+**Winner map.** At each point $w$ of the 171-point weight grid $G$ from section 9, every arm in $\mathcal E_d$ gets its value score $V_{i,d}(w)$:
+
+$$
+{\rm Win}(w)=\{i\in\mathcal E_d:\ V_{i,d}(w)=\max_{l\in\mathcal E_d}V_{l,d}(w)\}.
+$$
+
+- A tie is reported as the whole group; it is never broken by name.
+- There is no map in the first window, in a layer whose reference anchor is tier III, or when there is no arm to compare. The frontier of section 8 is still produced in those cases.
+- Each grid point is marked as inside or outside $\Omega_s$ and $\Omega_b$ from section 9. The caller passes these sets in.
+- Because $a$, $b$, $g$ are all positive, an arm dominated on the official frontier always has a lower $V$, so the winner is always on $\mathcal F^{\rm off}_d$: changing the weights only changes which frontier arm wins.
+- The winner does not depend on the reference anchor's tier I or tier II value, because that part is the same for every arm in the layer. Changing the reference or fallback arm can change the winner, because the fallback arm's cell values enter every arm's score.
+
+**Robust to your weights.** The region $\Omega$ is $\Omega_s$ if you have answered the questions. Otherwise it is the grid points whose largest difference from $W_k$ in any of the three weights is at most $0.10$, edge included; $W_k$ itself need not be on the grid.
+
+- For each arm, the share of points in $\Omega$ where it is in ${\rm Win}(w)$. Every member of a tie counts that point, so the shares can add up to more than 100%. The number of points where the arm wins alone is reported too.
+- An arm is labelled "it wins everywhere in your weight range" only if it wins alone at every point of $\Omega$. A tie at every point does not get the label.
+
+**Robust to sampling.** This is reported separately from the weight check.
+
+- Tasks are resampled with replacement 200 times, within each (arm, design cell) group. Every group keeps its number of tasks, so each arm's task count per cell, the frozen cell weights $\omega_u$ and the design grid stay as they are; only the outcomes inside each cell vary. The reference and fallback arms are resampled like every other arm. The caller passes each task's arm and cell and a random seed, and recomputes $\mathcal E_d$, each arm's cost, time and quality, and the anchor for each resample.
+- For each arm the result gives how often it is in ${\rm Win}(W_k)$ and how often it is on $\mathcal F^{\rm off}_d$. Every member of a tie counts, and the number of tied resamples is reported. A resample whose reference is tier III or whose $\mathcal E_d$ is empty has no winner, but its frontier still counts.
+- The same seed gives the same result.
+- Where the app's seed comes from is settled when the data layer is connected; the library takes the seed as an input and reports it.
+
+**Flip line.** Take the two arms $i$ and $j$ with the highest $V$ at $W_k$:
+
+$$
+\Delta_C=\ln\frac{C_i^{\ast}+c_0}{C_j^{\ast}+c_0},\qquad
+\Delta_T=\ln\frac{T_i^{\ast}+t_0}{T_j^{\ast}+t_0},\qquad
+\Delta_D=\ln\frac{1-Q_i^{\ast}+\epsilon}{1-Q_j^{\ast}+\epsilon},\qquad
+a\Delta_C+b\Delta_T+g\Delta_D=0 .
+$$
+
+On the side where the left-hand side is above 0, $j$ is ahead of $i$.
+
+- There is no line with fewer than 2 arms, or when second and third place are tied (including three or more arms tied for first). If first and second place are tied now, the line is still drawn and marked as tied.
+- The line is explained in one sentence per dimension: keep that dimension's weight at its current value, and let the other two move with each at least 0.05. The front end picks which sentence to show.
+  - If the flip falls inside that range: "as long as the time weight is more than $r$ times the cost weight, $j$ overtakes $i$" (with the dimensions in the right order).
+  - If $j$ never leads there: $j$ does not overtake $i$.
+  - If $j$ leads everywhere there: $j$ is higher at every allowed weight.
+  - If they are tied everywhere there: they stay tied.
+- $r$ is rounded up to 2 decimal places, so the printed condition is always enough. Each sentence ends with "this holds for the current estimates".
+
+**Robust to noise floors.** The winner at $W_k$ is computed 7 times: once with the noise floors as set, and once each with $c_0$, $t_0$ and $\epsilon$ halved and doubled, one at a time. If all 7 winners are the same, the result is marked robust to noise floors; otherwise each run's winner is listed. This is a diagnostic only: the scores shown still use the noise floors as set.
+
+<details>
+<summary>Implementation notes</summary>
+
+- The core functions work on one layer or one overall result. The caller runs them for each layer and each overall result of a scope.
+- The grid is built in exact twentieths, the same way as in section 9. The module builds its own copy for now; switching to the section 9 grid code is planned.
+- When $\Omega_s$ or $\Omega_b$ is passed in, every point must be on the 0.05 grid (tolerance $10^{-9}$) and no point may repeat; otherwise it is an error.
+- $\Omega_s$ is passed as none when there is no self-report. It is never empty by definition (it holds the points that fit your answers best), so an empty $\Omega_s$ is an error.
+- $\Omega_b$ is passed as none when behaviour has no signal. An empty $\Omega_b$ means behaviour has a signal but no grid point qualifies (section 9); it is accepted and no point is marked. The result says which of the three cases applies: no signal, no grid point, or how many points.
+- The distance check for $\Omega$ uses a tolerance of $10^{-9}$, so a point exactly $0.10$ away is inside. With $W_k=1/3$ each, $\Omega$ has 12 points.
+- Resampling uses a xorshift64 generator with rejection sampling for indices, so there is no modulo bias. A seed of 0 is an error. All counts use checked addition and report an error on overflow.
+- Ties use the same tolerance as the official pick ($10^{-12}$ on $V$). So an arm dominated by a hair can share a tie group with the arm that dominates it, and the group is reported whole. Every winner group is checked to contain an arm of $\mathcal F^{\rm off}_d$; a group without one is an error.
+- If first and second place are tied, $i$ and $j$ are ordered by arm id. This only sets the display order; it does not pick a winner.
+- The structure keeps the unrounded ratio $r$; only the printed value is rounded up. A ratio within $10^{-11}$ of a two-decimal value prints as that value, so 1.1 prints as 1.10, not 1.11.
+- The noise floor checks halve and double the floors set for that scope.
+- The specification's two-arm example is a test: Y wins 93 grid points and X wins 78; inside the 14-point $\Omega_s$ from an honest set of answers, Y wins all 14.
+
+</details>
+
+### 11. Planned
 
 These parts of the specification are not implemented:
 
 - **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6). Showing the first window's frontier labelled as not yet calibrated is also planned.
-- **Weights** (step 11): estimating $a$, $b$, $g$ from pairwise questions and from your behaviour.
-- **Weight sensitivity** (step 12): how results change across the weight grid, plus a check that halves and doubles each noise floor one at a time.
 - **Probes and relay checks** (step 13): a fixed probe set that checks whether a route serves the model it claims, plus log-integrity checks.
 
 ### Constants
@@ -444,6 +580,14 @@ These parts of the specification are not implemented:
 | $\epsilon$ | 0.02 | Quality defect noise floor |
 | $\theta$ | 0.10 | Tier II clamp window for the reference anchor (cost, time and defects) |
 | $a,b,g$ | $1/3$ each by default, each $\ge0.05$ | Weights of cost, time and quality in $V$ |
+| Answer cut points $\delta_1,\delta_2$ | 0.25, 0.50 | Bands of $u(w)$ for the five answer levels |
+| Weight grid | step 0.05, each weight 0.05 to 0.90, 171 points | Candidate weights for the questions and for $\Omega_b$ |
+| Question stop rule | at least 4 answers and $\lvert\Omega_s\rvert\le15$ points, or 10 answers | When the questions stop |
+| Behaviour signal | at least 20 events, at least 2 different chosen arms, difference rank 3, $\hat\lambda\ge0.5$ | Otherwise there is no behaviour suggestion |
+| Support set | within 3.0 of the maximum profile log-likelihood; 200 bootstrap resamples | $\Omega_b$ and the spread of $w_b$ |
+| Sensitivity region without a self-report | grid points within 0.10 of $W_k$ in every weight | $\Omega$ for the weight check when you have not answered the questions |
+| Sensitivity resamples | 200, seed passed in by the caller | Sampling check of the winner and the frontier |
+| Noise floor check | $c_0$, $t_0$, $\epsilon$ each halved and doubled, one at a time (6 runs plus the baseline) | Whether the winner at $W_k$ depends on the noise floors |
 | Time window | 30 days | Weights and references are fixed from the previous window |
 | Redo window | 30 minutes | A redo request in this period marks the task failed |
 | Rollback window | 24 hours | A full revert in this period marks a coding task failed |

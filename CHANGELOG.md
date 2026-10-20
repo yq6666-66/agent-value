@@ -46,6 +46,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Noise-floor robustness at `W_k` under `c0`, `t0`, `ε` × 0.5 and × 2.
   All counters use checked addition. Paired with the spec example (Y
   wins 93 grid points, X 78; Y wins 14 of 14 in the self-report region).
+- README (English and Chinese): section 10, weight sensitivity (§12),
+  and its roadmap row and constants; built on the step 11 README.
 
 - Core, spec step 10: reference anchor certification (§7). Tiers are
   decided III → II → I, first match wins; tier III lists every reason

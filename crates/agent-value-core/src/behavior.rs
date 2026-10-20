@@ -297,9 +297,11 @@ fn dot(d: &[f64; 3], v: &[f64; 3]) -> f64 {
 /// Separation pre-check (DECISIONS G7). The maximum of the likelihood on
 /// `theta >= 0` is not attained exactly when some `d >= 0`, `d != 0`, has
 /// `d . (x_l - x_chosen) >= 0` for every event and every other option, with
-/// at least one inequality strict: moving along `d` then never lowers and
-/// somewhere raises the likelihood. Identical values give differences of
-/// exactly 0, which constrain nothing.
+/// at least one inequality strict: moving along `theta + t d`, `t >= 0`,
+/// then never lowers and somewhere raises the likelihood. The converse (no
+/// such `d` means the maximum is attained) needs the difference rank 3,
+/// which `calibrate` and `bootstrap` check before calling `fit`. Identical
+/// values give differences of exactly 0, which constrain nothing.
 fn separated(events: &[Prepared]) -> bool {
     let mut constraints = Vec::new();
     for e in events {
@@ -843,6 +845,19 @@ mod tests {
         assert!(!separated(&[prep(vec![x, x], 0)]));
         // One choice each way along time: not separated.
         assert!(!separated(&[prep(vec![x, y], 0), prep(vec![x, y], 1)]));
+    }
+
+    #[test]
+    fn separation_tolerance_boundary() {
+        // After scaling, a constraint strict by 2e-9 at the vertex e2
+        // counts; one strict by only 5e-10 is within the tolerance and does
+        // not.
+        assert!(sep(&[[-1.0, -1.0, 2e-9]]));
+        assert!(!sep(&[[-1.0, -1.0, 5e-10]]));
+        // A violation within the tolerance is still feasible: e2 stays and
+        // the second constraint is strict there. Beyond it, nothing is left.
+        assert!(sep(&[[-1.0, -1.0, -5e-10], [0.0, 0.0, 1.0]]));
+        assert!(!sep(&[[-1.0, -1.0, -2e-9], [0.0, 0.0, 1.0]]));
     }
 
     #[test]

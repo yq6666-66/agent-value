@@ -1060,3 +1060,116 @@ mod fallback {
         ));
     }
 }
+
+fn two_arm(id: String, a: Point, b: Point, chosen: &str) -> ChoiceEvent {
+    ChoiceEvent {
+        id,
+        options: vec![
+            EventOption {
+                arm: "A".into(),
+                value: Some(a),
+            },
+            EventOption {
+                arm: "B".into(),
+                value: Some(b),
+            },
+        ],
+        chosen: chosen.into(),
+    }
+}
+
+/// Quasi-complete separation along d = (1, 0, 0): `n_sep` events where the
+/// chosen arm is strictly cheaper (time and quality equal), and `n_tie`
+/// events with equal cost and random time and quality, chosen by a finite
+/// logit. The cost ratio of a separated event is `ratio` (with up to 10% of
+/// its excess as jitter), or a random gap when `None`.
+fn quasi_separated(n_sep: usize, n_tie: usize, seed: u64, ratio: Option<f64>) -> Vec<ChoiceEvent> {
+    let mut rng = SplitMix64::new(seed);
+    let mut v = Vec::new();
+    for e in 0..n_sep {
+        let lo = 0.2 + uniform(&mut rng);
+        let hi = match ratio {
+            None => lo + 0.1 + uniform(&mut rng),
+            Some(k) => {
+                (lo + C0_YUAN) * (1.0 + (k - 1.0) * (1.0 + 0.1 * uniform(&mut rng))) - C0_YUAN
+            }
+        };
+        let (cheap, dear) = (pt(lo, 60.0, 0.8), pt(hi, 60.0, 0.8));
+        if e % 2 == 0 {
+            v.push(two_arm(format!("s{e}"), cheap, dear, "A"));
+        } else {
+            v.push(two_arm(format!("s{e}"), dear, cheap, "B"));
+        }
+    }
+    for e in 0..n_tie {
+        let (ta, tb) = (
+            30.0 + 200.0 * uniform(&mut rng),
+            30.0 + 200.0 * uniform(&mut rng),
+        );
+        let (qa, qb) = (
+            0.5 + 0.45 * uniform(&mut rng),
+            0.5 + 0.45 * uniform(&mut rng),
+        );
+        let s = |t: f64, q: f64| (t + T0_SECONDS).ln() + (1.0 - q + EPSILON).ln();
+        let pa = 1.0 / (1.0 + (s(ta, qa) - s(tb, qb)).exp());
+        let chosen = if uniform(&mut rng) < pa { "A" } else { "B" };
+        v.push(two_arm(
+            format!("t{e}"),
+            pt(0.5, ta, qa),
+            pt(0.5, tb, qb),
+            chosen,
+        ));
+    }
+    v
+}
+
+#[test]
+fn quasi_complete_separation_is_not_identifiable() {
+    // DECISIONS G7. Along the separating direction the information goes to
+    // 0 while the other directions keep O(1) information, so the matrix
+    // stays rank 3 but its smallest eigenvalue falls below the floor
+    // (1e-8 * n): the check is on the smallest eigenvalue (Cholesky of
+    // info - floor * n * I), not on a norm or determinant. The last case
+    // (cost ratio 1 + 1e-6) drives |theta|_1 past the 1e6 cap; without the
+    // cap the fit stops at about 8e6 and the same check rejects it, so the
+    // cap does not change the result (mutant M33 is equivalent).
+    let cases = [
+        quasi_separated(15, 15, 1, None),
+        quasi_separated(20, 20, 2, None),
+        quasi_separated(30, 30, 3, None),
+        quasi_separated(15, 15, 6, Some(1.0 + 1e-6)),
+        quasi_separated(15, 15, 7, Some(1.0 + 1e-5)),
+    ];
+    for ev in &cases {
+        let b = calibrate(ev, W0, W1, 9).unwrap();
+        assert_eq!(b.no_signal, vec![NoSignalReason::NotIdentifiable]);
+        assert!(b.theta.is_none() && b.w_b.is_none() && b.support.is_empty());
+    }
+}
+
+#[test]
+fn complete_separation_is_not_identifiable() {
+    // The chosen arm is better in all three dimensions in every event.
+    let mut rng = SplitMix64::new(4);
+    let ev: Vec<ChoiceEvent> = (0..30)
+        .map(|e| {
+            let a = pt(
+                0.2 + uniform(&mut rng),
+                30.0 + 100.0 * uniform(&mut rng),
+                0.5 + 0.3 * uniform(&mut rng),
+            );
+            let b = pt(
+                a.c + 0.05 + uniform(&mut rng),
+                a.t + 5.0 + 100.0 * uniform(&mut rng),
+                a.q - 0.05 - 0.2 * uniform(&mut rng),
+            );
+            if e % 2 == 0 {
+                two_arm(format!("c{e}"), a, b, "A")
+            } else {
+                two_arm(format!("c{e}"), b, a, "B")
+            }
+        })
+        .collect();
+    let b = calibrate(&ev, W0, W1, 9).unwrap();
+    assert_eq!(b.no_signal, vec![NoSignalReason::NotIdentifiable]);
+}

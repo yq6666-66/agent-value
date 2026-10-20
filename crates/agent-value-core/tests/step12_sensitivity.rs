@@ -690,6 +690,45 @@ fn crossing_below_the_lower_end_0_05_is_never() {
 }
 
 #[test]
+fn lower_end_is_pinned_at_0_05_to_within_1e_4() {
+    // Crossing at w_T = S·Δ_C: 0.0499 is outside, 0.0501 inside.
+    let s = 2.0 / 3.0;
+    let out = 0.0499 / s;
+    assert_eq!(
+        quality_fixed(&arms_with_deltas(out, out - 1.0)),
+        FlipKind::Never
+    );
+    let inn = 0.0501 / s;
+    assert!(matches!(
+        quality_fixed(&arms_with_deltas(inn, inn - 1.0)),
+        FlipKind::Crosses {
+            over: Dim::Cost,
+            under: Dim::Time,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn upper_end_is_pinned_at_s_minus_0_05_to_within_1e_4() {
+    let s = 2.0 / 3.0;
+    let out = (s - 0.05 + 1e-4) / s;
+    assert_eq!(
+        quality_fixed(&arms_with_deltas(-out, 1.0 - out)),
+        FlipKind::Never
+    );
+    let inn = (s - 0.05 - 1e-4) / s;
+    assert!(matches!(
+        quality_fixed(&arms_with_deltas(-inn, 1.0 - inn)),
+        FlipKind::Crosses {
+            over: Dim::Time,
+            under: Dim::Cost,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn crossing_above_the_upper_end_s_minus_0_05_is_never() {
     // j is ahead only for w_T > S·0.955 = 0.6367 > S − 0.05 = 0.6167.
     let arms = arms_with_deltas(-0.955, 0.045);
@@ -760,6 +799,9 @@ fn printed_ratio_rounds_up_but_keeps_exact_two_decimals() {
     assert_eq!(printed_ratio(1.0023), 1.01);
     // Within 1e-11 of x.yz the value prints as x.yz (documented tolerance).
     assert_eq!(printed_ratio(1.1 + 1e-12), 1.1);
+    // The tolerance is 1e-9 on ratio·100, i.e. 1e-11 on the ratio.
+    assert_eq!(printed_ratio(1.1 + 5e-12), 1.1);
+    assert_eq!(printed_ratio(1.1 + 5e-11), 1.11);
 }
 
 #[test]
@@ -777,13 +819,20 @@ fn off_grid_tolerance_is_1e_9_not_a_fraction_of_a_step() {
     let flagged: Vec<_> = r.map.iter().filter(|p| p.in_omega_s).collect();
     assert_eq!(flagged.len(), 1);
     assert_eq!(flagged[0].weights, w(0.2, 0.35, 0.45));
+    // The tolerance is 1e-9 per weight: 1e-10 snaps, 1e-8 is rejected.
+    let snap = vec![w(0.2 + 1e-10, 0.35 - 1e-10, 0.45)];
+    let r = report(&input(&arms, Weights::equal(), Some(&snap)));
+    assert_eq!(r.map.iter().filter(|p| p.in_omega_s).count(), 1);
+    let reject = vec![w(0.2 + 1e-8, 0.35 - 1e-8, 0.45)];
+    assert!(sensitivity(&input(&arms, Weights::equal(), Some(&reject))).is_err());
 }
 
 #[test]
 fn floor_variants_through_sensitivity_use_the_scope_floors() {
     // Same X/Y as the DECISIONS K example, but the scope overrides the
     // floors to (0.05, 15, 0.005). Halving / doubling those keeps X on
-    // top in all seven runs; doubling the §9 c0 instead would flip to Y.
+    // top in all seven runs; with the §9 default floors some variant
+    // flips, so using the defaults by mistake would read "not robust".
     let arms = vec![arm("X", 0.10, 120.0, 0.92), arm("Y", 0.40, 120.0, 0.97)];
     let mut i = input(&arms, Weights::equal(), None);
     i.reference = Some(Point {
@@ -800,10 +849,90 @@ fn floor_variants_through_sensitivity_use_the_scope_floors() {
         .runs
         .iter()
         .all(|(_, w)| *w == vec!["X".to_string()]));
-    // The map itself also uses the scope floors.
+    assert_eq!(r.current_winners, vec!["X".to_string()]);
     i.floors = Floors::default();
     let base = report(&i);
     assert!(!base.floor_robust.robust);
+    // The map itself also uses the scope floors: it differs from the map
+    // under the default floors.
+    assert!(r
+        .map
+        .iter()
+        .zip(&base.map)
+        .any(|(a, b)| a.winners != b.winners));
+}
+
+#[test]
+fn near_tie_dominated_twin_shares_the_group_and_is_not_an_error() {
+    // "good2" is "good" made 1e-13 元 dearer: dominated (not on F_off), but
+    // its V is within the 1e-12 tie tolerance of good's, so §12 reports
+    // them as one tie group. The runtime property-1 check must accept a
+    // group that also holds its F_off dominator.
+    let mut arms = four_arms();
+    arms.push(arm("good2", 0.80 + 1e-13, 150.0, 0.97));
+    let off = frontier_off(&arms);
+    assert!(!off.contains(&"good2".to_string()));
+    let r = report(&input(&arms, Weights::equal(), None));
+    let mut shared = 0;
+    for p in &r.map {
+        if p.winners.contains(&"good2".to_string()) {
+            assert!(p.winners.contains(&"good".to_string()), "{:?}", p.weights);
+            shared += 1;
+        }
+    }
+    assert!(shared > 0);
+}
+
+#[test]
+fn single_task_stratum_is_always_drawn_as_itself() {
+    // n_iu = 1 is common; below(1) must return 0 every time.
+    let tasks = vec![
+        BootstrapTask {
+            arm: "X".into(),
+            cell: cell("fix"),
+        },
+        BootstrapTask {
+            arm: "X".into(),
+            cell: cell("fix"),
+        },
+        BootstrapTask {
+            arm: "Y".into(),
+            cell: cell("fix"),
+        },
+    ];
+    assert_eq!(bootstrap_strata(&tasks).unwrap(), vec![vec![0, 1], vec![2]]);
+    let mut draws = Vec::new();
+    statistical_robustness(
+        &tasks,
+        7,
+        &ids(),
+        &Weights::equal(),
+        &Floors::default(),
+        |d| {
+            draws.push(d.to_vec());
+            Ok(ResampleLayer {
+                arms: Vec::new(),
+                reference: None,
+            })
+        },
+    )
+    .unwrap();
+    assert_eq!(draws.len(), 200);
+    assert!(draws.iter().all(|d| d.len() == 3 && d[2] == 2));
+}
+
+#[test]
+fn blank_id_in_arm_ids_is_an_error() {
+    let fx = fixture();
+    let r = statistical_robustness(
+        &fx.tasks,
+        1,
+        &["X".to_string(), " ".to_string()],
+        &Weights::equal(),
+        &Floors::default(),
+        |d| Ok(layer_from(&fx, d)),
+    );
+    assert!(r.is_err());
 }
 
 #[test]
@@ -933,7 +1062,8 @@ fn every_resample_keeps_each_arm_cell_count_and_stays_in_its_stratum() {
     let fx = fixture();
     let (_, draws) = run_bootstrap(20261020);
     assert_eq!(draws.len(), 200);
-    let strata = bootstrap_strata(&fx.tasks).unwrap();
+    // Expected groups written out, not taken from the function under test.
+    let strata = [vec![0usize, 1], vec![2, 3, 4], vec![5, 6], vec![7, 8]];
     for d in &draws {
         assert_eq!(d.len(), fx.tasks.len());
         let mut at = 0;
@@ -950,16 +1080,16 @@ fn every_resample_keeps_each_arm_cell_count_and_stays_in_its_stratum() {
 fn every_task_including_the_last_of_each_stratum_is_drawn() {
     let fx = fixture();
     let (_, draws) = run_bootstrap(20261020);
-    let mut hit = vec![0u32; fx.tasks.len()];
+    let mut seen = vec![0u32; fx.tasks.len()];
     for d in &draws {
         for &k in d {
-            hit[k] += 1;
+            seen[k] += 1;
         }
     }
-    assert!(hit.iter().all(|&h| h > 0), "{hit:?}");
+    assert!(seen.iter().all(|&h| h > 0), "{seen:?}");
     // Last positions of the four strata: 1, 4, 6, 8.
     for last in [1usize, 4, 6, 8] {
-        assert!(hit[last] > 0);
+        assert!(seen[last] > 0);
     }
 }
 

@@ -440,7 +440,12 @@ pub fn sensitivity(
 
     // §12 property 1: with a, b, g > 0 every winner is on F_off. It holds
     // by construction; checked in every build so a violation is an error,
-    // never a silently wrong map.
+    // never a silently wrong map. Ties use the 1e-12 tolerance of
+    // `highest_v_group`, so an arm dominated by a hair (V within 1e-12 of a
+    // frontier arm) can share a tie group with its dominator; §12 reports
+    // the whole group. Such a group always also holds an F_off member (the
+    // dominance chain ends on F_off and only raises V), so a group with no
+    // F_off member is the violation. Coupled to `layer_frontiers().off`.
     let off = layer_frontiers(&frontier_arms_of(input.arms))?.off;
     let all_winners = map
         .iter()
@@ -448,7 +453,7 @@ pub fn sensitivity(
         .chain(std::iter::once(&current_winners))
         .chain(floor_robust.runs.iter().map(|(_, w)| w));
     for ws in all_winners {
-        if ws.iter().any(|id| !off.contains(id)) {
+        if !ws.is_empty() && !ws.iter().any(|id| off.contains(id)) {
             return Err(CoreError::InvalidField {
                 field: "winner map",
                 reason: "a winner is outside F_off (§12 property 1)",

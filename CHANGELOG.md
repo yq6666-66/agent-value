@@ -37,7 +37,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   statement per fixed dimension, evaluated on the feasible segment; the
   printed threshold is rounded up so the sentence is a sufficient
   condition. Withheld as well when there is no arm to compare. Every
-  winner is checked to lie on `F_off` (§12 property 1) in all builds.
+  winner group is checked to hold an `F_off` arm (§12 property 1) in all
+  builds; an arm dominated by a hair may share a tie group with its
+  dominator.
   Noise-floor robustness at `W_k` under `c0`, `t0`, `ε` × 0.5 and × 2.
   All counters use checked addition. Paired with the spec example (Y
   wins 93 grid points, X 78; Y wins 14 of 14 in the self-report region).

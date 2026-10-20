@@ -39,7 +39,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   line between the top two arms (`aΔ_C + bΔ_T + gΔ_D = 0`) with one
   statement per fixed dimension, evaluated on the feasible segment; the
   printed threshold is rounded up so the sentence is a sufficient
-  condition. Withheld as well when there is no arm to compare. Every
+  condition. When the top two are within the tie tolerance, the
+  "都高于" sentence carries "（当前差距在并列容差内，按 id 排序）". Withheld as well when there is no arm to compare. Every
   winner group is checked to hold an `F_off` arm (§12 property 1) in all
   builds; an arm dominated by a hair may share a tie group with its
   dominator.

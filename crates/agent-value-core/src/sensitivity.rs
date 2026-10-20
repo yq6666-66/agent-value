@@ -44,6 +44,10 @@ pub const WEIGHT_ROBUST_EVERYWHERE: &str = "在你的权重范围内都是它";
 pub const FLOOR_ROBUST: &str = "底噪稳健";
 /// Suffix every flip statement carries (§12 display item 5).
 pub const CURRENT_ESTIMATE_NOTE: &str = "这是在当前估计值下的结论";
+/// Added to the "都高于" sentence when the two arms are within the tie
+/// tolerance at `W_k` (DECISIONS 12.9): the leader is then first by id,
+/// so "higher everywhere" sits next to "tied now".
+pub const ALWAYS_WITHIN_TIE_NOTE: &str = "（当前差距在并列容差内，按 id 排序）";
 
 /// Grid denominator: weights are multiples of `1/20 = 0.05` (§9 grid step).
 const GRID_DEN: u32 = 20;
@@ -735,7 +739,14 @@ pub fn flip_sentence(line: &FlipLine, s: &FlipStatement) -> String {
             printed_ratio(ratio)
         ),
         FlipKind::Never => format!("{j} 在任何可行权重下都不会超过 {i}"),
-        FlipKind::Always => format!("{j} 在任何可行权重下都高于 {i}"),
+        FlipKind::Always => {
+            let note = if line.tied_now {
+                ALWAYS_WITHIN_TIE_NOTE
+            } else {
+                ""
+            };
+            format!("{j} 在任何可行权重下都高于 {i}{note}")
+        }
         FlipKind::Tied => format!("{j} 与 {i} 在任何可行权重下都并列"),
     };
     format!("{head}{body}；{CURRENT_ESTIMATE_NOTE}")

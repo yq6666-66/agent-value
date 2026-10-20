@@ -13,8 +13,9 @@ use agent_value_core::frontier::{layer_frontiers, FrontierArm};
 use agent_value_core::sensitivity::{
     bootstrap_strata, flip_line, flip_sentence, grid_points, printed_ratio, sensitivity,
     statistical_robustness, winners, BehaviourRegion, BootstrapTask, Dim, FlipKind, FlipLine,
-    FloorVariant, NoFlipLine, ResampleLayer, RobustRegion, SensitivityArm, SensitivityInput,
-    SensitivityReport, Withheld, Xorshift64, CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
+    FlipStatement, FloorVariant, NoFlipLine, ResampleLayer, RobustRegion, SensitivityArm,
+    SensitivityInput, SensitivityReport, Withheld, Xorshift64, ALWAYS_WITHIN_TIE_NOTE,
+    CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
 };
 use agent_value_core::value::{value_score, Floors, Point};
 use agent_value_core::weights::Weights;
@@ -1326,42 +1327,106 @@ fn bootstrap_needs_arm_ids_and_skips_empty_resamples_for_winners() {
     assert_eq!((r.arms[0].winner, r.arms[0].frontier), (0, 0));
 }
 
+/// Low-V fixture for "always ahead" (DECISIONS 12.9). With V ≈ 0.02–0.06
+/// the absolute 1e-12 tie tolerance on V is a log gap of ~1e-11, far above
+/// SLOPE_TOL (1e-12) and far above the f64 noise of V (~1e-17 here), so
+/// these cases do not depend on the last bit of libm.
+fn low_v_reference() -> Point {
+    Point {
+        c: 0.05,
+        t: 10.0,
+        q: 0.99,
+    }
+}
+
+/// B = (1e4 元, 1e6 s, quality 0); A = B with `ln((C+c0)/(C_B+c0)) = dc` and
+/// `ln((T+t0)/(T_B+t0)) = dt`.
+fn low_v_pair(dc: f64, dt: f64) -> Vec<SensitivityArm> {
+    let fl = Floors::default();
+    vec![
+        arm(
+            "A",
+            (1e4 + fl.c0()) * dc.exp() - fl.c0(),
+            (1e6 + fl.t0()) * dt.exp() - fl.t0(),
+            0.0,
+        ),
+        arm("B", 1e4, 1e6, 0.0),
+    ]
+}
+
+fn low_v_flip(arms: &[SensitivityArm], wk: Weights) -> FlipLine {
+    flip_line(arms, low_v_reference(), &wk, &Floors::default())
+        .unwrap()
+        .unwrap()
+}
+
+fn low_v_gap(arms: &[SensitivityArm], wk: &Weights) -> f64 {
+    let fl = Floors::default();
+    let va = value_score(low_v_reference(), arms[0].point, wk, &fl).unwrap();
+    let vb = value_score(low_v_reference(), arms[1].point, wk, &fl).unwrap();
+    vb - va
+}
+
+fn dim_label(d: Dim) -> &'static str {
+    match d {
+        Dim::Cost => "成本",
+        Dim::Time => "时间",
+        Dim::Quality => "质量",
+    }
+}
+
+/// B is not behind A anywhere on the segment of `st` (99 interior points).
+fn assert_ahead_along(arms: &[SensitivityArm], st: &FlipStatement) {
+    let free: Vec<Dim> = [Dim::Cost, Dim::Time, Dim::Quality]
+        .into_iter()
+        .filter(|d| *d != st.fixed)
+        .collect();
+    let s_free = 1.0 - st.fixed_weight;
+    for k in 1..=99 {
+        let u = 0.05 + (s_free - 0.10) * f64::from(k) / 100.0;
+        let mut ws = [0.0; 3];
+        for (d, x) in [
+            (st.fixed, st.fixed_weight),
+            (free[0], u),
+            (free[1], s_free - u),
+        ] {
+            ws[d as usize] = x;
+        }
+        let ww = Weights::new(ws[0], ws[1], ws[2]).unwrap();
+        assert!(low_v_gap(arms, &ww) >= -1e-12, "{:?} {u}", st.fixed);
+    }
+}
+
 #[test]
 fn runner_up_ahead_on_the_whole_segment_is_always() {
-    // W_k has a weight at the 0.05 edge and the top two are tied within
-    // the 1e-12 tolerance (V_B − V_A ≈ 2.8e-14 and 1.4e-14), so by id A
-    // leads and B is a hair ahead at W_k. Along the segments below B
-    // stays ahead (by up to ~32 points), so the sentence must be
-    // "都高于", not "不会超过" and not a ratio outside the segment.
-    // How the numbers were found: A is placed so that aΔ_C + bΔ_T + gΔ_D
-    // is a tiny positive number at W_k, whose free weight sits on the
-    // segment end (0.05). The root then lies just past that end, inside
-    // (hi, s) or (0, lo), which is the "always" branch. The V gap must stay
-    // below the 1e-12 tie tolerance (to be "tied now") and far above f64
-    // noise (~1e-16) so the root/end comparison is stable.
-    let b = arm("B", 1.0, 45.0, 0.8);
+    // W_k has a weight at the 0.05 edge. A is made so that aΔ_C + bΔ_T is a
+    // small positive number (~5e-12) at W_k, whose free weight sits on the
+    // segment end: B is ahead by ~3e-13 in V (inside the 1e-12 tie
+    // tolerance, ~40 000 ulp of V away from 0 and 3× away from the
+    // tolerance), so A leads by id. The root lies just past that end
+    // (beyond hi, or below lo), the "always" branch; the other free
+    // direction crosses inside the segment at ratio ≈ 0.425.
     let cases = [
-        // Quality fixed: slope < 0 with the root beyond the upper end.
+        // Quality and time fixed are "always"; cost fixed crosses.
         (
             w(0.05, 0.50, 0.45),
-            arm("A", 2.9760241027279015, 39.29024508215757, 0.8),
+            (4e-10, -3e-11),
             [Dim::Time, Dim::Quality],
             (Dim::Cost, Dim::Time),
         ),
-        // Quality fixed: slope > 0 with the root below the lower end.
+        // Mirror: quality and cost fixed are "always"; time fixed crosses.
         (
             w(0.50, 0.05, 0.45),
-            arm("A", 0.8905630307413533, 148.09690970754303, 0.8),
+            (-3e-11, 4e-10),
             [Dim::Cost, Dim::Quality],
             (Dim::Time, Dim::Cost),
         ),
     ];
-    for (wk, a, always, crosses) in cases {
-        let arms = vec![a.clone(), b.clone()];
-        let va = value_score(example_reference(), a.point, &wk, &Floors::default()).unwrap();
-        let vb = value_score(example_reference(), b.point, &wk, &Floors::default()).unwrap();
-        assert!(vb > va && vb - va < 1e-12, "{va} {vb}");
-        let f = flip(&arms, wk);
+    for (wk, (dc, dt), always, crosses) in cases {
+        let arms = low_v_pair(dc, dt);
+        let gap = low_v_gap(&arms, &wk);
+        assert!(gap > 1e-13 && gap < 5e-13, "{gap:e}");
+        let f = low_v_flip(&arms, wk);
         assert!(f.tied_now);
         assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
         assert_eq!(f.statements.len(), 3);
@@ -1378,50 +1443,102 @@ fn runner_up_ahead_on_the_whole_segment_is_always() {
                 assert_eq!(
                     flip_sentence(&f, st),
                     format!(
-                        "保持{}权重不变，B 在任何可行权重下都高于 A；这是在当前估计值下的结论",
-                        if st.fixed == Dim::Quality {
-                            "质量"
-                        } else if st.fixed == Dim::Time {
-                            "时间"
-                        } else {
-                            "成本"
-                        }
+                        "保持{}权重不变，B 在任何可行权重下都高于 A{ALWAYS_WITHIN_TIE_NOTE}；这是在当前估计值下的结论",
+                        dim_label(st.fixed)
                     )
                 );
+                assert_ahead_along(&arms, st);
             } else {
                 assert_eq!(st.fixed, crosses.0);
                 let FlipKind::Crosses { over, under, ratio } = st.kind else {
                     panic!("{st:?}");
                 };
                 assert_eq!((over, under), (Dim::Quality, crosses.1));
-                assert!((ratio - 0.9).abs() < 1e-9, "{ratio}");
+                assert!((ratio - 0.425).abs() < 1e-3, "{ratio}");
+                // No tie note on a crossing sentence, even when tied now.
+                assert!(!flip_sentence(&f, st).contains(ALWAYS_WITHIN_TIE_NOTE));
             }
         }
-        // B really is ahead along each "always" segment.
-        for st in f.statements.iter().filter(|s| s.kind == FlipKind::Always) {
-            let free: Vec<Dim> = [Dim::Cost, Dim::Time, Dim::Quality]
-                .into_iter()
-                .filter(|d| *d != st.fixed)
-                .collect();
-            let s_free = 1.0 - st.fixed_weight;
-            for k in 1..=99 {
-                let u = 0.05 + (s_free - 0.10) * f64::from(k) / 100.0;
-                let mut ws = [0.0; 3];
-                for (d, x) in [
-                    (st.fixed, st.fixed_weight),
-                    (free[0], u),
-                    (free[1], s_free - u),
-                ] {
-                    ws[d as usize] = x;
-                }
-                let ww = Weights::new(ws[0], ws[1], ws[2]).unwrap();
-                let va =
-                    value_score(example_reference(), a.point, &ww, &Floors::default()).unwrap();
-                let vb =
-                    value_score(example_reference(), b.point, &ww, &Floors::default()).unwrap();
-                assert!(vb >= va - 1e-12, "{:?} {u}", st.fixed);
-            }
-        }
+    }
+}
+
+#[test]
+fn parallel_segment_with_runner_up_a_hair_ahead_is_always() {
+    // The tie tolerance is absolute (1e-12 on V), so at small V a log gap of
+    // ~2e-11 is still "tied now" while being ≫ SLOPE_TOL. A = B with cost
+    // and time × e^{3e-11}: with quality fixed, Δ_C ≈ Δ_T, the segment is
+    // parallel to the line (slope ≈ 1.8e-15) and B is ahead on all of it.
+    let fl = Floors::default();
+    let b = arm("B", 1e4, 1e6, 0.0);
+    let a = arm(
+        "A",
+        (1e4 + fl.c0()) * 3e-11_f64.exp() - fl.c0(),
+        (1e6 + fl.t0()) * 3e-11_f64.exp() - fl.t0(),
+        0.0,
+    );
+    let arms = vec![a, b];
+    let wk = Weights::equal();
+    let gap = low_v_gap(&arms, &wk);
+    assert!(gap > 3e-13 && gap < 7e-13, "{gap:e}");
+    let f = low_v_flip(&arms, wk);
+    assert!(f.tied_now);
+    assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
+    assert!((f.delta[0] - f.delta[1]).abs() <= 1e-12, "{:?}", f.delta);
+    for st in &f.statements {
+        assert_eq!(st.kind, FlipKind::Always, "{st:?}");
+        assert!(flip_sentence(&f, st).contains(ALWAYS_WITHIN_TIE_NOTE));
+        assert_ahead_along(&arms, st);
+    }
+}
+
+#[test]
+fn tie_note_only_when_the_gap_is_within_the_tolerance() {
+    // Outside the tolerance: B behind A by ~1.2e-11 in V. Not tied, no
+    // sentence carries the note.
+    let arms = low_v_pair(3e-11, -4e-10);
+    let wk = w(0.05, 0.50, 0.45);
+    let f = low_v_flip(&arms, wk);
+    assert!(!f.tied_now);
+    for st in &f.statements {
+        assert!(!flip_sentence(&f, st).contains(ALWAYS_WITHIN_TIE_NOTE));
+    }
+    // The note follows `tied_now`, not the kind alone: the same "always"
+    // statement without a tie (as a caller could build it) has no note,
+    // and with a tie it has the note.
+    let st = FlipStatement {
+        fixed: Dim::Quality,
+        fixed_weight: 0.45,
+        kind: FlipKind::Always,
+    };
+    let mut line = f.clone();
+    line.statements = vec![st.clone()];
+    assert_eq!(
+        flip_sentence(&line, &st),
+        format!(
+            "保持质量权重不变，{} 在任何可行权重下都高于 {}；这是在当前估计值下的结论",
+            line.runner_up, line.leader
+        )
+    );
+    line.tied_now = true;
+    assert_eq!(
+        flip_sentence(&line, &st),
+        format!(
+            "保持质量权重不变，{} 在任何可行权重下都高于 {}（当前差距在并列容差内，按 id 排序）；这是在当前估计值下的结论",
+            line.runner_up, line.leader
+        )
+    );
+    // Other kinds never carry it, tied or not.
+    for kind in [
+        FlipKind::Never,
+        FlipKind::Tied,
+        FlipKind::Crosses {
+            over: Dim::Cost,
+            under: Dim::Time,
+            ratio: 1.5,
+        },
+    ] {
+        let st = FlipStatement { kind, ..st.clone() };
+        assert!(!flip_sentence(&line, &st).contains(ALWAYS_WITHIN_TIE_NOTE));
     }
 }
 
@@ -1476,6 +1593,30 @@ fn assert_every_stratum_is_resampled(
             y.len() < n
         });
         assert!(repeated, "stratum {st:?} never resampled: {:?}", &sa[..3]);
+        // Resampled in EVERY round, not just some: count the rounds with a
+        // repeated task. Per round P(repeat) = 1 − n!/nⁿ (1/2 for n = 2,
+        // 7/9 for n = 3), so over 200 rounds the count is Binomial(200, p):
+        // mean 100 / 155.6. Bounds 70 / 130 fail for a correct draw with
+        // probability 6.9e-6 / 1.3e-5 per stratum and seed (exact binomial
+        // tail). Freezing half the rounds gives Binomial(100, p): mean
+        // 50 / 77.8, above the bound with probability 3.9e-5 / 0.
+        for (seed, slices) in [("a", &sa), ("b", &sb)] {
+            let reps = slices
+                .iter()
+                .filter(|x| {
+                    let mut y = (*x).clone();
+                    y.sort_unstable();
+                    y.dedup();
+                    y.len() < n
+                })
+                .count();
+            let bound = match n {
+                2 => 70,
+                3 => 130,
+                _ => panic!("fixture strata have 2 or 3 tasks"),
+            };
+            assert!(reps >= bound, "stratum {st:?} seed {seed}: {reps} repeats");
+        }
         assert!(sa.iter().any(|x| x != st), "stratum {st:?} always copied");
         assert_ne!(sa, sb, "stratum {st:?} ignores the seed");
         at += n;

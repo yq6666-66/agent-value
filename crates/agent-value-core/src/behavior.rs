@@ -304,9 +304,11 @@ fn dot(d: &[f64; 3], v: &[f64; 3]) -> f64 {
 /// likelihood, and its maximum is not attained. Conversely, without such a
 /// `d` the likelihood tends to minus infinity along every ray and the
 /// maximum is attained. Identical values give differences of exactly 0,
-/// which constrain nothing. Data within the tolerance of separable but not
-/// separable put the maximum at very large `theta`, where the information
-/// floor rejects them; the outcome is the same.
+/// which constrain nothing. Non-separable data can still be rejected later
+/// by the information floor, and not only within the tolerance: a single
+/// event choosing the dearer option by a cost ratio of `1 + 1e-5` against
+/// otherwise separable data puts the maximum so far out that the floor
+/// rejects it (DECISIONS G7).
 fn separated(events: &[Prepared]) -> bool {
     let mut constraints = Vec::new();
     for e in events {
@@ -434,6 +436,14 @@ fn fit(events: &[Prepared]) -> Option<Fit> {
             }
             step /= 2.0;
         }
+        // Backstop that ends the iteration early (DECISIONS G7). Removing it
+        // gave the same output on every data set built for it: separable data
+        // stop at the pre-check, and on 18 non-separable sets built to pass
+        // the cap (16 reach it) the uncapped fit ends in the same `None`,
+        // through the information floor or the iteration limit. Why: a
+        // finite maximum this far out needs data that are almost separable,
+        // so the information along that direction is far below the floor.
+        // Measured, not proven.
         if theta.iter().sum::<f64>() > THETA_DIVERGENCE {
             return None;
         }
@@ -1037,5 +1047,199 @@ mod tests {
         let b = bootstrap(&ev, seed);
         assert_eq!(b.ok + b.failed, BOOTSTRAP_RESAMPLES as usize);
         assert!(b.failed >= separable);
+    }
+
+    /// The point with the given `x` (log attributes), through `attributes`
+    /// so the values are the ones the code sees.
+    fn from_x(x: [f64; 3]) -> [f64; 3] {
+        pt3(
+            x[0].exp() - C0_YUAN,
+            x[1].exp() - T0_SECONDS,
+            1.0 + EPSILON - x[2].exp(),
+        )
+    }
+
+    /// Independent feasibility check by vertex enumeration: is there `d` on
+    /// the simplex with `d . v >= 0` for every `v`? A non-empty feasible
+    /// set is a polygon with a vertex where two of the lines `d . v = 0`,
+    /// `d_k = 0` meet.
+    fn brute_feasible(vs: &[[f64; 3]]) -> bool {
+        let mut lines = vs.to_vec();
+        lines.extend([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let det = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| dot(&a, &cross(b, c));
+        let ones = [1.0, 1.0, 1.0];
+        for i in 0..lines.len() {
+            for j in i + 1..lines.len() {
+                let (a, b) = (lines[i], lines[j]);
+                let dt = det(a, b, ones);
+                if dt.abs() < 1e-12 {
+                    continue;
+                }
+                // Cramer's rule for rows a, b, ones and right side (0, 0, 1).
+                let d = cross(a, b).map(|c| c / dt);
+                let ok = lines.iter().all(|v| {
+                    let m = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+                    dot(&d, v) >= -1e-9 * m
+                });
+                if ok {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Constraints `x_l - x_chosen` taken straight from the events.
+    fn raw_constraints(events: &[Prepared]) -> Vec<[f64; 3]> {
+        let mut out = Vec::new();
+        for e in events {
+            for (l, x) in e.xs.iter().enumerate() {
+                if l != e.chosen {
+                    out.push(sub(*x, e.xs[e.chosen]));
+                }
+            }
+        }
+        out
+    }
+
+    /// Three directions with no common feasible `d` (their sum is
+    /// `(-0.2, -0.2, -0.2)`), any two of which leave a feasible region: every
+    /// one of them is needed.
+    const CYCLE: [[f64; 3]; 3] = [[-1.0, 1.0, -0.2], [-0.2, -1.0, 1.0], [1.0, -0.2, -1.0]];
+
+    fn x0() -> [f64; 3] {
+        pt3(0.5, 60.0, 0.8)
+    }
+
+    fn step(v: [f64; 3]) -> [f64; 3] {
+        let x = x0();
+        from_x([x[0] + 0.1 * v[0], x[1] + 0.1 * v[1], x[2] + 0.1 * v[2]])
+    }
+
+    /// Checks the full events are not separable, and that dropping each
+    /// part (by `drop(events, i)`, `i < parts`) makes them separable, both
+    /// with `separated` and with the independent check.
+    fn assert_every_part_needed(
+        events: &[Prepared],
+        parts: usize,
+        drop: impl Fn(&[Prepared], usize) -> Vec<Prepared>,
+    ) {
+        assert!(!brute_feasible(&raw_constraints(events)));
+        assert!(!separated(events));
+        for i in 0..parts {
+            let fewer = drop(events, i);
+            assert!(brute_feasible(&raw_constraints(&fewer)), "part {i}");
+            assert!(separated(&fewer), "part {i}");
+        }
+    }
+
+    #[test]
+    fn every_constraint_is_needed_in_any_position() {
+        // One two-option event per direction of CYCLE, chosen first, second
+        // and first. Every order of the events: none is separable, and
+        // without any one event all are.
+        let x = x0();
+        let base = vec![
+            prep(vec![x, step(CYCLE[0])], 0),
+            prep(vec![step(CYCLE[1]), x], 1),
+            prep(vec![x, step(CYCLE[2])], 0),
+        ];
+        assert_eq!(difference_rank(&base), 3);
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let events: Vec<Prepared> = order.iter().map(|&k| base[k].clone()).collect();
+            assert_every_part_needed(&events, 3, |ev, i| {
+                let mut v = ev.to_vec();
+                v.remove(i);
+                v
+            });
+        }
+    }
+
+    #[test]
+    fn three_option_events_use_every_option() {
+        // Two directions of CYCLE as the second and third option of one
+        // event, the third as a separate event; then the chosen option in
+        // each place and the options in every order. Dropping any option
+        // other than the chosen one makes the data separable.
+        let x = x0();
+        let opts = [x, step(CYCLE[0]), step(CYCLE[1])];
+        let other = prep(vec![x, step(CYCLE[2])], 0);
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let xs: Vec<[f64; 3]> = order.iter().map(|&k| opts[k]).collect();
+            let chosen = order.iter().position(|&k| k == 0).unwrap();
+            for events in [
+                vec![prep(xs.clone(), chosen), other.clone()],
+                vec![other.clone(), prep(xs.clone(), chosen)],
+            ] {
+                let at = if events[0].xs.len() == 3 { 0 } else { 1 };
+                assert_eq!(difference_rank(&events), 3);
+                let others: Vec<usize> = (0..3).filter(|&l| l != chosen).collect();
+                assert_every_part_needed(&events, 3, |ev, i| {
+                    let mut v = ev.to_vec();
+                    if i < 2 {
+                        // Drop one non-chosen option of the three-option event.
+                        let l = others[i];
+                        let e = &mut v[at];
+                        e.xs.remove(l);
+                        if l < e.chosen {
+                            e.chosen -= 1;
+                        }
+                    } else {
+                        v.remove(1 - at);
+                    }
+                    v
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn decisive_reverse_event_first_or_as_third_option() {
+        // The data of the floor test with a 10% cost ratio: only the last
+        // event (dearer option chosen) breaks separation, and the fit is a
+        // normal signal. It must count wherever it sits, and also as the
+        // third option of an event whose second option equals the chosen one.
+        let ev = nearly_separated(0.1);
+        let reverse = ev.last().unwrap().clone();
+        let rest = &ev[..ev.len() - 1];
+        assert!(separated(rest));
+        assert!(fit(&ev).is_some());
+        let mut first = vec![reverse.clone()];
+        first.extend_from_slice(rest);
+        assert!(!separated(&first));
+        assert!(fit(&first).is_some());
+        let (cheap, dear) = (reverse.xs[0], reverse.xs[1]);
+        let third = prep(vec![dear, dear, cheap], 0);
+        for events in [
+            [rest, std::slice::from_ref(&third)].concat(),
+            [std::slice::from_ref(&third), rest].concat(),
+        ] {
+            assert!(!brute_feasible(&raw_constraints(&events)));
+            assert!(!separated(&events));
+            assert!(fit(&events).is_some());
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "difference_rank")]
+    fn fit_requires_rank_three_in_debug_builds() {
+        let ev = axis_pairs(vec![]);
+        assert!(difference_rank(&ev) < BEHAVIOR_MIN_RANK);
+        let _ = fit(&ev);
     }
 }

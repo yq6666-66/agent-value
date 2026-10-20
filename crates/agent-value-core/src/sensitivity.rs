@@ -683,6 +683,11 @@ pub fn flip_line(
         scored.push((value_score(reference, a.point, current, floors)?, a));
     }
     scored.sort_by(|x, y| y.0.total_cmp(&x.0).then_with(|| x.1.id.cmp(&y.1.id)));
+    // Same tie rule as the official pick: |ΔV| ≤ 1e-12 (absolute, in
+    // `highest_v_group`). A gap of exactly 1e-12 is not guaranteed to be
+    // either side (DECISIONS 12.9): it needs V < 2^-39 (costs ~1e34) and a
+    // bit-exact difference that depends on the last bit of libm's exp, so
+    // it is not portably testable and means nothing to a user.
     let tie = |x: f64, y: f64| -> Result<bool> {
         let g = highest_v_group(&[("x".to_string(), x), ("y".to_string(), y)])?;
         Ok(g.len() == 2)

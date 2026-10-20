@@ -29,12 +29,13 @@ pub const THETA_DIVERGENCE: f64 = 1e6;
 /// Smallest eigenvalue of the information matrix per event below this means
 /// the maximum is not identified (DECISIONS G7).
 pub const INFORMATION_FLOOR: f64 = 1e-8;
-/// Tolerance of the separation pre-check (DECISIONS G7). Each constraint
-/// `x_l - x_chosen` is scaled so its largest component is 1, and directions
-/// lie on the simplex, so the tolerance is on a dimensionless quantity of
-/// order 1: far above double rounding in the polygon clipping (about 1e-15)
-/// and far below any meaningful log difference.
-pub const SEPARATION_TOLERANCE: f64 = 1e-9;
+/// Tolerance of the separation pre-check (DECISIONS G7), relative to the
+/// largest coefficient of each constraint: every constraint `x_l - x_chosen`
+/// is divided by its largest absolute component, so it is applied as an
+/// absolute 1e-12 to an order-1 quantity on the simplex. That absorbs the
+/// rounding of a few hundred clipping steps (each a few ulp, about 1e-16)
+/// and decides nothing else.
+pub const SEPARATION_TOLERANCE: f64 = 1e-12;
 /// Fewer successful bootstrap resamples than this is flagged (DECISIONS G8).
 pub const BOOTSTRAP_MIN_OK: usize = 100;
 
@@ -294,14 +295,16 @@ fn dot(d: &[f64; 3], v: &[f64; 3]) -> f64 {
     d[0] * v[0] + d[1] * v[1] + d[2] * v[2]
 }
 
-/// Separation pre-check (DECISIONS G7). The maximum of the likelihood on
-/// `theta >= 0` is not attained exactly when some `d >= 0`, `d != 0`, has
-/// `d . (x_l - x_chosen) >= 0` for every event and every other option, with
-/// at least one inequality strict: moving along `theta + t d`, `t >= 0`,
-/// then never lowers and somewhere raises the likelihood. The converse (no
-/// such `d` means the maximum is attained) needs the difference rank 3,
-/// which `calibrate` and `bootstrap` check before calling `fit`. Identical
-/// values give differences of exactly 0, which constrain nothing.
+/// Separation pre-check (DECISIONS G7): data separable => not identifiable.
+/// The data are separable when some `d >= 0`, `d != 0`, has
+/// `d . (x_l - x_chosen) >= 0` for every event and every other option. With
+/// difference rank 3 (checked by `calibrate` and `bootstrap` before `fit`)
+/// no such `d` makes all of these 0, so at least one is strict: moving along
+/// `theta + t d`, `t >= 0`, never lowers and somewhere raises the
+/// likelihood, and its maximum is not attained. Conversely, without such a
+/// `d` the likelihood tends to minus infinity along every ray and the
+/// maximum is attained. Identical values give differences of exactly 0,
+/// which constrain nothing.
 fn separated(events: &[Prepared]) -> bool {
     let mut constraints = Vec::new();
     for e in events {
@@ -320,11 +323,10 @@ fn separated(events: &[Prepared]) -> bool {
     separating_direction(&constraints)
 }
 
-/// Is there `d` on the simplex with `d . v >= 0` for every `v` and `> 0`
-/// for some? The feasible set is the simplex cut by one half-plane per
-/// constraint, kept as a convex polygon (possibly an edge or a point) of
-/// barycentric vertices. A linear function that is 0 at every vertex is 0
-/// on the whole polygon, so strictness is checked at the vertices.
+/// Is there `d` on the simplex with `d . v >= 0` for every `v`? The
+/// feasible set is the simplex cut by one half-plane per constraint, kept as
+/// a convex polygon of barycentric vertices. A segment or a single point
+/// left over is still a feasible direction.
 fn separating_direction(constraints: &[[f64; 3]]) -> bool {
     let tol = SEPARATION_TOLERANCE;
     let mut poly: Vec<[f64; 3]> = vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -359,8 +361,7 @@ fn separating_direction(constraints: &[[f64; 3]]) -> bool {
         }
         poly = out;
     }
-    poly.iter()
-        .any(|d| constraints.iter().any(|v| dot(d, v) > tol))
+    true
 }
 
 /// Information on the free coordinates (`-H`) minus
@@ -769,11 +770,28 @@ mod tests {
 
     #[test]
     fn separation_polygon_edge_cases() {
-        // No constraints, or only zero differences: nothing strict.
-        assert!(!sep(&[]));
-        // One strict constraint: the whole simplex is feasible.
+        // Feasible set is the whole simplex, a smaller polygon, a segment or
+        // a point: separable in every case.
         assert!(sep(&[[1.0, 0.0, 0.0]]));
-        // Every direction lowers some choice: empty.
+        assert!(sep(&[[0.0, 1.0, -1.0]])); // cut through the vertex e0
+                                           // Two opposite cuts through e0 leave the segment d1 = d2.
+        assert!(sep(&[[0.0, 1.0, -1.0], [0.0, -1.0, 1.0]]));
+        // Cut down to the single vertex e0.
+        assert!(sep(&[[0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]));
+        assert!(sep(&[
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [1.0, -1.0, -1.0]
+        ]));
+        // Cut down to the centre point.
+        let centre = [
+            [1.0, -1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [0.0, 1.0, -1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        assert!(sep(&centre));
+        // Empty: every direction lowers some choice.
         assert!(!sep(&[[-1.0, -1.0, -1.0]]));
         assert!(!sep(&[
             [1.0, -1.0, 0.0],
@@ -781,38 +799,37 @@ mod tests {
             [0.0, 1.0, -1.0],
             [-0.5, -0.5, 0.2]
         ]));
-        // Cut through a vertex: d1 >= d2 keeps a triangle with strict points.
-        assert!(sep(&[[0.0, 1.0, -1.0]]));
-        // Two opposite cuts through vertex e0 leave the segment d1 = d2, on
-        // which both are equalities: not separated.
-        assert!(!sep(&[[0.0, 1.0, -1.0], [0.0, -1.0, 1.0]]));
-        // ... plus a constraint strict at e0: separated.
-        assert!(sep(&[[0.0, 1.0, -1.0], [0.0, -1.0, 1.0], [1.0, 0.0, 0.0]]));
-        // Reduced to the single vertex e0, only equalities there.
-        assert!(!sep(&[[0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]));
-        // ... and with a constraint strict at e0 (the e^25 shape).
-        assert!(sep(&[
-            [0.0, -1.0, 0.0],
-            [0.0, 0.0, -1.0],
-            [1.0, -1.0, -1.0]
-        ]));
-        // Reduced to the centre point, where every constraint is 0.
-        let centre = [
-            [1.0, -1.0, 0.0],
-            [-1.0, 1.0, 0.0],
-            [0.0, 1.0, -1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        assert!(!sep(&centre));
         let mut more = centre.to_vec();
-        more.push([1.0, 1.0, -2.0]);
+        more.push([-1.0, -1.0, 1.0]);
         assert!(!sep(&more));
-        more.push([1.0, 0.5, 0.0]);
-        assert!(sep(&more));
-        // Order of constraints does not matter.
+        // The last cut alone empties the set; order does not matter.
         let mut rev = more.clone();
         rev.reverse();
-        assert!(sep(&rev));
+        assert!(!sep(&rev));
+        // One choice each way along every axis: empty.
+        let axes = [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        assert!(!sep(&axes));
+        // Without the cost choice that goes the dear way, d = e0 is left.
+        let mut one_way = axes.to_vec();
+        one_way.remove(1);
+        assert!(sep(&one_way));
+    }
+
+    #[test]
+    fn separation_tolerance_boundary() {
+        // Constraints are scaled to a largest coefficient of 1. A violation
+        // of 1e-13 at the only candidate vertex e2 is rounding: still
+        // feasible. A violation of 1e-9 is real: empty.
+        assert!(sep(&[[-1.0, -1.0, -1e-13]]));
+        assert!(!sep(&[[-1.0, -1.0, -1e-9]]));
+        assert!(!sep(&[[-1.0, -1.0, -1e-11]]));
     }
 
     fn prep(xs: Vec<[f64; 3]>, chosen: usize) -> Prepared {
@@ -823,59 +840,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn identical_values_give_exact_zero_differences() {
-        // Same cell values give the same logs, so the difference is exactly
-        // 0 and is not a constraint; only the real difference counts.
-        let x = attributes(&Point {
-            c: 0.37,
-            t: 61.0,
-            q: 0.83,
-        })
-        .unwrap();
-        let y = attributes(&Point {
-            c: 0.37,
-            t: 75.0,
-            q: 0.83,
-        })
-        .unwrap();
-        // Chosen has the lower time: separated along time.
-        assert!(separated(&[prep(vec![x, y], 0)]));
-        // Equal options: no constraint at all.
-        assert!(!separated(&[prep(vec![x, x], 0)]));
-        // One choice each way along time: not separated.
-        assert!(!separated(&[prep(vec![x, y], 0), prep(vec![x, y], 1)]));
+    fn pt3(c: f64, t: f64, q: f64) -> [f64; 3] {
+        attributes(&Point { c, t, q }).unwrap()
+    }
+
+    /// One choice each way along time and along quality (identical other
+    /// values, so the differences are exactly 0 off that axis), plus the
+    /// given cost events.
+    fn axis_pairs(cost: Vec<Prepared>) -> Vec<Prepared> {
+        let base = pt3(0.37, 61.0, 0.83);
+        let slow = pt3(0.37, 75.0, 0.83);
+        let worse = pt3(0.37, 61.0, 0.70);
+        let mut v = vec![
+            prep(vec![base, slow], 0),
+            prep(vec![base, slow], 1),
+            prep(vec![base, worse], 0),
+            prep(vec![base, worse], 1),
+        ];
+        v.extend(cost);
+        v
     }
 
     #[test]
-    fn separation_tolerance_boundary() {
-        // After scaling, a constraint strict by 2e-9 at the vertex e2
-        // counts; one strict by only 5e-10 is within the tolerance and does
-        // not.
-        assert!(sep(&[[-1.0, -1.0, 2e-9]]));
-        assert!(!sep(&[[-1.0, -1.0, 5e-10]]));
-        // A violation within the tolerance is still feasible: e2 stays and
-        // the second constraint is strict there. Beyond it, nothing is left.
-        assert!(sep(&[[-1.0, -1.0, -5e-10], [0.0, 0.0, 1.0]]));
-        assert!(!sep(&[[-1.0, -1.0, -2e-9], [0.0, 0.0, 1.0]]));
+    fn identical_values_give_exact_zero_differences() {
+        let cheap = pt3(0.37, 61.0, 0.83);
+        let dear = pt3(0.52, 61.0, 0.83);
+        // Time and quality are chosen both ways, so only d = e0 (cost) is
+        // left; a cost choice each way empties it.
+        assert!(!separated(&axis_pairs(vec![
+            prep(vec![cheap, dear], 0),
+            prep(vec![cheap, dear], 1)
+        ])));
+        // Cost chosen only the cheap way: separable along cost.
+        assert!(separated(&axis_pairs(vec![prep(vec![cheap, dear], 0)])));
+        // An event with two identical options adds nothing.
+        assert!(separated(&axis_pairs(vec![
+            prep(vec![cheap, dear], 0),
+            prep(vec![cheap, cheap], 1)
+        ])));
     }
 
     #[test]
     fn separation_is_scale_invariant() {
-        // Differences of about 1e-10 still separate: each constraint is
-        // scaled to a largest component of 1 before the tolerance applies.
-        let a = [0.5, 4.0, -1.0];
-        let b = [0.5 + 1e-10, 4.0, -1.0];
-        assert!(separated(&[prep(vec![a, b], 0)]));
-        assert!(!separated(&[prep(vec![a, b], 0), prep(vec![a, b], 1)]));
+        // A cost difference of about 1e-14 in log units still decides:
+        // choosing the dearer option by that much makes the data
+        // non-separable, because each constraint is scaled before the
+        // tolerance applies.
+        let a = pt3(0.5, 61.0, 0.83);
+        let b = pt3(0.5 + 1e-14, 61.0, 0.83);
+        assert!(b[0] > a[0] && b[0] - a[0] < 1e-13);
+        assert!(!separated(&axis_pairs(vec![prep(vec![a, b], 1)])));
+        assert!(separated(&axis_pairs(vec![prep(vec![a, b], 0)])));
     }
 
     #[test]
-    fn equalities_only_at_a_rounded_point_are_not_separation() {
-        // Each pair of options is chosen once each way, so the feasible set
-        // is the single direction orthogonal to both differences (inside
-        // the simplex for these values), where every constraint is 0 up to
-        // rounding. The tolerance keeps rounding from counting as strict.
+    fn rounded_degenerate_point_is_still_separable() {
+        // Two pairs of options, each chosen once each way, leave only the
+        // direction orthogonal to both differences (inside the simplex for
+        // these values); a third event strictly better there makes rank 3.
+        // The feasible set is a single point computed with rounding; the
+        // tolerance keeps it.
         let sets = [
             [(0.13, 129.0, 0.75), (0.79, 30.0, 0.84), (0.34, 88.0, 0.81)],
             [(0.19, 111.0, 0.61), (0.12, 168.0, 0.60), (0.89, 85.0, 0.94)],
@@ -888,24 +912,23 @@ mod tests {
             [(0.94, 118.0, 0.92), (0.85, 166.0, 0.77), (0.99, 90.0, 0.62)],
         ];
         for set in sets {
-            let x: Vec<[f64; 3]> = set
-                .iter()
-                .map(|&(c, t, q)| attributes(&Point { c, t, q }).unwrap())
-                .collect();
-            let events = [
+            let x: Vec<[f64; 3]> = set.iter().map(|&(c, t, q)| pt3(c, t, q)).collect();
+            let n = cross(sub(x[1], x[0]), sub(x[2], x[0]));
+            let s = if n[0] > 0.0 { 1.0 } else { -1.0 };
+            let better = [x[0][0] - s * n[0], x[0][1] - s * n[1], x[0][2] - s * n[2]];
+            let events = vec![
                 prep(vec![x[0], x[1]], 0),
                 prep(vec![x[0], x[1]], 1),
                 prep(vec![x[0], x[2]], 0),
                 prep(vec![x[0], x[2]], 1),
+                prep(vec![better, x[0]], 0),
             ];
-            assert!(!separated(&events));
-            // One more event strict at that direction makes it separated.
-            let mut more = events.to_vec();
-            let n = cross(sub(x[1], x[0]), sub(x[2], x[0]));
-            let s = if n[0] > 0.0 { 1.0 } else { -1.0 };
-            let better = [x[0][0] - s * n[0], x[0][1] - s * n[1], x[0][2] - s * n[2]];
-            more.push(prep(vec![better, x[0]], 0));
-            assert!(separated(&more));
+            assert_eq!(difference_rank(&events), 3);
+            assert!(separated(&events));
+            // Choosing the worse option there instead: not separable.
+            let mut flipped = events.clone();
+            flipped[4] = prep(vec![better, x[0]], 1);
+            assert!(!separated(&flipped));
         }
     }
 
@@ -919,5 +942,50 @@ mod tests {
             a[2] * b[0] - a[0] * b[2],
             a[0] * b[1] - a[1] * b[0],
         ]
+    }
+
+    /// Cost events where the cheaper option is chosen, events with equal
+    /// cost and random time and quality chosen by a finite logit, and one
+    /// event where the dearer option is chosen by a cost ratio `1 + delta`.
+    fn nearly_separated(delta: f64) -> Vec<Prepared> {
+        let mut rng = SplitMix64::new(3);
+        let mut u = || (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        let mut v = Vec::new();
+        for _ in 0..15 {
+            let lo = 0.2 + u();
+            let hi = lo + 0.1 + u();
+            v.push(prep(vec![pt3(lo, 60.0, 0.8), pt3(hi, 60.0, 0.8)], 0));
+        }
+        for _ in 0..15 {
+            let (a, b) = (
+                pt3(0.5, 30.0 + 200.0 * u(), 0.5 + 0.45 * u()),
+                pt3(0.5, 30.0 + 200.0 * u(), 0.5 + 0.45 * u()),
+            );
+            let pa = 1.0 / (1.0 + ((a[1] + a[2]) - (b[1] + b[2])).exp());
+            v.push(prep(vec![a, b], if u() < pa { 0 } else { 1 }));
+        }
+        v.push(prep(
+            vec![
+                pt3(0.4, 60.0, 0.8),
+                pt3(0.4 * (1.0 + delta) + 0.15 * delta, 60.0, 0.8),
+            ],
+            1,
+        ));
+        v
+    }
+
+    #[test]
+    fn information_floor_catches_what_the_precheck_lets_through() {
+        // Not separable (one cost choice goes the dear way), so the maximum
+        // exists, but it sits far out along cost with almost no information
+        // there: only the eigenvalue floor rejects it.
+        let ev = nearly_separated(1e-8);
+        assert_eq!(difference_rank(&ev), 3);
+        assert!(!separated(&ev));
+        assert!(fit(&ev).is_none());
+        // Well inside: the fit is accepted.
+        let ev = nearly_separated(0.5);
+        assert!(!separated(&ev));
+        assert!(fit(&ev).is_some());
     }
 }

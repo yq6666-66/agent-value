@@ -809,7 +809,7 @@ mod tests {
         let mut more = centre.to_vec();
         more.push([-1.0, -1.0, 1.0]);
         assert!(!sep(&more));
-        // The last cut alone empties the set; order does not matter.
+        // Adding that cut empties the set; order does not matter.
         let mut rev = more.clone();
         rev.reverse();
         assert!(!sep(&rev));
@@ -885,6 +885,23 @@ mod tests {
             prep(vec![cheap, dear], 0),
             prep(vec![cheap, cheap], 1)
         ])));
+        // Three options, one identical to the chosen one: the zero
+        // difference is skipped and the other still counts.
+        let mid = pt3(0.45, 61.0, 0.83);
+        assert!(separated(&axis_pairs(vec![prep(
+            vec![dear, cheap, cheap],
+            1
+        )])));
+        assert!(!separated(&axis_pairs(vec![prep(
+            vec![dear, cheap, dear],
+            0
+        )])));
+        // The middle of three costs chosen: the cheaper option is a
+        // constraint against cost.
+        assert!(!separated(&axis_pairs(vec![prep(
+            vec![cheap, mid, dear],
+            1
+        )])));
     }
 
     #[test]
@@ -922,6 +939,8 @@ mod tests {
             let x: Vec<[f64; 3]> = set.iter().map(|&(c, t, q)| pt3(c, t, q)).collect();
             let n = cross(sub(x[1], x[0]), sub(x[2], x[0]));
             let s = if n[0] > 0.0 { 1.0 } else { -1.0 };
+            // The only feasible direction s * n lies in the simplex.
+            assert!(n.iter().all(|&c| s * c > 0.0));
             let better = [x[0][0] - s * n[0], x[0][1] - s * n[1], x[0][2] - s * n[2]];
             let events = vec![
                 prep(vec![x[0], x[1]], 0),
@@ -994,5 +1013,29 @@ mod tests {
         let ev = nearly_separated(0.5);
         assert!(!separated(&ev));
         assert!(fit(&ev).is_some());
+    }
+
+    #[test]
+    fn separable_bootstrap_resamples_count_as_failed() {
+        // The full data are not separable only because of the last event;
+        // resamples without it are separable, have no fit, and are counted
+        // as failed. The resamples are redrawn here with the same seed.
+        let ev = nearly_separated(0.5);
+        let seed = 11;
+        let mut rng = SplitMix64::new(seed);
+        let mut separable = 0;
+        for _ in 0..BOOTSTRAP_RESAMPLES {
+            let pick: Vec<Prepared> = (0..ev.len())
+                .map(|_| ev[rng.below(ev.len())].clone())
+                .collect();
+            if difference_rank(&pick) >= BEHAVIOR_MIN_RANK && separated(&pick) {
+                assert!(fit(&pick).is_none());
+                separable += 1;
+            }
+        }
+        assert!(separable > 0);
+        let b = bootstrap(&ev, seed);
+        assert_eq!(b.ok + b.failed, BOOTSTRAP_RESAMPLES as usize);
+        assert!(b.failed >= separable);
     }
 }

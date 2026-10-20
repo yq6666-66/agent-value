@@ -1678,17 +1678,21 @@ fn reference_and_fallback_arms_are_resampled_like_the_others() {
 #[test]
 fn tie_tolerance_is_pinned_at_1e_12_on_both_sides() {
     // Low-V pair (V ≈ 0.0245, ulp ≈ 3.5e-18), weights 1/3: A = B with cost
-    // and time × e^{d}. The gaps are ~1.8e-13 and ~1.4e-13 from the 1e-12
-    // tolerance, i.e. ≥ 4e4 ulp, so no libm last-bit dependence. A 2e-12
-    // or 5e-13 tolerance would flip one of them.
+    // and time × e^{d}. The gaps are ≈8.17e-13 and ≈1.143e-12; the windows
+    // asserted below keep both ≥ 4e4 ulp from the 1e-12 tolerance, so no
+    // libm last-bit dependence. A 2e-12 or 5e-13 tolerance would flip one of
+    // them. A gap of exactly 1e-12 is deliberately not tested (DECISIONS
+    // 12.9: either side is acceptable).
     let wk = Weights::equal();
     // d = 5e-11: gap ≈ 8.2e-13, inside → tied, A first by id, B "always"
     // ahead with the note.
     let inside = low_v_pair(5e-11, 5e-11);
     let gap = low_v_gap(&inside, &wk);
-    assert!(gap > 7.5e-13 && gap < 8.75e-13, "{gap:e}");
+    assert!(gap > 8.0e-13 && gap < 8.5e-13, "{gap:e}");
     let f = low_v_flip(&inside, wk);
     assert!(f.tied_now);
+    let fixed: Vec<Dim> = f.statements.iter().map(|st| st.fixed).collect();
+    assert_eq!(fixed, [Dim::Cost, Dim::Time, Dim::Quality]);
     assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
     for st in &f.statements {
         assert_eq!(st.kind, FlipKind::Always, "{st:?}");
@@ -1704,9 +1708,11 @@ fn tie_tolerance_is_pinned_at_1e_12_on_both_sides() {
     // overtakes, no note.
     let outside = low_v_pair(7e-11, 7e-11);
     let gap = low_v_gap(&outside, &wk);
-    assert!(gap > 1.1e-12 && gap < 1.2e-12, "{gap:e}");
+    assert!(gap > 1.14e-12 && gap < 1.2e-12, "{gap:e}");
     let f = low_v_flip(&outside, wk);
     assert!(!f.tied_now);
+    let fixed: Vec<Dim> = f.statements.iter().map(|st| st.fixed).collect();
+    assert_eq!(fixed, [Dim::Cost, Dim::Time, Dim::Quality]);
     assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("B", "A"));
     for st in &f.statements {
         assert_eq!(st.kind, FlipKind::Never, "{st:?}");

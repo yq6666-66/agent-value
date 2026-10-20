@@ -305,7 +305,7 @@ fn dot(d: &[f64; 3], v: &[f64; 3]) -> f64 {
 /// `d` the likelihood tends to minus infinity along every ray and the
 /// maximum is attained. Identical values give differences of exactly 0,
 /// which constrain nothing. Non-separable data can still be rejected later
-/// by the information floor, and not only within the tolerance: a single
+/// by the information floor, even well outside the tolerance: a single
 /// event choosing the dearer option by a cost ratio of `1 + 1e-5` against
 /// otherwise separable data puts the maximum so far out that the floor
 /// rejects it (DECISIONS G7).
@@ -438,8 +438,8 @@ fn fit(events: &[Prepared]) -> Option<Fit> {
         }
         // Backstop that ends the iteration early (DECISIONS G7). Removing it
         // gave the same output on every data set built for it: separable data
-        // stop at the pre-check, and on 18 non-separable sets built to pass
-        // the cap (16 reach it) the uncapped fit ends in the same `None`,
+        // stop at the pre-check, and of 18 non-separable probe sets 16 hit
+        // the cap; without it the fit ends in the same `None`,
         // through the information floor or the iteration limit. Why: a
         // finite maximum this far out needs data that are almost separable,
         // so the information along that direction is far below the floor.
@@ -1064,7 +1064,13 @@ mod tests {
     /// set is a polygon with a vertex where two of the lines `d . v = 0`,
     /// `d_k = 0` meet.
     fn brute_feasible(vs: &[[f64; 3]]) -> bool {
-        let mut lines = vs.to_vec();
+        let mut lines: Vec<[f64; 3]> = vs
+            .iter()
+            .filter_map(|v| {
+                let m = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+                (m > 0.0).then(|| v.map(|c| c / m))
+            })
+            .collect();
         lines.extend([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
         let det = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| dot(&a, &cross(b, c));
         let ones = [1.0, 1.0, 1.0];
@@ -1077,10 +1083,10 @@ mod tests {
                 }
                 // Cramer's rule for rows a, b, ones and right side (0, 0, 1).
                 let d = cross(a, b).map(|c| c / dt);
-                let ok = lines.iter().all(|v| {
-                    let m = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
-                    dot(&d, v) >= -1e-9 * m
-                });
+                // Rows have largest coefficient 1; 1e-9 is far above the
+                // rounding of these 3x3 solves and far below the margins of
+                // the test data.
+                let ok = lines.iter().all(|v| dot(&d, v) >= -1e-9);
                 if ok {
                     return true;
                 }
@@ -1103,8 +1109,8 @@ mod tests {
     }
 
     /// Three directions with no common feasible `d` (their sum is
-    /// `(-0.2, -0.2, -0.2)`), any two of which leave a feasible region: every
-    /// one of them is needed.
+    /// `(-0.2, -0.2, -0.2)`, before the 0.1 step below), any two of which
+    /// leave a feasible region: every one of them is needed.
     const CYCLE: [[f64; 3]; 3] = [[-1.0, 1.0, -0.2], [-0.2, -1.0, 1.0], [1.0, -0.2, -1.0]];
 
     fn x0() -> [f64; 3] {
@@ -1124,6 +1130,7 @@ mod tests {
         parts: usize,
         drop: impl Fn(&[Prepared], usize) -> Vec<Prepared>,
     ) {
+        assert_eq!(raw_constraints(events).len(), parts);
         assert!(!brute_feasible(&raw_constraints(events)));
         assert!(!separated(events));
         for i in 0..parts {
@@ -1145,6 +1152,26 @@ mod tests {
             prep(vec![x, step(CYCLE[2])], 0),
         ];
         assert_eq!(difference_rank(&base), 3);
+        // The constraints the code sees are 0.1 * CYCLE up to rounding.
+        for (c, v) in raw_constraints(&base).iter().zip(CYCLE) {
+            assert!((0..3).all(|k| (c[k] - 0.1 * v[k]).abs() < 1e-12));
+        }
+        // The independent check on known cases.
+        assert!(brute_feasible(&[]));
+        assert!(!brute_feasible(&[[-1.0, -1.0, -1.0]]));
+        assert!(brute_feasible(&[[0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]));
+        assert!(brute_feasible(&[
+            [1.0, -1.0, 0.0],
+            [-1.0, 1.0, 0.0],
+            [0.0, 1.0, -1.0],
+            [0.0, -1.0, 1.0]
+        ]));
+        assert!(!brute_feasible(&CYCLE));
+        for i in 0..3 {
+            let mut two = CYCLE.to_vec();
+            two.remove(i);
+            assert!(brute_feasible(&two));
+        }
         for order in [
             [0, 1, 2],
             [0, 2, 1],

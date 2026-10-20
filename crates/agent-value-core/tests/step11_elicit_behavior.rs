@@ -4,8 +4,8 @@
 //! script output frozen under `tests/fixtures/step11_*`.
 
 use agent_value_core::behavior::{
-    calibrate, check_windows, profile_loglik, Behavior, ChoiceEvent, EventOption, NoSignalReason,
-    SplitMix64, SUPPORT_DROP,
+    bootstrap_unstable, calibrate, check_windows, profile_loglik, Behavior, ChoiceEvent,
+    EventOption, NoSignalReason, SplitMix64, SUPPORT_DROP,
 };
 use agent_value_core::cells::{CellId, CellWeights};
 use agent_value_core::constants::{BOOTSTRAP_RESAMPLES, C0_YUAN, EPSILON, T0_SECONDS};
@@ -69,6 +69,9 @@ fn grid_has_171_exact_points() {
         assert!(i >= 1 && j >= 1 && k >= 1);
         assert_eq!(u16::from(i) + u16::from(j) + u16::from(k), 20);
         assert_eq!(p.a(), f64::from(i) / 20.0);
+        assert_eq!(p.b(), f64::from(j) / 20.0);
+        assert_eq!(p.g(), f64::from(k) / 20.0);
+        assert_eq!(p.as_array(), [p.a(), p.b(), p.g()]);
     }
     assert!(GridPoint::new(0, 5).is_none());
     assert!(GridPoint::new(10, 10).is_none());
@@ -348,16 +351,26 @@ fn ranges_cover_the_wide_region() {
 #[test]
 fn shown_values_are_positive_and_reproduce_rho() {
     let b = bank();
-    for &(c, t, d) in &[(0.05, 120.0, 0.1), (0.5, 120.0, 0.1), (0.05, 120.0, 0.4)] {
+    // Shown-question counts: every question at D_B = 0.1; at D_B = 0.4 the
+    // 16 questions with rho_D in {3, 1/3} are skipped (worse defect > 1).
+    for &(c, t, d, shown) in &[
+        (0.05, 120.0, 0.1, 96),
+        (0.5, 120.0, 0.1, 96),
+        (0.05, 120.0, 0.4, 80),
+        (0.5, 120.0, 0.4, 80),
+    ] {
         let base = QuestionBase {
             cost: c,
             time: t,
             defect: d,
         };
+        let mut count = 0;
         for q in &b {
             let Some(s) = show(q, base).unwrap() else {
+                assert!(q.rho()[2] == 3.0 || q.rho()[2] == 1.0 / 3.0, "{q:?}");
                 continue;
             };
+            count += 1;
             for v in s.cost.iter().chain(&s.time).chain(&s.defect) {
                 assert!(*v > 0.0);
             }
@@ -370,6 +383,7 @@ fn shown_values_are_positive_and_reproduce_rho() {
                 assert!((r[k] - q.rho()[k]).abs() <= 1e-9, "{q:?} {r:?}");
             }
         }
+        assert_eq!(count, shown, "base {c} {t} {d}");
     }
     // rho_D = 3 at D_B = 0.4: worse defect 3 * 0.42 - 0.02 = 1.24 > 1, skipped.
     let q = b.iter().find(|q| q.rho()[2] == 3.0).unwrap();
@@ -596,6 +610,149 @@ fn rank_uses_a_relative_tolerance() {
     }
     let b = calibrate(&ev, W0, W1, 1).unwrap();
     assert_eq!(b.no_signal, vec![NoSignalReason::RankBelowThree]);
+}
+
+#[test]
+fn rank_tolerance_scales_with_the_data() {
+    // Every attribute difference is about 1e-10, below an absolute 1e-9
+    // tolerance, but the three directions are independent: relative to the
+    // largest entry the rank is 3.
+    let ev: Vec<ChoiceEvent> = (0..30)
+        .map(|e| {
+            let k = (e % 3) as f64;
+            let base = pt(1.0, 60.0, 0.8);
+            let mut alt = base;
+            match e % 3 {
+                0 => alt.c += 1e-10 * (1.0 + k),
+                1 => alt.t += 1e-8,
+                _ => alt.q -= 1e-10,
+            }
+            ChoiceEvent {
+                id: format!("e{e}"),
+                options: vec![
+                    EventOption {
+                        arm: "A".into(),
+                        value: Some(base),
+                    },
+                    EventOption {
+                        arm: "B".into(),
+                        value: Some(alt),
+                    },
+                ],
+                chosen: if e % 2 == 0 { "A".into() } else { "B".into() },
+            }
+        })
+        .collect();
+    let b = calibrate(&ev, W0, W1, 1).unwrap();
+    assert!(
+        !b.no_signal.contains(&NoSignalReason::RankBelowThree),
+        "{:?}",
+        b.no_signal
+    );
+}
+
+#[test]
+fn bootstrap_counts_failed_resamples_and_flags_instability() {
+    // 28 events vary only in cost; one event varies only in time and one
+    // only in quality (the chosen arm is the worse one there, so theta stays
+    // finite at 0 in that dimension). A resample has rank 3 only if it
+    // draws both special events, about 40% of the time, so many resamples
+    // fail and fewer than 100 succeed.
+    let mut rng = SplitMix64::new(77);
+    let mut ev: Vec<ChoiceEvent> = (0..28)
+        .map(|e| {
+            let ca = 0.2 + uniform(&mut rng);
+            let cb = 0.2 + uniform(&mut rng);
+            let xa = (ca + C0_YUAN).ln();
+            let xb = (cb + C0_YUAN).ln();
+            let pa = 1.0 / (1.0 + (-5.0 * (xb - xa)).exp());
+            let chosen = if uniform(&mut rng) < pa { "A" } else { "B" };
+            ChoiceEvent {
+                id: format!("c{e}"),
+                options: vec![
+                    EventOption {
+                        arm: "A".into(),
+                        value: Some(pt(ca, 60.0, 0.8)),
+                    },
+                    EventOption {
+                        arm: "B".into(),
+                        value: Some(pt(cb, 60.0, 0.8)),
+                    },
+                ],
+                chosen: chosen.into(),
+            }
+        })
+        .collect();
+    ev.push(ChoiceEvent {
+        id: "time".into(),
+        options: vec![
+            EventOption {
+                arm: "A".into(),
+                value: Some(pt(0.5, 60.0, 0.8)),
+            },
+            EventOption {
+                arm: "B".into(),
+                value: Some(pt(0.5, 90.0, 0.8)),
+            },
+        ],
+        chosen: "B".into(),
+    });
+    ev.push(ChoiceEvent {
+        id: "quality".into(),
+        options: vec![
+            EventOption {
+                arm: "A".into(),
+                value: Some(pt(0.5, 60.0, 0.9)),
+            },
+            EventOption {
+                arm: "B".into(),
+                value: Some(pt(0.5, 60.0, 0.7)),
+            },
+        ],
+        chosen: "B".into(),
+    });
+    let b = calibrate(&ev, W0, W1, 5).unwrap();
+    assert!(b.has_signal(), "{:?} {:?}", b.no_signal, b.lambda);
+    let bs = b.bootstrap.unwrap();
+    assert!(bs.failed > 0, "{bs:?}");
+    assert_eq!(bs.ok + bs.failed, BOOTSTRAP_RESAMPLES as usize);
+    assert!(bs.ok < 100, "{bs:?}");
+    assert!(bs.unstable);
+}
+
+#[test]
+fn bootstrap_instability_threshold_is_100_successes() {
+    assert!(bootstrap_unstable(0));
+    assert!(bootstrap_unstable(99));
+    assert!(!bootstrap_unstable(100));
+    assert!(!bootstrap_unstable(200));
+}
+
+#[test]
+fn empty_support_with_self_report_is_the_conflict_row() {
+    // Sharp likelihood with w_b off the grid: Omega_b is empty, so the
+    // intersection with Omega_s is empty (§10.4 row 3), not an error.
+    let ev = synthetic(600, [6.0, 0.0, 6.0], 11);
+    let b = calibrate(&ev, W0, W1, 1).unwrap();
+    assert!(b.has_signal());
+    assert!(b.support.is_empty());
+    let s = self_report(honest_session(gp(4, 7)).answers()).unwrap();
+    let m = merge(Some(&s), Some(&b));
+    assert_eq!(m.effective, [0.2, 0.35, 0.45]);
+    assert_eq!(
+        m.suggestion,
+        Suggestion::Conflict {
+            optional: b.w_b.unwrap()
+        }
+    );
+    // Without a self-report the "behaviour has a signal" row applies.
+    let m = merge(None, Some(&b));
+    assert_eq!(
+        m.suggestion,
+        Suggestion::AdoptBehavior {
+            optional: b.w_b.unwrap()
+        }
+    );
 }
 
 #[test]

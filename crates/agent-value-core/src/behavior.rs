@@ -445,6 +445,12 @@ pub struct Bootstrap {
     pub unstable: bool,
 }
 
+/// Fewer than [`BOOTSTRAP_MIN_OK`] successful resamples is flagged as
+/// unstable (DECISIONS G8).
+pub fn bootstrap_unstable(ok: usize) -> bool {
+    ok < BOOTSTRAP_MIN_OK
+}
+
 fn lower_quantile(sorted: &[f64], p: f64) -> f64 {
     let n = sorted.len();
     for (k, v) in sorted.iter().enumerate() {
@@ -494,7 +500,7 @@ fn bootstrap(events: &[Prepared], seed: u64) -> Bootstrap {
         ok: samples.len(),
         failed,
         quantiles,
-        unstable: samples.len() < BOOTSTRAP_MIN_OK,
+        unstable: bootstrap_unstable(samples.len()),
     }
 }
 

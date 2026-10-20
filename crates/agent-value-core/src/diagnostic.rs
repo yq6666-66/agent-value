@@ -60,7 +60,9 @@ pub enum NotAdmittedReason {
 /// Admission reasons from the two §10 conditions, in enum order.
 pub fn not_admitted_reasons(status: &LayerStatus, kappa_eff: f64) -> Vec<NotAdmittedReason> {
     let mut r = Vec::new();
-    if (status.n_comp as f64 + kappa_eff) < 3.0 {
+    // A non-finite `κ_eff` must not be admitted (NaN compares false).
+    let ess = status.n_comp as f64 + kappa_eff;
+    if !ess.is_finite() || ess < 3.0 {
         r.push(NotAdmittedReason::EssBelowThree);
     }
     if status.n_valid < 1 {

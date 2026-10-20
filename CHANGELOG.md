@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Core, step 10 review follow-up: the diagnostic reference anchor takes
+  the worst valid value per dimension, so a valid reference cell with one
+  NA dimension still contributes its other dimensions (§7 line 570).
+- Core: stricter input checks. All six `overall_arm` counters (`n_comp`,
+  `u`, `n_c`, `n_sub`, `n_miss`, `n_fail`) use checked addition and return
+  an overflow error instead of wrapping; fallback layer weights that are
+  NaN, infinite or negative are an error (`fallback_failures` and
+  `resolve_fallback` now return `Result`); a non-finite `κ_eff` is not
+  admitted; duplicate cells in fallback ratings, duplicate arm ids in
+  `layer_pick` scores and duplicate arm ids passed to `overall_top` are
+  rejected.
+
 ### Added
 - Core, spec step 10: reference anchor certification (§7). Tiers are
   decided III → II → I, first match wins; tier III lists every reason

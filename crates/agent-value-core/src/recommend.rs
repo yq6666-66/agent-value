@@ -95,6 +95,11 @@ pub fn layer_pick(
     anchor: &LayerAnchor,
     scores: &[(String, f64)],
 ) -> Result<LayerPick> {
+    for (i, (id, _)) in scores.iter().enumerate() {
+        if scores[..i].iter().any(|(s, _)| s == id) {
+            return Err(CoreError::DuplicateCell { cell: id.clone() });
+        }
+    }
     let mut pick = LayerPick {
         official_top: Vec::new(),
         official_top_coarse_bill: Vec::new(),
@@ -240,12 +245,32 @@ pub fn overall_arm(
         if l.omega_d <= 0.0 {
             continue;
         }
-        n_comp += l.status.n_comp;
-        u += l.u_d;
-        n_c += l.status.n_c;
-        n_sub += l.status.n_sub;
-        n_miss += l.status.n_miss;
-        n_fail += l.status.n_fail;
+        n_comp = n_comp
+            .checked_add(l.status.n_comp)
+            .ok_or(CoreError::Overflow {
+                what: "overall n_comp",
+            })?;
+        u = u
+            .checked_add(l.u_d)
+            .ok_or(CoreError::Overflow { what: "overall u" })?;
+        n_c = n_c.checked_add(l.status.n_c).ok_or(CoreError::Overflow {
+            what: "overall n_c",
+        })?;
+        n_sub = n_sub
+            .checked_add(l.status.n_sub)
+            .ok_or(CoreError::Overflow {
+                what: "overall n_sub",
+            })?;
+        n_miss = n_miss
+            .checked_add(l.status.n_miss)
+            .ok_or(CoreError::Overflow {
+                what: "overall n_miss",
+            })?;
+        n_fail = n_fail
+            .checked_add(l.status.n_fail)
+            .ok_or(CoreError::Overflow {
+                what: "overall n_fail",
+            })?;
         cov += l.omega_d * (1.0 - l.status.w_miss - l.status.w_fail);
         in_all |= l.in_off;
     }
@@ -286,8 +311,13 @@ pub fn overall_arm(
 }
 
 /// Overall official #1: tie group of highest overall `V` among arms that
-/// have one.
+/// have one. Duplicate arm ids are an error, as in [`layer_pick`].
 pub fn overall_top(arms: &[OverallArm]) -> Result<Vec<String>> {
+    for (i, a) in arms.iter().enumerate() {
+        if arms[..i].iter().any(|b| b.id == a.id) {
+            return Err(CoreError::DuplicateCell { cell: a.id.clone() });
+        }
+    }
     let scores: Vec<(String, f64)> = arms
         .iter()
         .filter_map(|a| a.v.map(|v| (a.id.clone(), v)))

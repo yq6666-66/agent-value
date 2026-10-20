@@ -443,6 +443,125 @@ fn diagnostic_reference_anchor_is_unclamped_symmetric_worst() {
 }
 
 #[test]
+fn diagnostic_reference_anchor_ignores_zero_weight_cells() {
+    // The status lists c04 as valid, but the weights passed in give it 0:
+    // its cost 5.0, time 50 and quality 0.1 must not enter the worst values.
+    let cells = ids(4);
+    let w_all = CellWeights::equal(&cells).unwrap();
+    let st = status(&w_all, &cells, &[Some(VALID); 4]);
+    let third = 1.0 / 3.0;
+    let w = CellWeights::new(vec![
+        (cells[0].clone(), third),
+        (cells[1].clone(), third),
+        (cells[2].clone(), third),
+        (cells[3].clone(), 0.0),
+    ])
+    .unwrap();
+    let tr = triples(
+        &cells,
+        &[
+            Triple::new(0.6, 10.0, 0.8),
+            Triple::new(0.7, 12.0, 0.9),
+            Triple::new(0.5, 8.0, 0.75),
+            Triple::new(5.0, 50.0, 0.1),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr).unwrap().unwrap();
+    close(d.c, 0.7);
+    close(d.t, 12.0);
+    close(d.q, 0.75);
+}
+
+#[test]
+fn diagnostic_reference_anchor_all_valid_is_worst_per_dimension() {
+    // Every positive-weight cell valid; worst C, T and Q come from three
+    // different cells. Every cell is lifted to the worst value, so the
+    // anchor equals (max C, max T, min Q).
+    let cells = ids(4);
+    let w = CellWeights::equal(&cells).unwrap();
+    let st = status(&w, &cells, &[Some(VALID); 4]);
+    let tr = triples(
+        &cells,
+        &[
+            Triple::new(0.9, 5.0, 0.9),
+            Triple::new(0.5, 15.0, 0.85),
+            Triple::new(0.6, 8.0, 0.6),
+            Triple::new(0.7, 10.0, 0.95),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr).unwrap().unwrap();
+    close(d.c, 0.9);
+    close(d.t, 15.0);
+    close(d.q, 0.6);
+}
+
+#[test]
+fn diagnostic_reference_anchor_takes_each_dimension_on_its_own() {
+    // c01 is valid with time NA: its cost 0.9 and quality 0.9 still count
+    // (line 570 is per dimension; DECISIONS F, Y).
+    let cells = ids(4);
+    let w = CellWeights::equal(&cells).unwrap();
+    let st = status(
+        &w,
+        &cells,
+        &[Some(VALID), Some(VALID), Some(VALID), Some(THIN)],
+    );
+    let tr = triples(
+        &cells,
+        &[
+            Triple {
+                t: None,
+                ..Triple::new(0.9, 0.0, 0.9)
+            },
+            Triple::new(0.6, 10.0, 0.8),
+            Triple::new(0.6, 12.0, 0.7),
+            Triple::new(0.5, 5.0, 0.95),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr).unwrap().unwrap();
+    // Worst valid: C 0.9 (from c01), T 12, Q 0.7; every cell is lifted.
+    close(d.c, 0.9);
+    close(d.t, 12.0);
+    close(d.q, 0.7);
+    // Only partial valid cells, each dimension defined somewhere: Some.
+    let tr2 = triples(
+        &cells,
+        &[
+            Triple {
+                t: None,
+                ..Triple::new(0.9, 0.0, 0.9)
+            },
+            Triple {
+                c: None,
+                ..Triple::new(0.0, 10.0, 0.8)
+            },
+            Triple {
+                q: None,
+                ..Triple::new(0.6, 12.0, 0.0)
+            },
+            Triple::new(0.5, 5.0, 0.95),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr2).unwrap().unwrap();
+    close(d.c, 0.9);
+    close(d.t, 12.0);
+    close(d.q, 0.8);
+    // Time NA in every valid cell: no anchor.
+    let tr3 = triples(
+        &cells,
+        &[
+            Triple { t: None, ..tc(0.9) },
+            Triple { t: None, ..tc(0.6) },
+            Triple { t: None, ..tc(0.6) },
+            tc(0.5),
+        ],
+    );
+    assert!(diagnostic_reference_anchor(&st, &w, &tr3)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn diagnostic_reference_anchor_without_valid_cell_is_none() {
     let cells = ids(3);
     let w = CellWeights::equal(&cells).unwrap();
@@ -1082,20 +1201,23 @@ fn fb(grade: AuthenticityGrade, layer: FallbackLayer) -> FallbackCandidate {
 #[test]
 fn fallback_defaults_to_reference() {
     assert_eq!(
-        resolve_fallback("R", None),
+        resolve_fallback("R", None).unwrap(),
         FallbackDecision::Default { id: "R".into() }
     );
     let mut same = fb(AuthenticityGrade::C, fb_layer(&[Some(VALID); 3], 0));
     same.id = "R".into();
-    assert_eq!(resolve_fallback("R", Some(&same)).fallback_id(), "R");
+    assert_eq!(
+        resolve_fallback("R", Some(&same)).unwrap().fallback_id(),
+        "R"
+    );
 }
 
 #[test]
 fn qualified_fallback_is_kept_with_exactly_three_ratings() {
     let f = fb(AuthenticityGrade::A, fb_layer(&[Some(VALID); 3], 3));
-    assert!(fallback_failures(&f).is_empty());
+    assert!(fallback_failures(&f).unwrap().is_empty());
     assert_eq!(
-        resolve_fallback("R", Some(&f)),
+        resolve_fallback("R", Some(&f)).unwrap(),
         FallbackDecision::Keep { id: "F".into() }
     );
     // Tier II (thin cell, ≥ 3 valid) qualifies.
@@ -1104,13 +1226,13 @@ fn qualified_fallback_is_kept_with_exactly_three_ratings() {
         fb_layer(&[Some(VALID), Some(VALID), Some(VALID), Some(THIN)], 3),
     );
     assert_eq!(f.layers[0].anchor.tier, AnchorTier::II);
-    assert!(fallback_failures(&f).is_empty());
+    assert!(fallback_failures(&f).unwrap().is_empty());
 }
 
 #[test]
 fn unqualified_fallback_reverts_with_note() {
     let check = |f: FallbackCandidate, want: Vec<FallbackFailure>| {
-        let d = resolve_fallback("R", Some(&f));
+        let d = resolve_fallback("R", Some(&f)).unwrap();
         assert_eq!(
             d,
             FallbackDecision::Revert {
@@ -1160,7 +1282,7 @@ fn fallback_zero_weight_layer_is_ignored() {
         prev_authenticity: AuthenticityGrade::A,
         layers: vec![good, bad],
     };
-    assert!(fallback_failures(&f).is_empty());
+    assert!(fallback_failures(&f).unwrap().is_empty());
     // No positive-weight layer at all: no evidence, reverts.
     let none = FallbackCandidate {
         id: "F".into(),
@@ -1168,7 +1290,7 @@ fn fallback_zero_weight_layer_is_ignored() {
         layers: vec![],
     };
     assert_eq!(
-        fallback_failures(&none),
+        fallback_failures(&none).unwrap(),
         vec![FallbackFailure::Tier, FallbackFailure::Ratings]
     );
 }
@@ -1443,4 +1565,146 @@ fn example_8_composed_lower_clamp() {
     prints_as(v("cheap"), "129.87");
     close(v("own"), 100.0 * (0.69f64 / 0.75).powf(1.0 / 3.0));
     assert_eq!(pick.official_top, vec!["cheap".to_string()]);
+}
+
+// ---- PR #9 review follow-ups (Codex comments, 2026-10-20) ---------------------------
+
+/// Layer 1 has a positive value in every counter; layer 2 sets exactly one
+/// counter to its maximum, so the sum overflows only in that counter.
+fn overall_counter_overflows(set: impl Fn(&mut OverallArmLayer)) -> bool {
+    let l1 = tier_i(tc(1.0));
+    let l2 = tier_ii_ex6();
+    let r = overall_reference(&[(0.5, &l1), (0.5, &l2)]).unwrap();
+    let mut first = arm_layer(0.5, counts(400, 0, 100), 12, tc(0.8), true);
+    first.status.n_miss = 1;
+    first.status.n_fail = 1;
+    let st = &first.status;
+    assert!(first.u_d > 0 && st.n_comp > 0 && st.n_c > 0 && st.n_sub > 0);
+    let mut big = arm_layer(0.5, counts(400, 0, 100), 12, tc(0.6), false);
+    set(&mut big);
+    let layers = vec![first, big];
+    matches!(
+        overall_arm("X", &layers, AuthenticityGrade::A, &r, &eq_w(), &floors()),
+        Err(agent_value_core::error::CoreError::Overflow { .. })
+    )
+}
+
+#[test]
+fn overall_arm_u_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.u_d = usize::MAX));
+}
+
+#[test]
+fn overall_arm_n_c_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_c = u64::MAX));
+}
+
+#[test]
+fn overall_arm_n_sub_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_sub = u64::MAX));
+}
+
+#[test]
+fn overall_arm_n_miss_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_miss = usize::MAX));
+}
+
+#[test]
+fn overall_arm_n_fail_overflow_is_an_error() {
+    assert!(overall_counter_overflows(|l| l.status.n_fail = usize::MAX));
+}
+
+#[test]
+fn overall_top_rejects_duplicate_arm_ids() {
+    let l1 = tier_i(tc(1.0));
+    let r = overall_reference(&[(1.0, &l1)]).unwrap();
+    let mk = |id: &str, c: f64, off: bool| {
+        overall_arm(
+            id,
+            &[arm_layer(1.0, VALID, 12, tc(c), off)],
+            AuthenticityGrade::A,
+            &r,
+            &eq_w(),
+            &floors(),
+        )
+        .unwrap()
+    };
+    let dup_scored = vec![mk("X", 0.5, true), mk("Y", 0.6, true), mk("X", 0.7, true)];
+    assert!(matches!(
+        overall_top(&dup_scored),
+        Err(agent_value_core::error::CoreError::DuplicateCell { ref cell }) if cell == "X"
+    ));
+    // A duplicate without an overall V is rejected too.
+    let dup_unscored = vec![mk("X", 0.5, true), mk("Z", 0.1, false), mk("Z", 0.2, false)];
+    assert!(matches!(
+        overall_top(&dup_unscored),
+        Err(agent_value_core::error::CoreError::DuplicateCell { ref cell }) if cell == "Z"
+    ));
+}
+
+#[test]
+fn overall_arm_counter_overflow_is_an_error_not_a_wrap() {
+    let l1 = tier_i(tc(1.0));
+    let l2 = tier_ii_ex6();
+    let r = overall_reference(&[(0.5, &l1), (0.5, &l2)]).unwrap();
+    let mut big = arm_layer(0.5, counts(400, 0, 100), 12, tc(0.6), false);
+    big.status.n_comp = u64::MAX;
+    let layers = vec![arm_layer(0.5, counts(400, 0, 100), 12, tc(0.8), true), big];
+    assert!(matches!(
+        overall_arm("X", &layers, AuthenticityGrade::A, &r, &eq_w(), &floors()),
+        Err(agent_value_core::error::CoreError::Overflow { .. })
+    ));
+}
+
+#[test]
+fn nan_kappa_eff_is_not_admitted() {
+    let cells = ids(3);
+    let w = CellWeights::equal(&cells).unwrap();
+    let st = status(&w, &cells, &[Some(VALID); 3]);
+    assert!(not_admitted_reasons(&st, 0.0).is_empty());
+    assert_eq!(
+        not_admitted_reasons(&st, f64::NAN),
+        vec![NotAdmittedReason::EssBelowThree]
+    );
+    assert!(!diagnostic_admitted(&st, f64::NAN));
+    assert!(!diagnostic_admitted(&st, f64::INFINITY));
+}
+
+#[test]
+fn fallback_rejects_non_finite_or_negative_layer_weight() {
+    for bad in [f64::NAN, f64::INFINITY, -0.5] {
+        let mut l = fb_layer(&[Some(VALID); 3], 3);
+        l.omega_d = bad;
+        let f = fb(AuthenticityGrade::A, l);
+        assert!(fallback_failures(&f).is_err(), "omega_d = {bad}");
+        assert!(resolve_fallback("R", Some(&f)).is_err(), "omega_d = {bad}");
+    }
+}
+
+#[test]
+fn fallback_rejects_duplicate_rating_rows() {
+    let mut l = fb_layer(&[Some(VALID); 3], 3);
+    let first = l.ratings[0].0.clone();
+    l.ratings.push((first, 0));
+    let f = fb(AuthenticityGrade::A, l);
+    assert!(matches!(
+        fallback_failures(&f),
+        Err(agent_value_core::error::CoreError::DuplicateCell { .. })
+    ));
+}
+
+#[test]
+fn layer_pick_rejects_duplicate_score_ids() {
+    let (w, _, st, tr) = all_valid(3, tc(1.0));
+    let anchor = certify_reference_layer(&st, &w, &tr).unwrap();
+    let (arms, f) = two_rec_arms();
+    let dup = vec![
+        ("A".to_string(), 101.0),
+        ("B".to_string(), 100.0),
+        ("A".to_string(), 99.0),
+    ];
+    assert!(matches!(
+        layer_pick(&arms, &f, &anchor, &dup),
+        Err(agent_value_core::error::CoreError::DuplicateCell { .. })
+    ));
 }

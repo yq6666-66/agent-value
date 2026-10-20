@@ -6,14 +6,15 @@
 //! `scripts/elicit5.py`; never fitted.
 
 use agent_value_core::cell_values::Triple;
+use agent_value_core::cells::CellId;
 use agent_value_core::constants::{BOOTSTRAP_RESAMPLES, GRID_POINTS};
 use agent_value_core::error::CoreError;
 use agent_value_core::frontier::{layer_frontiers, FrontierArm};
 use agent_value_core::sensitivity::{
-    flip_line, flip_sentence, grid_points, printed_ratio, sensitivity, statistical_robustness,
-    winners, Dim, FlipKind, FlipLine, FloorVariant, NoFlipLine, ResampleLayer, RobustRegion,
-    SensitivityArm, SensitivityInput, SensitivityReport, Withheld, Xorshift64,
-    CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
+    bootstrap_strata, flip_line, flip_sentence, grid_points, printed_ratio, sensitivity,
+    statistical_robustness, winners, BootstrapTask, Dim, FlipKind, FlipLine, FloorVariant,
+    NoFlipLine, ResampleLayer, RobustRegion, SensitivityArm, SensitivityInput, SensitivityReport,
+    Withheld, Xorshift64, CURRENT_ESTIMATE_NOTE, WEIGHT_ROBUST_EVERYWHERE,
 };
 use agent_value_core::value::{value_score, Floors, Point};
 use agent_value_core::weights::Weights;
@@ -118,8 +119,10 @@ fn grid_has_171_points_on_twentieths_each_at_least_0_05() {
             .collect();
         assert!(k.iter().all(|&x| x >= 1));
         assert_eq!(k.iter().sum::<i64>(), 20);
+        // Bit-exact: built as integer twentieths, not by adding 0.05
+        // (DECISIONS 12.2; 10 of the 18 accumulated values differ by 1 ulp).
         for (v, kk) in [p.a(), p.b(), p.g()].iter().zip(&k) {
-            close(*v, *kk as f64 / 20.0);
+            assert_eq!(v.to_bits(), (*kk as f64 / 20.0).to_bits(), "{v} vs {kk}/20");
         }
         assert!(keys.insert(k));
     }
@@ -643,111 +646,400 @@ fn near_tie_at_the_top_is_ordered_by_id_not_by_float_noise() {
     assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
 }
 
-// ---- statistical robustness (task bootstrap) ----
+// ---- flip-line segment ends and the parallel branch (DECISIONS 12.9) ----
 
-/// Tasks of two arms: arm 0 = stratum 0, arm 1 = stratum 1. Each task is a
-/// (cost, time, quality) observation; the resample triple is the mean.
-fn tasks() -> [Vec<(f64, f64, f64)>; 2] {
-    [
-        vec![
-            (0.2, 100.0, 0.80),
-            (0.4, 140.0, 0.80),
-            (0.3, 120.0, 0.85),
-            (0.3, 120.0, 0.75),
-        ],
-        vec![
-            (0.9, 50.0, 0.90),
-            (0.8, 70.0, 0.80),
-            (1.0, 60.0, 0.85),
-            (0.9, 60.0, 0.85),
-        ],
-    ]
+/// Two arms with equal quality whose deltas are exactly `(dc, dt, 0)`
+/// under the default floors: `j` at (1.0 元, 45 s), `i` scaled from it.
+fn arms_with_deltas(dc: f64, dt: f64) -> Vec<SensitivityArm> {
+    let (c0, t0) = (0.15, 15.0);
+    let (cj, tj) = (1.0, 45.0);
+    let ci = (cj + c0) * dc.exp() - c0;
+    let ti = (tj + t0) * dt.exp() - t0;
+    vec![arm("i", ci, ti, 0.8), arm("j", cj, tj, 0.8)]
 }
 
-fn mean(obs: &[(f64, f64, f64)], idx: &[usize]) -> Point {
-    let n = idx.len() as f64;
-    let (mut c, mut t, mut q) = (0.0, 0.0, 0.0);
-    for &k in idx {
-        c += obs[k].0;
-        t += obs[k].1;
-        q += obs[k].2;
-    }
-    Point {
-        c: c / n,
-        t: t / n,
-        q: q / n,
+fn quality_fixed(arms: &[SensitivityArm]) -> FlipKind {
+    let f = flip(arms, Weights::equal());
+    assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("i", "j"));
+    assert_eq!(f.delta[2], 0.0);
+    let s = f
+        .statements
+        .iter()
+        .find(|s| s.fixed == Dim::Quality)
+        .unwrap();
+    s.kind
+}
+
+#[test]
+fn crossing_below_the_lower_end_0_05_is_never() {
+    // Quality fixed at 1/3, S = 2/3: j is ahead only for w_T < S·Δ_C = 0.03,
+    // which is below the 0.05 floor. The conclusion must be "never",
+    // not "time weight more than r times …" with an infeasible r.
+    let arms = arms_with_deltas(0.045, -0.955);
+    assert_eq!(quality_fixed(&arms), FlipKind::Never);
+    // Control: move the crossing inside the segment (w_T < 0.06).
+    let inside = arms_with_deltas(0.09, -0.91);
+    assert!(matches!(
+        quality_fixed(&inside),
+        FlipKind::Crosses {
+            over: Dim::Cost,
+            under: Dim::Time,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn crossing_above_the_upper_end_s_minus_0_05_is_never() {
+    // j is ahead only for w_T > S·0.955 = 0.6367 > S − 0.05 = 0.6167.
+    let arms = arms_with_deltas(-0.955, 0.045);
+    assert_eq!(quality_fixed(&arms), FlipKind::Never);
+    // Control: crossing at S·0.91 = 0.6067, just inside.
+    let inside = arms_with_deltas(-0.91, 0.09);
+    assert!(matches!(
+        quality_fixed(&inside),
+        FlipKind::Crosses {
+            over: Dim::Time,
+            under: Dim::Cost,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn crossing_at_exactly_the_end_points_is_never() {
+    // Root exactly at 0.05 or S − 0.05: j is ahead only strictly beyond
+    // it, where the other weight would be below 0.05.
+    let s = 2.0 / 3.0;
+    for (dc, dt) in [
+        (0.05 / s, 0.05 / s - 1.0),
+        (-(s - 0.05) / s, 1.0 - (s - 0.05) / s),
+    ] {
+        let k = quality_fixed(&arms_with_deltas(dc, dt));
+        if let FlipKind::Crosses { ratio, .. } = k {
+            // Float noise may land a hair inside; then the ratio must
+            // still describe a feasible split (both weights ≥ 0.05).
+            let wu = s / (1.0 + ratio);
+            assert!(wu >= 0.05 - 1e-9 && s - wu >= 0.05 - 1e-9, "{k:?}");
+        } else {
+            assert_eq!(k, FlipKind::Never);
+        }
     }
 }
 
-fn run_bootstrap(seed: u64) -> agent_value_core::sensitivity::StatisticalRobustness {
-    let obs = tasks();
-    let ids = vec!["X".to_string(), "Y".to_string()];
-    statistical_robustness(
-        &[4, 4],
+#[test]
+fn parallel_segment_with_strictly_worse_runner_up_is_never() {
+    // Same cost and time, B has lower quality: with quality fixed the
+    // segment is parallel to the line (slope 0) and B is behind on all of
+    // it. It must not say "B 在任何可行权重下都高于 A".
+    let arms = vec![arm("A", 0.5, 60.0, 0.90), arm("B", 0.5, 60.0, 0.80)];
+    let f = flip(&arms, Weights::equal());
+    assert_eq!((f.leader.as_str(), f.runner_up.as_str()), ("A", "B"));
+    assert_eq!(f.delta[0], 0.0);
+    assert_eq!(f.delta[1], 0.0);
+    let q = f
+        .statements
+        .iter()
+        .find(|s| s.fixed == Dim::Quality)
+        .unwrap();
+    assert_eq!(q.kind, FlipKind::Never);
+    assert_eq!(
+        flip_sentence(&f, q),
+        "保持质量权重不变，B 在任何可行权重下都不会超过 A；这是在当前估计值下的结论"
+    );
+    assert!(f.statements.iter().all(|s| s.kind == FlipKind::Never));
+}
+
+#[test]
+fn printed_ratio_rounds_up_but_keeps_exact_two_decimals() {
+    // 1.1 · 100 = 110.00000000000001 in floats: ceil alone would print 1.11.
+    assert_eq!(printed_ratio(1.1), 1.1);
+    assert_eq!(printed_ratio(1.4), 1.4);
+    assert_eq!(printed_ratio(0.29), 0.29);
+    assert_eq!(printed_ratio(1.1 + 1e-6), 1.11);
+    assert_eq!(printed_ratio(1.0023), 1.01);
+    // Within 1e-11 of x.yz the value prints as x.yz (documented tolerance).
+    assert_eq!(printed_ratio(1.1 + 1e-12), 1.1);
+}
+
+#[test]
+fn off_grid_tolerance_is_1e_9_not_a_fraction_of_a_step() {
+    let arms = example_arms();
+    // A point 1e-6 off the grid (still summing to 1) is rejected …
+    let off = vec![w(0.2 + 1e-6, 0.35 - 1e-6, 0.45)];
+    assert!(sensitivity(&input(&arms, Weights::equal(), Some(&off))).is_err());
+    // … and so is a quarter step off.
+    let quarter = vec![w(0.2125, 0.3375, 0.45)];
+    assert!(sensitivity(&input(&arms, Weights::equal(), Some(&quarter))).is_err());
+    // A point within float noise (1e-12) of a grid point is that point.
+    let near = vec![w(0.2 + 1e-12, 0.35 - 1e-12, 0.45)];
+    let r = report(&input(&arms, Weights::equal(), Some(&near)));
+    let flagged: Vec<_> = r.map.iter().filter(|p| p.in_omega_s).collect();
+    assert_eq!(flagged.len(), 1);
+    assert_eq!(flagged[0].weights, w(0.2, 0.35, 0.45));
+}
+
+#[test]
+fn floor_variants_through_sensitivity_use_the_scope_floors() {
+    // Same X/Y as the DECISIONS K example, but the scope overrides the
+    // floors to (0.05, 15, 0.005). Halving / doubling those keeps X on
+    // top in all seven runs; doubling the §9 c0 instead would flip to Y.
+    let arms = vec![arm("X", 0.10, 120.0, 0.92), arm("Y", 0.40, 120.0, 0.97)];
+    let mut i = input(&arms, Weights::equal(), None);
+    i.reference = Some(Point {
+        c: 0.6,
+        t: 120.0,
+        q: 0.90,
+    });
+    i.floors = Floors::new(0.05, 15.0, 0.005).unwrap();
+    let r = report(&i);
+    assert!(r.floor_robust.robust);
+    assert_eq!(r.floor_robust.runs.len(), 7);
+    assert!(r
+        .floor_robust
+        .runs
+        .iter()
+        .all(|(_, w)| *w == vec!["X".to_string()]));
+    // The map itself also uses the scope floors.
+    i.floors = Floors::default();
+    let base = report(&i);
+    assert!(!base.floor_robust.robust);
+}
+
+#[test]
+fn slightly_dominated_arm_never_wins_and_property_1_is_checked_at_runtime() {
+    // "good2" is "good" made 1e-6 元 dearer: dominated, never on F_off.
+    let mut arms = four_arms();
+    arms.push(arm("good2", 0.80 + 1e-6, 150.0, 0.97));
+    let off = frontier_off(&arms);
+    assert!(!off.contains(&"good2".to_string()));
+    assert!(off.contains(&"good".to_string()));
+    let r = report(&input(&arms, Weights::equal(), None));
+    let mut good_wins = 0;
+    for p in &r.map {
+        assert!(!p.winners.contains(&"good2".to_string()), "{:?}", p.weights);
+        good_wins += usize::from(p.winners.contains(&"good".to_string()));
+    }
+    // "good" does win somewhere, so the dominated twin had chances to.
+    assert!(good_wins > 0);
+}
+
+// ---- statistical robustness (task bootstrap, DECISIONS 12.6) ----
+
+fn cell(name: &str) -> CellId {
+    CellId::user(name).unwrap()
+}
+
+/// Two arms × two cells. Observations are per task (cost, time, quality);
+/// a resample's arm triple is the cell means averaged with ω = (0.5, 0.5).
+struct Fixture {
+    tasks: Vec<BootstrapTask>,
+    obs: Vec<(f64, f64, f64)>,
+}
+
+fn fixture() -> Fixture {
+    let rows = [
+        ("X", "fix", (0.2, 100.0, 0.80)),
+        ("X", "fix", (0.4, 140.0, 0.80)),
+        ("X", "new", (0.3, 120.0, 0.85)),
+        ("X", "new", (0.3, 120.0, 0.75)),
+        ("X", "new", (0.35, 110.0, 0.80)),
+        ("Y", "fix", (0.9, 50.0, 0.90)),
+        ("Y", "fix", (0.8, 70.0, 0.80)),
+        ("Y", "new", (1.0, 60.0, 0.85)),
+        ("Y", "new", (0.9, 60.0, 0.85)),
+    ];
+    Fixture {
+        tasks: rows
+            .iter()
+            .map(|(a, c, _)| BootstrapTask {
+                arm: (*a).into(),
+                cell: cell(c),
+            })
+            .collect(),
+        obs: rows.iter().map(|r| r.2).collect(),
+    }
+}
+
+fn layer_from(fx: &Fixture, draw: &[usize]) -> ResampleLayer {
+    let mut arms = Vec::new();
+    for a in ["X", "Y"] {
+        let mut p = Point {
+            c: 0.0,
+            t: 0.0,
+            q: 0.0,
+        };
+        for c in ["fix", "new"] {
+            let xs: Vec<_> = draw
+                .iter()
+                .filter(|&&k| fx.tasks[k].arm == a && fx.tasks[k].cell == cell(c))
+                .map(|&k| fx.obs[k])
+                .collect();
+            let n = xs.len() as f64;
+            p.c += 0.5 * xs.iter().map(|x| x.0).sum::<f64>() / n;
+            p.t += 0.5 * xs.iter().map(|x| x.1).sum::<f64>() / n;
+            p.q += 0.5 * xs.iter().map(|x| x.2).sum::<f64>() / n;
+        }
+        arms.push(SensitivityArm {
+            id: a.into(),
+            point: p,
+        });
+    }
+    ResampleLayer {
+        arms,
+        reference: Some(example_reference()),
+    }
+}
+
+fn ids() -> Vec<String> {
+    vec!["X".to_string(), "Y".to_string()]
+}
+
+/// Runs the bootstrap and returns the result plus every resample's draw.
+fn run_bootstrap(
+    seed: u64,
+) -> (
+    agent_value_core::sensitivity::StatisticalRobustness,
+    Vec<Vec<usize>>,
+) {
+    let fx = fixture();
+    let mut draws = Vec::new();
+    let r = statistical_robustness(
+        &fx.tasks,
         seed,
-        &ids,
+        &ids(),
         &Weights::equal(),
         &Floors::default(),
-        |draw| {
-            assert_eq!(draw.len(), 2);
-            for d in draw {
-                assert_eq!(d.len(), 4);
-                assert!(d.iter().all(|&k| k < 4));
-            }
-            Ok(ResampleLayer {
-                arms: vec![
-                    SensitivityArm {
-                        id: "X".into(),
-                        point: mean(&obs[0], &draw[0]),
-                    },
-                    SensitivityArm {
-                        id: "Y".into(),
-                        point: mean(&obs[1], &draw[1]),
-                    },
-                ],
-                reference: Some(example_reference()),
-            })
+        |d| {
+            draws.push(d.to_vec());
+            Ok(layer_from(&fx, d))
         },
     )
-    .unwrap()
+    .unwrap();
+    (r, draws)
+}
+
+#[test]
+fn strata_are_arm_cell_groups_in_key_order() {
+    let fx = fixture();
+    assert_eq!(
+        bootstrap_strata(&fx.tasks).unwrap(),
+        vec![vec![0, 1], vec![2, 3, 4], vec![5, 6], vec![7, 8]]
+    );
+}
+
+#[test]
+fn every_resample_keeps_each_arm_cell_count_and_stays_in_its_stratum() {
+    let fx = fixture();
+    let (_, draws) = run_bootstrap(20261020);
+    assert_eq!(draws.len(), 200);
+    let strata = bootstrap_strata(&fx.tasks).unwrap();
+    for d in &draws {
+        assert_eq!(d.len(), fx.tasks.len());
+        let mut at = 0;
+        for st in &strata {
+            for &k in &d[at..at + st.len()] {
+                assert!(st.contains(&k), "{k} drawn outside {st:?}");
+            }
+            at += st.len();
+        }
+    }
+}
+
+#[test]
+fn every_task_including_the_last_of_each_stratum_is_drawn() {
+    let fx = fixture();
+    let (_, draws) = run_bootstrap(20261020);
+    let mut hit = vec![0u32; fx.tasks.len()];
+    for d in &draws {
+        for &k in d {
+            hit[k] += 1;
+        }
+    }
+    assert!(hit.iter().all(|&h| h > 0), "{hit:?}");
+    // Last positions of the four strata: 1, 4, 6, 8.
+    for last in [1usize, 4, 6, 8] {
+        assert!(hit[last] > 0);
+    }
 }
 
 #[test]
 fn bootstrap_runs_200_resamples_and_is_reproducible_by_seed() {
-    let a = run_bootstrap(20261020);
-    let b = run_bootstrap(20261020);
+    let (a, da) = run_bootstrap(20261020);
+    let (b, db) = run_bootstrap(20261020);
     assert_eq!(a, b);
+    assert_eq!(da, db);
     assert_eq!(a.seed, 20261020);
     assert_eq!(a.resamples, BOOTSTRAP_RESAMPLES);
     assert_eq!(a.resamples, 200);
     assert_eq!(a.with_value, 200);
     let wins: u32 = a.arms.iter().map(|x| x.winner).sum();
     assert_eq!(wins, 200 + a.tied);
-    // Both arms trade off cost against time in every resample.
     assert!(a.arms.iter().all(|x| x.frontier == 200));
-    // The bootstrap is not degenerate: both arms win sometimes.
     assert!(
         a.arms.iter().all(|x| x.winner > 0 && x.winner < 200),
         "{a:?}"
     );
-    let c = run_bootstrap(7);
+    // The seed really drives the draws: compare the drawn task positions,
+    // not the result struct (which carries the seed itself).
+    let (c, dc) = run_bootstrap(7);
     assert_eq!(c.seed, 7);
-    assert_ne!(a, c);
+    assert_ne!(da, dc);
+    assert_ne!(da[0], dc[0]);
+}
+
+#[test]
+fn xorshift64_known_answers_match_independent_python() {
+    // logs/pr12/xorshift_kat.py (written from Marsaglia 2003, shifts 13/7/17).
+    let mut r = Xorshift64::new(1).unwrap();
+    assert_eq!(r.next_u64(), 1_082_269_761);
+    assert_eq!(r.next_u64(), 1_152_992_998_833_853_505);
+    assert_eq!(r.next_u64(), 11_177_516_664_432_764_457);
+    // n = 2^63 + 1 rejects about half of all outputs, so the draws differ
+    // from plain modulo from the third one on.
+    let mut r = Xorshift64::new(1).unwrap();
+    let n = (1u64 << 63) + 1;
+    let got: Vec<u64> = (0..6).map(|_| r.below(n).unwrap()).collect();
+    assert_eq!(
+        got,
+        vec![
+            1_082_269_761,
+            1_152_992_998_833_853_505,
+            9_024_654_201_992_055_039,
+            8_332_670_729_032_836_398,
+            2_074_683_623_940_568_804,
+            5_632_491_372_296_299_238,
+        ]
+    );
 }
 
 #[test]
 fn bootstrap_counts_frontier_without_anchor_and_dominant_wins_all() {
+    let tasks: Vec<BootstrapTask> = ["A", "A", "B"]
+        .iter()
+        .map(|a| BootstrapTask {
+            arm: (*a).into(),
+            cell: cell("fix"),
+        })
+        .collect();
     let ids = vec!["A".to_string(), "B".to_string()];
     let mut calls = 0u32;
     let mut with_anchor = false;
-    let r = statistical_robustness(&[3], 1, &ids, &Weights::equal(), &Floors::default(), |_| {
-        calls += 1;
-        with_anchor = !with_anchor;
-        Ok(ResampleLayer {
-            arms: vec![arm("A", 0.2, 30.0, 0.95), arm("B", 0.5, 60.0, 0.80)],
-            reference: with_anchor.then(example_reference),
-        })
-    })
+    let r = statistical_robustness(
+        &tasks,
+        1,
+        &ids,
+        &Weights::equal(),
+        &Floors::default(),
+        |_| {
+            calls += 1;
+            with_anchor = !with_anchor;
+            Ok(ResampleLayer {
+                arms: vec![arm("A", 0.2, 30.0, 0.95), arm("B", 0.5, 60.0, 0.80)],
+                reference: with_anchor.then(example_reference),
+            })
+        },
+    )
     .unwrap();
     assert_eq!(calls, 200);
     assert_eq!(r.with_value, 100);
@@ -757,8 +1049,13 @@ fn bootstrap_counts_frontier_without_anchor_and_dominant_wins_all() {
 
 #[test]
 fn bootstrap_rejects_bad_inputs() {
+    let one = |a: &str| BootstrapTask {
+        arm: a.into(),
+        cell: cell("fix"),
+    };
+    let tasks = vec![one("A"), one("A")];
     let ids = vec!["A".to_string()];
-    let ok = |_: &[Vec<usize>]| {
+    let ok = |_: &[usize]| {
         Ok(ResampleLayer {
             arms: vec![arm("A", 0.2, 30.0, 0.95)],
             reference: Some(example_reference()),
@@ -767,31 +1064,32 @@ fn bootstrap_rejects_bad_inputs() {
     let eq = Weights::equal();
     let fl = Floors::default();
     assert!(
-        statistical_robustness(&[2], 0, &ids, &eq, &fl, ok).is_err(),
+        statistical_robustness(&tasks, 0, &ids, &eq, &fl, ok).is_err(),
         "seed 0"
     );
     let dup = vec!["A".to_string(), "A".to_string()];
-    assert!(statistical_robustness(&[2], 1, &dup, &eq, &fl, ok).is_err());
-    let stranger = |_: &[Vec<usize>]| {
+    assert!(statistical_robustness(&tasks, 1, &dup, &eq, &fl, ok).is_err());
+    let stranger = |_: &[usize]| {
         Ok(ResampleLayer {
             arms: vec![arm("Z", 0.2, 30.0, 0.95)],
             reference: Some(example_reference()),
         })
     };
-    assert!(statistical_robustness(&[2], 1, &ids, &eq, &fl, stranger).is_err());
-    // An empty stratum draws nothing and is not an error.
-    let r = statistical_robustness(&[0, 2], 1, &ids, &eq, &fl, |d| {
-        assert!(d[0].is_empty());
-        assert_eq!(d[1].len(), 2);
+    assert!(statistical_robustness(&tasks, 1, &ids, &eq, &fl, stranger).is_err());
+    // A task of an arm that is not listed is an error, as is a blank arm.
+    assert!(statistical_robustness(&[one("Z")], 1, &ids, &eq, &fl, ok).is_err());
+    assert!(bootstrap_strata(&[one(" ")]).is_err());
+    // No tasks: nothing is drawn, not an error.
+    let r = statistical_robustness(&[], 1, &ids, &eq, &fl, |d| {
+        assert!(d.is_empty());
         ok(d)
     })
     .unwrap();
     assert_eq!(r.arms[0].winner, 200);
-    // Errors from the caller's recomputation propagate.
-    let failing = |_: &[Vec<usize>]| -> agent_value_core::Result<ResampleLayer> {
+    let failing = |_: &[usize]| -> agent_value_core::Result<ResampleLayer> {
         Err(CoreError::NoConvergence { what: "test" })
     };
-    assert!(statistical_robustness(&[2], 1, &ids, &eq, &fl, failing).is_err());
+    assert!(statistical_robustness(&tasks, 1, &ids, &eq, &fl, failing).is_err());
 }
 
 #[test]
@@ -808,16 +1106,30 @@ fn xorshift_draws_cover_every_index() {
 #[test]
 fn bootstrap_three_way_tie_counts_every_member() {
     let ids = vec!["A".to_string(), "B".to_string(), "C".to_string()];
-    let r = statistical_robustness(&[2], 3, &ids, &Weights::equal(), &Floors::default(), |_| {
-        Ok(ResampleLayer {
-            arms: vec![
-                arm("A", 0.5, 60.0, 0.8),
-                arm("B", 0.5, 60.0, 0.8),
-                arm("C", 0.5, 60.0, 0.8),
-            ],
-            reference: Some(example_reference()),
+    let tasks: Vec<BootstrapTask> = ["A", "B", "C"]
+        .iter()
+        .map(|a| BootstrapTask {
+            arm: (*a).into(),
+            cell: cell("fix"),
         })
-    })
+        .collect();
+    let r = statistical_robustness(
+        &tasks,
+        3,
+        &ids,
+        &Weights::equal(),
+        &Floors::default(),
+        |_| {
+            Ok(ResampleLayer {
+                arms: vec![
+                    arm("A", 0.5, 60.0, 0.8),
+                    arm("B", 0.5, 60.0, 0.8),
+                    arm("C", 0.5, 60.0, 0.8),
+                ],
+                reference: Some(example_reference()),
+            })
+        },
+    )
     .unwrap();
     assert_eq!((r.with_value, r.tied), (200, 200));
     let wins: u32 = r.arms.iter().map(|x| x.winner).sum();
@@ -830,18 +1142,18 @@ fn bootstrap_needs_arm_ids_and_skips_empty_resamples_for_winners() {
     let fl = Floors::default();
     let eq = Weights::equal();
     let empty: Vec<String> = Vec::new();
-    let nothing = |_: &[Vec<usize>]| {
+    let nothing = |_: &[usize]| {
         Ok(ResampleLayer {
             arms: Vec::new(),
             reference: Some(example_reference()),
         })
     };
     assert!(matches!(
-        statistical_robustness(&[1], 1, &empty, &eq, &fl, nothing),
+        statistical_robustness(&[], 1, &empty, &eq, &fl, nothing),
         Err(CoreError::EmptyField { .. })
     ));
     let ids = vec!["A".to_string()];
-    let r = statistical_robustness(&[1], 1, &ids, &eq, &fl, nothing).unwrap();
+    let r = statistical_robustness(&[], 1, &ids, &eq, &fl, nothing).unwrap();
     assert_eq!((r.resamples, r.with_value, r.tied), (200, 0, 0));
     assert_eq!((r.arms[0].winner, r.arms[0].frontier), (0, 0));
 }

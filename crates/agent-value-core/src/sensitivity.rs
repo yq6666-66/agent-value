@@ -31,6 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cell_values::Triple;
+use crate::cells::CellId;
 use crate::constants::BOOTSTRAP_RESAMPLES;
 use crate::error::{finite, CoreError, Result};
 use crate::frontier::{highest_v_group, layer_frontiers, FrontierArm};
@@ -436,6 +437,24 @@ pub fn sensitivity(
     let current_winners = winners(input.arms, reference, &input.current, &input.floors)?;
     let flip = flip_line(input.arms, reference, &input.current, &input.floors)?;
     let floor_robust = floor_robustness(input.arms, reference, &input.current, &input.floors)?;
+
+    // §12 property 1: with a, b, g > 0 every winner is on F_off. It holds
+    // by construction; checked in every build so a violation is an error,
+    // never a silently wrong map.
+    let off = layer_frontiers(&frontier_arms_of(input.arms))?.off;
+    let all_winners = map
+        .iter()
+        .map(|p| &p.winners)
+        .chain(std::iter::once(&current_winners))
+        .chain(floor_robust.runs.iter().map(|(_, w)| w));
+    for ws in all_winners {
+        if ws.iter().any(|id| !off.contains(id)) {
+            return Err(CoreError::InvalidField {
+                field: "winner map",
+                reason: "a winner is outside F_off (§12 property 1)",
+            });
+        }
+    }
     Ok(Ok(SensitivityReport {
         map,
         current: input.current,
@@ -444,6 +463,20 @@ pub fn sensitivity(
         flip,
         floor_robust,
     }))
+}
+
+fn frontier_arms_of(arms: &[SensitivityArm]) -> Vec<FrontierArm> {
+    arms.iter()
+        .map(|a| {
+            let t = Triple::new(a.point.c, a.point.t, a.point.q);
+            FrontierArm {
+                id: a.id.clone(),
+                star: t,
+                robust: t,
+                robust_enabled: true,
+            }
+        })
+        .collect()
 }
 
 fn in_neighbourhood(w: &Weights, current: &Weights) -> bool {
@@ -759,16 +792,46 @@ impl Xorshift64 {
     }
 }
 
-/// Task bootstrap (§12 line 810): 200 resamples. `strata` gives the task
-/// count of each stratum (one stratum holding every task of the layer is
-/// the plain task bootstrap; how to stratify is the caller's choice and is
-/// not fixed by the spec); each resample draws, independently in every
-/// stratum, as many task indices as it has, with replacement. `eval` gets
-/// the drawn indices per stratum and returns that resample's `E_d` arms
-/// and anchor. `arm_ids` lists every arm to report; an arm returned by
-/// `eval` that is not in `arm_ids` is an error.
+/// One task of the layer, as seen by the bootstrap: its arm and its design
+/// cell. Probe tasks (`ω = 0`) must not be passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapTask {
+    pub arm: String,
+    pub cell: CellId,
+}
+
+/// The bootstrap strata: task positions grouped by `(arm, cell)`, strata in
+/// `(arm, cell)` order, positions ascending (DECISIONS 12.6).
+pub fn bootstrap_strata(tasks: &[BootstrapTask]) -> Result<Vec<Vec<usize>>> {
+    let mut groups: BTreeMap<(&str, &CellId), Vec<usize>> = BTreeMap::new();
+    for (pos, t) in tasks.iter().enumerate() {
+        if t.arm.trim().is_empty() {
+            return Err(CoreError::EmptyField {
+                field: "bootstrap task arm",
+            });
+        }
+        groups
+            .entry((t.arm.as_str(), &t.cell))
+            .or_default()
+            .push(pos);
+    }
+    Ok(groups.into_values().collect())
+}
+
+/// Task bootstrap (§12 line 810): 200 resamples, stratified by
+/// `(arm, cell)` (DECISIONS 12.6). In each resample every `(arm, cell)`
+/// stratum of `n_iu` tasks is redrawn with replacement to exactly `n_iu`
+/// tasks, so `ω_u`, the design grid and every `n_iu` stay fixed and only
+/// task outcomes, costs, times and ratings vary. The reference and fallback
+/// arms are resampled the same way (their tasks are in `tasks` like any
+/// other arm's).
+///
+/// `eval` gets the drawn task positions (into `tasks`; strata in
+/// [`bootstrap_strata`] order) and returns that resample's recomputed
+/// `E_d` arms and anchor. `arm_ids` lists every arm to report; every task
+/// arm and every arm returned by `eval` must be in it.
 pub fn statistical_robustness<F>(
-    strata: &[usize],
+    tasks: &[BootstrapTask],
     seed: u64,
     arm_ids: &[String],
     current: &Weights,
@@ -776,7 +839,7 @@ pub fn statistical_robustness<F>(
     mut eval: F,
 ) -> Result<StatisticalRobustness>
 where
-    F: FnMut(&[Vec<usize>]) -> Result<ResampleLayer>,
+    F: FnMut(&[usize]) -> Result<ResampleLayer>,
 {
     if arm_ids.is_empty() {
         return Err(CoreError::EmptyField {
@@ -794,6 +857,15 @@ where
             return Err(CoreError::DuplicateCell { cell: id.clone() });
         }
     }
+    for t in tasks {
+        if !seen.contains(t.arm.as_str()) {
+            return Err(CoreError::InvalidField {
+                field: "bootstrap task",
+                reason: "task arm is not in arm_ids",
+            });
+        }
+    }
+    let strata = bootstrap_strata(tasks)?;
     let mut rng = Xorshift64::new(seed)?;
     let mut counts: BTreeMap<&str, (u32, u32)> =
         arm_ids.iter().map(|id| (id.as_str(), (0, 0))).collect();
@@ -801,19 +873,23 @@ where
     let mut with_value = 0u32;
     let mut tied = 0u32;
     for _ in 0..BOOTSTRAP_RESAMPLES {
-        let mut draw = Vec::with_capacity(strata.len());
-        for &n in strata {
-            let n64 = u64::try_from(n).map_err(|_| CoreError::Overflow {
+        let mut draw = Vec::with_capacity(tasks.len());
+        for stratum in &strata {
+            let n64 = u64::try_from(stratum.len()).map_err(|_| CoreError::Overflow {
                 what: "bootstrap stratum size",
             })?;
-            let mut idx = Vec::with_capacity(n);
-            for _ in 0..n {
+            for _ in 0..stratum.len() {
                 let k = rng.below(n64)?;
-                idx.push(usize::try_from(k).map_err(|_| CoreError::Overflow {
+                let at = usize::try_from(k).map_err(|_| CoreError::Overflow {
                     what: "bootstrap index",
+                })?;
+                draw.push(*stratum.get(at).ok_or(CoreError::OutOfRange {
+                    what: "bootstrap index",
+                    value: k as f64,
+                    min: 0.0,
+                    max: n64 as f64,
                 })?);
             }
-            draw.push(idx);
         }
         let layer = eval(&draw)?;
         check_ids(&layer.arms)?;
@@ -826,19 +902,7 @@ where
             }
         }
         bump(&mut resamples, "bootstrap resamples")?;
-        let frontier_arms: Vec<FrontierArm> = layer
-            .arms
-            .iter()
-            .map(|a| {
-                let t = Triple::new(a.point.c, a.point.t, a.point.q);
-                FrontierArm {
-                    id: a.id.clone(),
-                    star: t,
-                    robust: t,
-                    robust_enabled: true,
-                }
-            })
-            .collect();
+        let frontier_arms = frontier_arms_of(&layer.arms);
         for id in layer_frontiers(&frontier_arms)?.off {
             if let Some(e) = counts.get_mut(id.as_str()) {
                 bump(&mut e.1, "bootstrap frontier count")?;

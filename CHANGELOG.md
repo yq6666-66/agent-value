@@ -19,6 +19,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejected.
 
 ### Added
+- Core, spec step 12: weight sensitivity data (§12), new module
+  `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
+  group of highest `V` among the compared arms, ties reported whole;
+  withheld in the first window and when the reference has no anchor
+  (tier III). Each grid point is flagged for `Ω_s` and `Ω_b`, which are
+  inputs (validated: non-empty, on the 0.05 grid, no duplicates).
+  Weight-robust winner over `Ω_s`, or over `max|w − W_k| ≤ 0.10` when
+  there is no self-report, with per-arm shares and "在你的权重范围内都是它"
+  only for a sole winner at every point. Statistical robustness: 200-task
+  bootstrap within caller-given strata, seeded xorshift64 (seed recorded,
+  0 rejected), caller recomputes each resample; reports winner frequency
+  at `W_k`, `F_off` frequency, ties and resamples with an anchor. Flip
+  line between the top two arms (`aΔ_C + bΔ_T + gΔ_D = 0`) with one
+  statement per fixed dimension, evaluated on the feasible segment.
+  Noise-floor robustness at `W_k` under `c0`, `t0`, `ε` × 0.5 and × 2.
+  All counters use checked addition. Paired with the spec example (Y
+  wins 93 grid points, X 78; Y wins 14 of 14 in the self-report region).
+
 - Core, spec step 10: reference anchor certification (§7). Tiers are
   decided III → II → I, first match wins; tier III lists every reason
   (miss, true-fail cell, NA cell, fewer than 3 valid cells), so a layer

@@ -443,6 +443,72 @@ fn diagnostic_reference_anchor_is_unclamped_symmetric_worst() {
 }
 
 #[test]
+fn diagnostic_reference_anchor_takes_each_dimension_on_its_own() {
+    // c01 is valid with time NA: its cost 0.9 and quality 0.9 still count
+    // (line 570 is per dimension; DECISIONS F, Y).
+    let cells = ids(4);
+    let w = CellWeights::equal(&cells).unwrap();
+    let st = status(
+        &w,
+        &cells,
+        &[Some(VALID), Some(VALID), Some(VALID), Some(THIN)],
+    );
+    let tr = triples(
+        &cells,
+        &[
+            Triple {
+                t: None,
+                ..Triple::new(0.9, 0.0, 0.9)
+            },
+            Triple::new(0.6, 10.0, 0.8),
+            Triple::new(0.6, 12.0, 0.7),
+            Triple::new(0.5, 5.0, 0.95),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr).unwrap().unwrap();
+    // Worst valid: C 0.9 (from c01), T 12, Q 0.7; every cell is lifted.
+    close(d.c, 0.9);
+    close(d.t, 12.0);
+    close(d.q, 0.7);
+    // Only partial valid cells, each dimension defined somewhere: Some.
+    let tr2 = triples(
+        &cells,
+        &[
+            Triple {
+                t: None,
+                ..Triple::new(0.9, 0.0, 0.9)
+            },
+            Triple {
+                c: None,
+                ..Triple::new(0.0, 10.0, 0.8)
+            },
+            Triple {
+                q: None,
+                ..Triple::new(0.6, 12.0, 0.0)
+            },
+            Triple::new(0.5, 5.0, 0.95),
+        ],
+    );
+    let d = diagnostic_reference_anchor(&st, &w, &tr2).unwrap().unwrap();
+    close(d.c, 0.9);
+    close(d.t, 12.0);
+    close(d.q, 0.8);
+    // Time NA in every valid cell: no anchor.
+    let tr3 = triples(
+        &cells,
+        &[
+            Triple { t: None, ..tc(0.9) },
+            Triple { t: None, ..tc(0.6) },
+            Triple { t: None, ..tc(0.6) },
+            tc(0.5),
+        ],
+    );
+    assert!(diagnostic_reference_anchor(&st, &w, &tr3)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn diagnostic_reference_anchor_without_valid_cell_is_none() {
     let cells = ids(3);
     let w = CellWeights::equal(&cells).unwrap();

@@ -221,33 +221,41 @@ pub fn layer_value(
     }
 }
 
-/// Unclamped diagnostic reference anchor (§7 "诊断表锚点"):
-/// `C^{*,diag}_{R,u} = max(C*_{R,u}, max_valid C*_{R,v})`, the same for
-/// time, `min` for quality, then aggregated over `d+`. A cell with an NA
-/// dimension uses the worst valid value (DECISIONS Y). `None` when there
-/// is no valid cell with a complete triple.
+/// Unclamped diagnostic reference anchor (§7 "诊断表锚点", line 570 as
+/// written): `C^{*,diag}_{R,u} = max(C*_{R,u}, max_valid C*_{R,v})`, the
+/// same for time, `min` for quality, then aggregated over `d+`.
+///
+/// Each dimension is taken on its own (DECISIONS F, Y): a valid cell's
+/// defined dimensions enter the worst value of those dimensions even when
+/// another of its dimensions is NA. An NA dimension of any `d+` cell takes
+/// the worst valid value of that dimension. `None` when some dimension has
+/// no defined value in any positive-weight valid cell.
 pub fn diagnostic_reference_anchor(
     status: &LayerStatus,
     weights: &CellWeights,
     reference_cells: &[(CellId, Triple)],
 ) -> Result<Option<Point>> {
     let map = cell_map(reference_cells)?;
-    let mut worst: Option<Point> = None;
+    let (mut wc, mut wt, mut wq): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
     for (cell, a) in &status.cells {
         if a.status != CellStatus::Valid || weights.omega(cell) <= 0.0 {
             continue;
         }
-        if let Some(p) = map.get(cell).and_then(|t| Point::from_triple(t)) {
-            worst = Some(match worst {
-                None => p,
-                Some(w) => Point {
-                    c: w.c.max(p.c),
-                    t: w.t.max(p.t),
-                    q: w.q.min(p.q),
-                },
-            });
+        let Some(t) = map.get(cell) else { continue };
+        if let Some(c) = t.c {
+            wc = Some(wc.map_or(c, |w| w.max(c)));
+        }
+        if let Some(v) = t.t {
+            wt = Some(wt.map_or(v, |w| w.max(v)));
+        }
+        if let Some(q) = t.q {
+            wq = Some(wq.map_or(q, |w| w.min(q)));
         }
     }
+    let worst = match (wc, wt, wq) {
+        (Some(c), Some(t), Some(q)) => Some(Point { c, t, q }),
+        _ => None,
+    };
     let Some(wv) = worst else {
         return Ok(None);
     };

@@ -130,7 +130,34 @@ impl FallbackDecision {
 }
 
 /// Checks DECISIONS G for a user-specified fallback arm.
-pub fn fallback_failures(cand: &FallbackCandidate) -> Vec<FallbackFailure> {
+///
+/// Errors when a layer weight is NaN, infinite or negative, or when a
+/// layer lists the same cell twice in `ratings` (the result would depend
+/// on input order).
+pub fn fallback_failures(cand: &FallbackCandidate) -> Result<Vec<FallbackFailure>> {
+    for l in &cand.layers {
+        if !l.omega_d.is_finite() {
+            return Err(CoreError::NotFinite {
+                what: "fallback layer omega_d",
+                value: l.omega_d,
+            });
+        }
+        if l.omega_d < 0.0 {
+            return Err(CoreError::OutOfRange {
+                what: "fallback layer omega_d",
+                value: l.omega_d,
+                min: 0.0,
+                max: f64::INFINITY,
+            });
+        }
+        for (i, (id, _)) in l.ratings.iter().enumerate() {
+            if l.ratings[..i].iter().any(|(o, _)| o == id) {
+                return Err(CoreError::DuplicateCell {
+                    cell: id.as_str().to_string(),
+                });
+            }
+        }
+    }
     let mut f = Vec::new();
     if !cand.prev_authenticity.passes() {
         f.push(FallbackFailure::Authenticity);
@@ -161,15 +188,16 @@ pub fn fallback_failures(cand: &FallbackCandidate) -> Vec<FallbackFailure> {
     }
     f.sort();
     f.dedup();
-    f
+    Ok(f)
 }
 
 /// Resolves `F_k` from the selected reference and an optional user choice.
+/// Errors as [`fallback_failures`] does.
 pub fn resolve_fallback(
     reference_id: &str,
     user_choice: Option<&FallbackCandidate>,
-) -> FallbackDecision {
-    match user_choice {
+) -> Result<FallbackDecision> {
+    Ok(match user_choice {
         None => FallbackDecision::Default {
             id: reference_id.to_string(),
         },
@@ -177,7 +205,7 @@ pub fn resolve_fallback(
             id: reference_id.to_string(),
         },
         Some(c) => {
-            let failures = fallback_failures(c);
+            let failures = fallback_failures(c)?;
             if failures.is_empty() {
                 FallbackDecision::Keep { id: c.id.clone() }
             } else {
@@ -188,5 +216,5 @@ pub fn resolve_fallback(
                 }
             }
         }
-    }
+    })
 }

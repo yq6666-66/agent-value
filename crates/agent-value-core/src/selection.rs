@@ -129,12 +129,10 @@ impl FallbackDecision {
     }
 }
 
-/// Checks DECISIONS G for a user-specified fallback arm.
-///
-/// Errors when a layer weight is NaN, infinite or negative, or when a
-/// layer lists the same cell twice in `ratings` (the result would depend
-/// on input order).
-pub fn fallback_failures(cand: &FallbackCandidate) -> Result<Vec<FallbackFailure>> {
+/// Structural checks on a fallback candidate: every layer weight finite
+/// and non-negative, no cell listed twice in a layer's `ratings`.
+/// Run on every path of [`resolve_fallback`] (DECISIONS G11).
+fn check_fallback_input(cand: &FallbackCandidate) -> Result<()> {
     for l in &cand.layers {
         if !l.omega_d.is_finite() {
             return Err(CoreError::NotFinite {
@@ -158,6 +156,16 @@ pub fn fallback_failures(cand: &FallbackCandidate) -> Result<Vec<FallbackFailure
             }
         }
     }
+    Ok(())
+}
+
+/// Checks DECISIONS G for a user-specified fallback arm.
+///
+/// Errors when a layer weight is NaN, infinite or negative, or when a
+/// layer lists the same cell twice in `ratings` (the result would depend
+/// on input order).
+pub fn fallback_failures(cand: &FallbackCandidate) -> Result<Vec<FallbackFailure>> {
+    check_fallback_input(cand)?;
     let mut f = Vec::new();
     if !cand.prev_authenticity.passes() {
         f.push(FallbackFailure::Authenticity);
@@ -192,7 +200,8 @@ pub fn fallback_failures(cand: &FallbackCandidate) -> Result<Vec<FallbackFailure
 }
 
 /// Resolves `F_k` from the selected reference and an optional user choice.
-/// Errors as [`fallback_failures`] does.
+/// Errors as [`fallback_failures`] does, also when the user chose `R_k`
+/// itself (DECISIONS G11).
 pub fn resolve_fallback(
     reference_id: &str,
     user_choice: Option<&FallbackCandidate>,
@@ -201,9 +210,13 @@ pub fn resolve_fallback(
         None => FallbackDecision::Default {
             id: reference_id.to_string(),
         },
-        Some(c) if c.id == reference_id => FallbackDecision::Default {
-            id: reference_id.to_string(),
-        },
+        Some(c) if c.id == reference_id => {
+            // F = R needs no qualification, but bad input is still an error.
+            check_fallback_input(c)?;
+            FallbackDecision::Default {
+                id: reference_id.to_string(),
+            }
+        }
         Some(c) => {
             let failures = fallback_failures(c)?;
             if failures.is_empty() {

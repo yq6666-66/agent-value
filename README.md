@@ -20,7 +20,7 @@ There is no usable app yet. The formulas below exist as a tested Rust library, a
 | 8 | Eligibility gates $\mathcal E_d$ | Implemented (authenticity and log integrity are passed in by the caller until step 13) |
 | 9 | Frontier and diagnostic table | Implemented (per layer and overall; the display is planned) |
 | 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Implemented (no display layer yet) |
-| 11 | Weight elicitation from your answers and behaviour | Planned |
+| 11 | Weight elicitation from your answers and behaviour | Implemented (library only; no question screen or suggestion display yet) |
 | 12 | Weight sensitivity display | Planned |
 | 13 | Probes and relay checks | Planned |
 
@@ -420,12 +420,80 @@ If any positive-weight layer is tier III, the overall reference is $\mathrm{NA}$
 
 </details>
 
-### 9. Planned
+### 9. Weights from your answers and behaviour
+
+*Spec §10. Implemented as library functions; the question screen and the suggestion display are planned.*
+
+**Self-report.** You answer pairwise questions. Each question offers two options, A and B, that differ in two of cost, time and quality, pulling in opposite directions; the third dimension is equal. With the noise floors $c_0$, $t_0$, $\epsilon$, the ratios between A and B are $\rho_C=(C_A+c_0)/(C_B+c_0)$, $\rho_T=(T_A+t_0)/(T_B+t_0)$ and $\rho_D=(1-Q_A+\epsilon)/(1-Q_B+\epsilon)$; the equal dimension has ratio 1.
+
+$$
+s(w)=a\ln\rho_C+b\ln\rho_T+g\ln\rho_D,\qquad
+\Delta=\tfrac12\bigl(|\ln\rho_C|+|\ln\rho_T|+|\ln\rho_D|\bigr),\qquad
+u(w)=-s(w)/\Delta .
+$$
+
+You answer on five levels: strongly A ($+2$), slightly A ($+1$), about the same ($0$), slightly B ($-1$), strongly B ($-2$). A weight $w$ predicts the level
+
+$$
+\ell(w)=\begin{cases}
++2, & u(w)>\delta_2,\\
++1, & \delta_1<u(w)\le\delta_2,\\
+0, & |u(w)|\le\delta_1,\\
+-1, & -\delta_2\le u(w)<-\delta_1,\\
+-2, & u(w)<-\delta_2,
+\end{cases}\qquad \delta_1=0.25,\ \delta_2=0.50 .
+$$
+
+$u$ is rounded to 9 decimal places first, so a value that is exactly $0.25$ or $0.50$ stays inside the closed band.
+
+- Candidate weights are a grid: $a$, $b$, $g$ each from $0.05$ to $0.90$ in steps of $0.05$, with $a+b+g=1$. That gives 171 points.
+- The question bank has 96 questions: 3 pairs of dimensions, ratios from $\{1.3, 1.5, 2, 3\}$ for each of the two dimensions, and 2 directions.
+- Let $m$ be the smallest total level deviation from your answers over the grid. The core region $\Omega^{\rm core}_s$ holds the grid points with deviation $m$. The weight region $\Omega_s$ holds the points with deviation at most $m+1$, so one answer may be a level off.
+- The next question is the unanswered one that splits $\Omega_s$ most evenly over the five levels; on a tie, the first one in the bank. Questions stop once at least 4 are answered and $\Omega_s$ has at most 15 points, or after 10 questions.
+- The result is shown mainly as $\Omega_s$ and its range in each dimension. The default point $w_s$ is the grid point nearest the centroid of the core region.
+- If $m\ge2$, the answers are flagged as contradicting each other, with a list of the questions that are two or more levels off at some core point. The list may be empty.
+- The amounts in a question are computed one dimension at a time from a base value: the previous window's median (in the first window, 0.5 RMB and 120 s) for cost and time, and a defect rate passed in by the caller for quality. In each dimension, the option that is better in that dimension shows the base, and the worse option's value is computed from the ratio, so cost and time stay positive and a defect rate is never negative; in the equal dimension both show the base, up to floating-point rounding in the last digit (the value goes through the same ratio formula with a ratio of 1). A question whose computed defect rate would go above 1 is skipped, not clamped.
+- The cut points $0.25$ and $0.50$ and the "one answer may be a level off" error model have been checked in simulation only, not with real users.
+
+**Behaviour suggestions.** These use the choice events of the previous window: which arms you could pick and which one you picked. Only real choices between at least 2 arms count, and an event is dropped whole if any of its arms lacks values. Using the noise floors $c_0$, $t_0$, $\epsilon$ from the constants table and the arm's cell values from the previous window, set $x_l=\bigl(\ln(C^{\ast}_l+c_0),\ \ln(T^{\ast}_l+t_0),\ \ln(1-Q^{\ast}_l+\epsilon)\bigr)$, a choice model is fitted with $\vartheta\ge0$:
+
+$$
+\Pr(j_e\mid S_e;\vartheta)=\frac{\exp(-\vartheta\cdot x_{j_e})}{\sum_{l\in S_e}\exp(-\vartheta\cdot x_l)},\qquad
+w_b=\frac{\hat\vartheta}{\lVert\hat\vartheta\rVert_1},\qquad \hat\lambda=\lVert\hat\vartheta\rVert_1 .
+$$
+
+- There is no signal, and so no suggestion, when there are fewer than 20 events, fewer than 2 different arms were ever picked, the differences $x_{j_e}-x_l$ between the chosen arm and each other option have rank below 3, $\hat\lambda<0.5$, or the fit has no well-defined maximum.
+- Otherwise the support set $\Omega_b$ holds the grid points whose profile log-likelihood is within $3.0$ of the maximum. It is a heuristic set, not a confidence region, and it can be empty: $w_b$ may lie off the grid (a component below 0.05), or the likelihood may be so sharp that even the nearest grid point is more than 3.0 below the maximum. An empty $\Omega_b$ is not an error: with a self-report there is then no overlap, so the "no overlap" row below applies; without one, the "no self-report, behaviour signal" row applies.
+- 200 bootstrap resamples report the 5%, 50% and 95% points of $w_b$. If fewer than 100 resamples succeed, the result is marked unstable.
+- The first window gives no signal. Behaviour from the window being scored, or from a later one, is refused with an error.
+
+**How they combine.** Behaviour never changes the weights. The weights in effect are $w_s$ if you have answered the questions, otherwise $1/3$ each. Behaviour only adds a suggestion:
+
+| Situation | Weights in effect | Suggestion |
+|---|---|---|
+| Self-report, no behaviour signal | $w_s$ | none |
+| Self-report, $\Omega_s$ and $\Omega_b$ overlap | $w_s$ | "behaviour agrees", plus the point of $\Omega_s$ with the highest profile log-likelihood |
+| Self-report, no overlap | $w_s$ | the conflict, plus $w_b$ |
+| No self-report, behaviour signal | $1/3$ each | $w_b$ |
+| Neither | $1/3$ each | a prompt to answer the questions |
+
+<details>
+<summary>Implementation notes</summary>
+
+- On a tie for nearest grid point, $w_s$ is the point with the smallest $(a, b)$ in dictionary order. The distance is compared exactly in integers.
+- The core works with ratios only. Turning a question into amounts and times is done from the ratios; a question that cannot be shown is skipped and not asked again. A defect base of 0 is valid.
+- The rank is computed by elimination with full pivoting and a relative tolerance of $10^{-9}$. "Different arms" are counted by arm id.
+- $\hat\vartheta$ is found by projected Newton steps on $\vartheta\ge0$. Before the fit, the events are checked for separation. The data are separable if some direction $d\ge0$, $d\ne0$, makes the chosen arm $j_e$ of every event no worse than each other option $l$: $d\cdot(x_l-x_{j_e})\ge0$. The fit only runs when the differences have rank 3, so at least one of these is then strict, so the likelihood keeps rising along $\vartheta+td$ and has no maximum: separable data are not identifiable. Separable data, a nearly singular information matrix, or no convergence give "no signal: not identifiable" instead of an error.
+- A bootstrap resample that fails (difference rank below 3, separable, or no finite fit with $\lVert\vartheta\rVert_1>0$) is skipped and counted. The random seed is passed in by the caller.
+- The profile log-likelihood of $w$ is the maximum of the log-likelihood $L$ along $\lambda w$ for $\lambda>0$. If $L$ does not increase from $\lambda=0$, the value at $\lambda=0$ is used. The threshold for $\Omega_b$ uses $L(\hat\vartheta)$ directly; $w_b$ is not moved onto the grid.
+
+</details>
+
+### 10. Planned
 
 These parts of the specification are not implemented:
 
 - **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6). Showing the first window's frontier labelled as not yet calibrated is also planned.
-- **Weights** (step 11): estimating $a$, $b$, $g$ from pairwise questions and from your behaviour.
 - **Weight sensitivity** (step 12): how results change across the weight grid, plus a check that halves and doubles each noise floor one at a time.
 - **Probes and relay checks** (step 13): a fixed probe set that checks whether a route serves the model it claims, plus log-integrity checks.
 
@@ -444,6 +512,11 @@ These parts of the specification are not implemented:
 | $\epsilon$ | 0.02 | Quality defect noise floor |
 | $\theta$ | 0.10 | Tier II clamp window for the reference anchor (cost, time and defects) |
 | $a,b,g$ | $1/3$ each by default, each $\ge0.05$ | Weights of cost, time and quality in $V$ |
+| Answer cut points $\delta_1,\delta_2$ | 0.25, 0.50 | Bands of $u(w)$ for the five answer levels |
+| Weight grid | step 0.05, each weight 0.05 to 0.90, 171 points | Candidate weights for the questions and for $\Omega_b$ |
+| Question stop rule | at least 4 answers and $\lvert\Omega_s\rvert\le15$ points, or 10 answers | When the questions stop |
+| Behaviour signal | at least 20 events, at least 2 different chosen arms, difference rank 3, $\hat\lambda\ge0.5$ | Otherwise there is no behaviour suggestion |
+| Support set | within 3.0 of the maximum profile log-likelihood; 200 bootstrap resamples | $\Omega_b$ and the spread of $w_b$ |
 | Time window | 30 days | Weights and references are fixed from the previous window |
 | Redo window | 30 minutes | A redo request in this period marks the task failed |
 | Rollback window | 24 hours | A full revert in this period marks a coding task failed |

@@ -14,21 +14,26 @@
 //! overall aggregation with the value score `V` (§4), and the layer
 //! eligibility set `E_d` (§5; authenticity / log-integrity are stub
 //! inputs until §11), the diagnostic table for miss/fail arms (§5),
-//! and the layer frontiers `F_off` / `F_rob` / `F_rec` (§6). The anchor
-//! tiers (§7) are not implemented yet.
+//! the layer frontiers `F_off` / `F_rob` / `F_rec` (§6), anchor tiers,
+//! overall closure and the fallback arm (§7, §13), the five-level
+//! self-report (§10.2), behaviour calibration (§10.3) and the merge rule
+//! (§10.4).
 
 #![forbid(unsafe_code)]
 
 pub mod anchor;
 pub mod arm;
+pub mod behavior;
 pub mod beta_dist;
 pub mod cell_values;
 pub mod cells;
 pub mod constants;
 pub mod diagnostic;
+pub mod elicit;
 pub mod eligibility;
 pub mod error;
 pub mod frontier;
+pub mod grid;
 pub mod labels;
 pub mod outcome;
 pub mod privacy;
@@ -40,6 +45,7 @@ pub mod runday;
 pub mod scope;
 pub mod selection;
 pub mod status;
+pub mod suggest;
 pub mod value;
 pub mod weights;
 pub mod window;

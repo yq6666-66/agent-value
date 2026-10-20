@@ -5,7 +5,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Core, spec step 11: five-level self-report (§10.2). The 171-point weight
+  grid in exact twentieths, the 96-question bank, five-level banding (u
+  rounded to 1e-9, closed bands), core and wide regions with one level of
+  slack, adaptive question choice, the stop rule (4–10 questions,
+  `|Omega_s| <= 15`), the point estimate `w_s`, the contradiction flag, and
+  displayed values for a question (positive on both sides, defect rate at
+  most 1, otherwise skipped).
+- Core: behaviour calibration (§10.3), suggestions only. Choice events
+  with whole-event dropping, constrained maximum likelihood for
+  `theta >= 0`, the no-signal gates (events < 20, one chosen arm, rank < 3,
+  `lambda_hat < 0.5`, not identifiable), profile likelihood, `Omega_b`,
+  and a seeded 200-resample bootstrap. Behaviour from the scored window or
+  later is an error.
+  Separable choice data (some direction d >= 0 explains every choice at
+  least as well as each alternative) are reported as not identifiable
+  before the fit; bootstrap resamples that are separable count as failed.
+- Core: the §10.4 merge table. Behaviour never changes the weights in
+  effect.
+- Tests compare the bank, every (question, grid point) level, the 528
+  cut-point pairs and all 171 honest sessions with the reference script.
+
 ### Changed
+- Core: `resolve_fallback` validates the candidate (finite, non-negative
+  layer weights; no duplicate rating cells) also when the user chose the
+  reference arm itself; valid input still gives `Default`.
 - Core, step 10 review follow-up: the diagnostic reference anchor takes
   the worst valid value per dimension, so a valid reference cell with one
   NA dimension still contributes its other dimensions (§7 line 570).

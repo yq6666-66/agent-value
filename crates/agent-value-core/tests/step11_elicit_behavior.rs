@@ -1137,9 +1137,9 @@ fn quasi_complete_separation_is_not_identifiable() {
         quasi_separated(30, 30, 3, None),
         quasi_separated(15, 15, 6, Some(1.0 + 1e-6)),
         quasi_separated(15, 15, 7, Some(1.0 + 1e-5)),
-        // Cost ratio about e^25: the gradient is already below the stopping
-        // tolerance at small theta and the information floor passes; only
-        // the separation pre-check rejects it.
+        // Separable with a very large cost ratio (7.2e10): the gradient is
+        // already below the stopping tolerance at small theta and the
+        // information floor passes; only the separation pre-check rejects it.
         quasi_separated(15, 15, 10, Some(7.2e10)),
     ];
     for ev in &cases {
@@ -1174,4 +1174,75 @@ fn complete_separation_is_not_identifiable() {
         .collect();
     let b = calibrate(&ev, W0, W1, 9).unwrap();
     assert_eq!(b.no_signal, vec![NoSignalReason::NotIdentifiable]);
+}
+
+/// Realistic events: 20-99 events with 2 or 3 options, costs 0.01-3.01
+/// yuan, times 5-605 s, quality 0.3-1.0, chosen by the logit model at a
+/// random theta in [0, 3)^3.
+fn realistic_logit(seed: u64) -> Vec<ChoiceEvent> {
+    let mut r = SplitMix64::new(seed);
+    let th = [
+        3.0 * uniform(&mut r),
+        3.0 * uniform(&mut r),
+        3.0 * uniform(&mut r),
+    ];
+    let n = 20 + (uniform(&mut r) * 80.0) as usize;
+    let arms = ["A", "B", "C"];
+    (0..n)
+        .map(|e| {
+            let k = 2 + (uniform(&mut r) * 2.0) as usize;
+            let pts: Vec<Point> = (0..k)
+                .map(|_| {
+                    pt(
+                        0.01 + 3.0 * uniform(&mut r),
+                        5.0 + 600.0 * uniform(&mut r),
+                        0.3 + 0.7 * uniform(&mut r),
+                    )
+                })
+                .collect();
+            let w: Vec<f64> = pts
+                .iter()
+                .map(|p| {
+                    let v = x_of(p);
+                    (-(th[0] * v[0] + th[1] * v[1] + th[2] * v[2])).exp()
+                })
+                .collect();
+            let mut z = uniform(&mut r) * w.iter().sum::<f64>();
+            let mut j = 0;
+            while j + 1 < k && z > w[j] {
+                z -= w[j];
+                j += 1;
+            }
+            ChoiceEvent {
+                id: format!("r{e}"),
+                options: pts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| EventOption {
+                        arm: arms[i].into(),
+                        value: Some(*p),
+                    })
+                    .collect(),
+                chosen: arms[j].into(),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn fit_converges_when_the_last_gain_is_below_rounding() {
+    // Ordinary, non-separable data (checked with an LP outside the repo).
+    // Near the maximum the Newton gain fell below the resolution of the
+    // log-likelihood; the line search then "accepted" a zero step 200 times
+    // and the fit ended as not identifiable. A zero step now ends in the
+    // no-progress branch, which accepts the stationary point.
+    for seed in [1310u64, 1608, 1787, 1852, 1983] {
+        let b = calibrate(&realistic_logit(seed), W0, W1, 1).unwrap();
+        assert!(
+            !b.no_signal.contains(&NoSignalReason::NotIdentifiable),
+            "seed {seed}: {:?}",
+            b.no_signal
+        );
+        assert!(b.theta.is_some());
+    }
 }

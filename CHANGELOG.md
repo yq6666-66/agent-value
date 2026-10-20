@@ -19,6 +19,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `lambda_hat < 0.5`, not identifiable), profile likelihood, `Omega_b`,
   and a seeded 200-resample bootstrap. Behaviour from the scored window or
   later is an error.
+  Separable choice data (some direction d >= 0 explains every choice at
+  least as well as each alternative) are reported as not identifiable
+  before the fit; bootstrap resamples that are separable count as failed.
 - Core: the §10.4 merge table. Behaviour never changes the weights in
   effect.
 - Tests compare the bank, every (question, grid point) level, the 528

@@ -417,7 +417,10 @@ fn fit(events: &[Prepared]) -> Option<Fit> {
             ];
             let (cll, cg, ch) = loglik(events, cand);
             let gain: f64 = (0..3).map(|k| g[k] * (cand[k] - theta[k])).sum();
-            if cll.is_finite() && cll >= ll + 1e-4 * gain && cll >= ll {
+            // A candidate equal to theta is not a move: near the maximum
+            // the gain can be below the resolution of `ll`, and halving the
+            // step down to nothing must end in the no-progress branch below.
+            if cand != theta && cll.is_finite() && cll >= ll + 1e-4 * gain && cll >= ll {
                 theta = cand;
                 ll = cll;
                 g = cg;

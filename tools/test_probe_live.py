@@ -27,7 +27,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNNER = os.path.join(HERE, "probe_live.py")
 KEY_ENV = "PROBE_LIVE_TEST_KEY"
 KEY = "mock-test-key-0f1e2d3c4b5a"  # not a real key
-TIMEOUT_S = 0.5
+# Normal replies come back in milliseconds; the generous timeout keeps a
+# loaded CI runner from turning them into timeouts. Only the "timeout" case
+# uses the short one, and its reply is held back far longer.
+TIMEOUT_S = 5.0
+SHORT_TIMEOUT_S = 0.5
+E2E_TIMEOUT_S = 2.0
+HOLD_S = 6.0
 
 
 def load_runner():
@@ -51,7 +57,7 @@ CASES = {
     "ok": (200, ok_body("42", usage={"prompt_tokens": 3, "completion_tokens": 1}), 0),
     "tool": (200, ok_body(None, tool={"name": "record_number", "arguments": "{\"n\": 7}"}), 0),
     "429": (429, b'{"error":"rate limited"}', 0),
-    "timeout": (200, ok_body("late"), TIMEOUT_S * 4),
+    "timeout": (200, ok_body("late"), HOLD_S),
     "503": (503, b'{"error":"unavailable"}', 0),
     "502": (502, b"bad gateway", 0),
     "400": (400, b'{"error":"bad request"}', 0),
@@ -60,6 +66,7 @@ CASES = {
     "no-choices": (200, b'{"model":"mock-model-1"}', 0),
     "content-not-text": (200, json.dumps({"choices": [{"message": {"content": {"x": 1}}}]}).encode(), 0),
     "echo-key": None,  # replies with the bearer token it received
+    "auth-check": None,  # 200 only if the exact test key was sent, else 401
 }
 
 
@@ -71,9 +78,12 @@ class Mock(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
         case = body["messages"][-1]["content"]
+        auth = self.headers.get("Authorization") or ""
         if case == "echo-key":
-            token = (self.headers.get("Authorization") or "").split(" ", 1)[-1]
-            status, raw, delay = 200, ok_body("echo " + token), 0
+            status, raw, delay = 200, ok_body("echo " + auth.split(" ", 1)[-1]), 0
+        elif case == "auth-check":
+            good = auth == "Bearer " + KEY
+            status, raw, delay = (200, ok_body("auth ok"), 0) if good else (401, b"{}", 0)
         else:
             status, raw, delay = CASES[case]
         if delay:
@@ -118,8 +128,8 @@ class SendClassification(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.__exit__()
 
-    def send(self, case):
-        at, ms, r = self.mod.send(self.server.base, KEY, body(case), TIMEOUT_S)
+    def send(self, case, timeout=TIMEOUT_S):
+        at, ms, r = self.mod.send(self.server.base, KEY, body(case), timeout)
         self.assertIsInstance(at, int)
         self.assertGreaterEqual(ms, 0)
         return r
@@ -128,7 +138,7 @@ class SendClassification(unittest.TestCase):
         self.assertEqual((self.send("429")["kind"], self.send("429")["status"]), ("rate_limited", 429))
 
     def test_timeout_is_timeout(self):
-        r = self.send("timeout")
+        r = self.send("timeout", SHORT_TIMEOUT_S)
         self.assertEqual((r["kind"], r["status"]), ("timeout", None))
 
     def test_5xx_is_http_error(self):
@@ -174,7 +184,7 @@ def run_runner(base, plan, tmp, extra_env=None):
     replay, log = os.path.join(tmp, "replay.tsv"), os.path.join(tmp, "run.jsonl")
     p = subprocess.run([sys.executable, RUNNER, "--base", base, "--key-env", KEY_ENV,
                         "--plan", plan_path, "--replay", replay, "--log", log,
-                        "--timeout", str(TIMEOUT_S), "--max-delay", "0"],
+                        "--timeout", str(E2E_TIMEOUT_S), "--max-delay", "0"],
                        cwd=tmp, env=env, capture_output=True, text=True, timeout=120)
     return p, replay, log
 
@@ -260,14 +270,19 @@ class RunnerEndToEnd(unittest.TestCase):
                 f.write(f'{KEY_ENV}="{KEY}"\n')
             plan_path = os.path.join(tmp, "plan.jsonl")
             with open(plan_path, "w", encoding="utf-8") as f:
-                f.write(json.dumps({"id": "det-01", "body": body("echo-key")}) + "\n")
+                f.write(json.dumps({"id": "det-01", "body": body("auth-check")}) + "\n")
             env = {k: v for k, v in os.environ.items() if k != KEY_ENV}
+            replay, log = os.path.join(tmp, "r.tsv"), os.path.join(tmp, "r.jsonl")
             p = subprocess.run([sys.executable, RUNNER, "--base", s.base, "--key-env", KEY_ENV,
-                                "--plan", plan_path, "--replay", os.path.join(tmp, "r.tsv"),
-                                "--log", os.path.join(tmp, "r.jsonl"), "--timeout", str(TIMEOUT_S)],
+                                "--plan", plan_path, "--replay", replay, "--log", log,
+                                "--timeout", str(E2E_TIMEOUT_S)],
                                cwd=tmp, env=env, capture_output=True, text=True, timeout=60)
-            # The mock echoes what it received, so the .env key was sent.
-            self.assertIn("refusing to write", p.stderr)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            # The mock answers 200 only for exactly "Bearer <key>": the quotes
+            # in .env were stripped and the key was sent as is.
+            f = read_all(replay).splitlines()[1].split("\t")
+            self.assertEqual((f[0], f[3], f[4], f[7]), ("det-01", "ok", "200", "auth ok"))
+            self.assertNotIn(KEY, read_all(replay, log) + p.stdout + p.stderr)
 
 
 if __name__ == "__main__":

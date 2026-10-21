@@ -862,9 +862,10 @@ fn unanswered_counts_by_reason_reach_the_evidence_summary() {
         (det.verdict, det.unanswered, det.unanswered_by),
         (Uncertain, 10, want)
     );
-    assert!(det
-        .evidence_summary()
-        .ends_with("(429 1, timeout 2, 5xx 1, unparseable 1, other HTTP error 1, missing 4)"));
+    assert_eq!(
+        det.evidence_summary(),
+        "uncertain: correct 0, wrong 0, unanswered 10 (429 1, timeout 2, 5xx 1, unparseable 1, other HTTP error 1, missing 4)"
+    );
     let cap = judge_capability(
         20261022,
         &[CapabilityItem::ToolCall, CapabilityItem::JsonSchema],
@@ -1056,6 +1057,15 @@ fn hard_failures_by_family_usage_and_signature() {
         vec![HardFailure::ThinkingSignatureRejected]
     );
     assert!(hard_failures(&t, &haiku, &pa, &think, None, &e400).is_empty());
+    assert!(hard_failures(
+        &t,
+        &haiku,
+        &pa,
+        &think,
+        Some(CapabilityItem::ToolCall),
+        &e400
+    )
+    .is_empty());
     assert!(hard_failures(&t, &haiku, &pa, &think, thinking, &Exchange::RateLimited).is_empty());
     // Not applicable: no thinking claim, or the OpenAI protocol.
     assert!(hard_failures(&t, &haiku, &pa, &none, thinking, &e400).is_empty());

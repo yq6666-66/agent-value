@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec step 12: weight sensitivity data (§12), new module
+  `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
+  group of highest `V` among the compared arms, ties reported whole;
+  withheld in the first window and when the reference has no anchor
+  (tier III). Each grid point is flagged for `Ω_s` and `Ω_b`, which are
+  inputs (validated: on the 0.05 grid, no duplicates; `Ω_s` must be
+  non-empty; an empty `Ω_b` means a behaviour signal with no qualifying
+  grid point and is accepted, `None` means no behaviour signal; the
+  report says which).
+  Weight-robust winner over `Ω_s`, or over `max|w − W_k| ≤ 0.10` when
+  there is no self-report, with per-arm shares and "在你的权重范围内都是它"
+  only for a sole winner at every point. Statistical robustness: 200-resample
+  task bootstrap stratified by (arm, cell), so every `n_iu`, `ω_u` and the
+  design grid stay fixed and the reference and fallback arms are
+  resampled like the others; seeded xorshift64 (seed recorded, 0
+  rejected), caller recomputes each resample; reports winner frequency
+  at `W_k`, `F_off` frequency, ties and resamples with an anchor. Flip
+  line between the top two arms (`aΔ_C + bΔ_T + gΔ_D = 0`) with one
+  statement per fixed dimension, evaluated on the feasible segment; the
+  printed threshold is rounded up so the sentence is a sufficient
+  condition. When the top two are within the tie tolerance, the
+  "都高于" sentence carries "（当前差距在并列容差内，按 id 排序）".
+  Withheld as well when there is no arm to compare. Every
+  winner group is checked to hold an `F_off` arm (§12 property 1) in all
+  builds; an arm dominated by a hair may share a tie group with its
+  dominator.
+  Noise-floor robustness at `W_k` under `c0`, `t0`, `ε` × 0.5 and × 2.
+  All counters use checked addition. Paired with the spec example (Y
+  wins 93 grid points, X 78; Y wins 14 of 14 in the self-report region).
+- README (English and Chinese): section 10, weight sensitivity (§12),
+  and its roadmap row and constants; built on the step 11 README.
 - Core, spec step 11: five-level self-report (§10.2). The 171-point weight
   grid in exact twentieths, the 96-question bank, five-level banding (u
   rounded to 1e-9, closed bands), core and wide regions with one level of
@@ -28,6 +59,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cut-point pairs and all 171 honest sessions with the reference script.
 
 ### Changed
+- README section 9 (English and Chinese): in a question's equal dimension
+  both options show the base up to at most 1 ulp of (base + noise floor).
 - Core: `resolve_fallback` validates the candidate (finite, non-negative
   layer weights; no duplicate rating cells) also when the user chose the
   reference arm itself; valid input still gives `Default`.

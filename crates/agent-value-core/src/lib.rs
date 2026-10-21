@@ -44,6 +44,7 @@ pub mod retry;
 pub mod runday;
 pub mod scope;
 pub mod selection;
+pub mod sensitivity;
 pub mod status;
 pub mod suggest;
 pub mod value;

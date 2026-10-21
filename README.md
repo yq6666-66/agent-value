@@ -17,12 +17,12 @@ There is no usable app yet. The formulas below exist as a tested Rust library, a
 | 3 | Task outcome rules and quality signals | Implemented |
 | 4-5 | Cell states and cell weights $\omega_u$; prior, posterior and retry model | Implemented |
 | 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented |
-| 8 | Eligibility gates $\mathcal E_d$ | Implemented (authenticity and log integrity are passed in by the caller until step 13) |
+| 8 | Eligibility gates $\mathcal E_d$ | Implemented |
 | 9 | Frontier and diagnostic table | Implemented (per layer and overall; the display is planned) |
 | 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Implemented (no display layer yet) |
 | 11 | Weight elicitation from your answers and behaviour | Implemented (library only; no question screen or suggestion display yet) |
 | 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Implemented (library only) |
-| 13 | Probes and relay checks | Planned |
+| 13 | Probes and relay checks | Implemented (library and a local run script; not yet connected to the data layer or the app) |
 
 Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -70,7 +70,7 @@ $$
 
 *Spec §0. Implemented.*
 
-**Cell weights.** For window $t$, $\omega_u$ is the number of your tasks in cell $u$ during window $t-1$ divided by your tasks in the whole layer, counted by tasks, not by cost or time, and excluding probe tasks. If the layer had no tasks, the previous valid weights are carried over; if there are none, the configured subtypes get equal weight. Only cells with $\omega_u>0$ take part in any count or score below. The design reserves a separate probe cell whose weight is always 0 (probes themselves are planned, step 13).
+**Cell weights.** For window $t$, $\omega_u$ is the number of your tasks in cell $u$ during window $t-1$ divided by your tasks in the whole layer, counted by tasks, not by cost or time, and excluding probe tasks. If the layer had no tasks, the previous valid weights are carried over; if there are none, the configured subtypes get equal weight. Only cells with $\omega_u>0$ take part in any count or score below. The design reserves a separate probe cell whose weight is always 0 (probes are in section 11).
 
 **Cell states.** Every positive-weight cell of every arm is in exactly one state:
 
@@ -298,7 +298,7 @@ $V$ is never divided by the pure-route arm's score to bring it back to 100; that
 
 ### 6. Eligibility gates $\mathcal E_d$
 
-*Spec §5. Implemented. Authenticity and log integrity are passed in by the caller until probes exist (step 13).*
+*Spec §5. Implemented. The authenticity and log-integrity inputs come from section 11.*
 
 An arm takes part in a layer's main comparison, the set $\mathcal E_d$, only if it passes all five gates:
 
@@ -316,7 +316,7 @@ $$
 \frac{n^1_{i,d}+n^0_{i,d}}{N^{\rm sub}_{i,d}}\ge0.50 .
 $$
 
-4. **Authenticity and log integrity.** Authenticity grades A, A− and B pass and C fails; an arm that passes on grade B is flagged "authenticity undetermined". The log-integrity check must pass. For now both results are passed in by the caller, so these two gates are only as reliable as the caller's input.
+4. **Authenticity and log integrity.** The authenticity grade from section 11 decides: official direct, A and A− pass and C fails; B fails when probes are on, and when probes are off it passes, flagged "unverified (probes off)". Until the observation period has passed its check, every graded arm passes, flagged "authenticity undetermined". The log-integrity check from section 11 must pass.
 5. **Reference base.** In every positive-weight cell of the layer, the reference arm's $C^{\ast}$, $T^{\ast}$ and $Q^{\ast}$ are all defined (not $\mathrm{NA}$). The reference arm having no $\mathrm{miss}$ cell is necessary but not enough, since a cell with samples can still end up $\mathrm{NA}$.
 
 The result lists whether the arm is eligible, every gate it failed, and the "authenticity undetermined" flag.
@@ -558,12 +558,72 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 </details>
 
-### 11. Planned
+### 11. Probes and relay checks
+
+*Spec §11. Implemented as library functions plus a local script. The core only judges exchanges that were already recorded; it sends no requests itself. Not yet connected to the data layer, the app or scheduled re-runs.*
+
+This checks whether a route really serves the model it claims. The probe results feed only the authenticity part of gate 4 in section 6, and never enter any score; the log-integrity check below works on the requests recorded in the window.
+
+**Probe set.**
+
+- **Deterministic**, 10 questions: addition, subtraction, multiplication, remainder, reversing a digit string, converting to upper case, the largest of five numbers, sorting four numbers, counting the letter a, and the sum of digits. The numbers come from a seed (seed 0 is an error) by rejection sampling, so there is no modulo bias. Each question has two wordings, chosen by the seed, and the sorting question never gives a list that is already sorted.
+- **Fingerprint**, 10 questions answered with a single token, each sampled 20 times: a random number, a colour, a letter, a fruit, an animal, a number from 1 to 10, a country, a day of the week, a planet and a musical instrument.
+- **Capability**: tool calling (`record_number`, whose arguments must be exactly `{"n":<number>}`, ignoring whitespace), strict JSON (the reply body must be exactly `{"answer":<number>}`, ignoring whitespace; wrapping it in a code block counts as a mismatch), passing back a thinking signature (only on the Anthropic protocol, and only if the route claims support), and long-context recall (once a month). Only the capabilities the route claims are checked; if it claims none, this class does not apply.
+- Probes are sent in random order, with a random pause of 1 to 4 seconds between requests. The local script does this.
+
+**Verdict per class**, for each run day in Beijing time:
+
+- Deterministic: 9 or more correct passes, 7 or fewer fails, 8 is undetermined. Fingerprint: 8 or more of the 10 questions consistent with the baseline passes, 5 or fewer fails, and 6 or 7 is undetermined. All of these thresholds are provisional until the observation period checks them.
+- A 429 rate limit, a timeout, any other HTTP error or an unparseable reply makes that question unanswered, not wrong. A class passes or fails only if no way of counting the unanswered questions would change the verdict; otherwise it is undetermined.
+- Fingerprint answers are compared with the official baseline, its two runs pooled, by Jensen-Shannon divergence (base 2). The threshold $\tau_{\rm JS}$ is the 95th percentile (nearest rank) of the per-question divergence between the two baseline runs; with 10 questions that is the largest one. A baseline older than 30 days, or not from the same model version, protocol and sampling parameters, counts as no baseline, and the class is undetermined.
+- Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or a passed-back thinking signature is rejected with HTTP 400.
+- Model names are normalised through an alias table, then lower-cased, then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`.
+
+**Grades**, per arm per window; the first match wins: official direct (no grade; the host is on the official host list and the vendor matches), then C, A, A− and B.
+
+- **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
+- **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure. A run day on which the capability class does not apply counts as a pass.
+- **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, and fingerprint was not run, is undetermined or passed on only 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
+- **B** (unverified): everything else.
+
+The A− fingerprint condition follows the specification literally, which is not monotonic in some cases: for example, fingerprint passing on 2 days but deterministic on only 1 gives B.
+
+**Authenticity gate.** Official direct, A and A− pass and C fails. B fails when probes are on; when probes are off it passes and is flagged "unverified (probes off)". Until the observation period has passed its check, grades are only shown: every graded arm passes the gate and is flagged "authenticity undetermined". The observation period is meant to run an official direct route as a positive control and a smaller model as a negative control, each for 2 full run days; it has not been run yet (section 12). What is shown is the assessment's real status, so an official direct arm is never shown as A.
+
+**Log-integrity gate**, compared in integers:
+
+- At least 95% of the requests in the window can be parsed.
+- Version mismatches within the same family are at most 5%. The denominator leaves out requests with no model and requests from another family.
+- If more than 20% of requests have no model, the arm is only flagged "returned model cannot be checked".
+- Requests from another family are already hard failures and are not counted twice.
+- A window with no requests passes and is flagged "no requests to check".
+
+**Probe budget** (spec §9): per calendar month in Beijing time, 10 RMB by default. A run goes ahead only if this month's spending plus the run's estimate stays within the budget, and probing stops once spending reaches the budget (9.99 + 0.01 is allowed, 9.99 + 0.02 stops).
+
+**Route overhead** (diagnostic only, not part of $T^{\ast}$): for the same model and the same probe, only the official samples within one hour of at least one route sample are kept (exactly one hour counts). For time to first token, total time and output speed, the median of the kept official samples is subtracted from the median of all the route samples.
+
+<details>
+<summary>Implementation notes</summary>
+
+- Modules: `probe` (probe set and per-class verdicts) and `authenticity` (grades, gate input and log integrity).
+- Connection to step 8: `assess(..).gate_input()` gives the authenticity input of `assess_eligibility`, and `log_integrity(..).passes` gives its log-integrity input. The signature of the step 8 function is unchanged.
+- The request plan and the run script cover the 10 deterministic questions plus tool calling and strict JSON, on OpenAI Chat Completions only. Judging thinking-signature and long-context answers is implemented, but generating those requests is not.
+
+</details>
+
+<details>
+<summary>Example: one real run</summary>
+
+A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-22 00:52–00:54 Beijing time: all 12 requests returned 200, median latency about 2.1 s (slowest 22.8 s). The returned model was `claude-haiku-4-5-20251001`, the same version. The usage block had `claude_cache_creation_*` fields, which are the model's own vendor's names and not a hard failure. Deterministic passed 10/10. Tool calling matched, but strict JSON did not (the reply was wrapped in a JSON code block), so the capability class failed. There were no hard failures. With only 1 run day and no official baseline, this route is grade B for now, and during the observation period that is only shown.
+
+</details>
+
+### 12. Planned
 
 These parts of the specification are not implemented:
 
 - **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6). Showing the first window's frontier labelled as not yet calibrated is also planned.
-- **Probes and relay checks** (step 13): a fixed probe set that checks whether a route serves the model it claims, plus log-integrity checks.
+- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); connecting probes to the data layer (storing probe results, hard-failure days from passive logs, recording budget spending); the switch in the app (asked at first launch, with a cost estimate) and scheduled re-runs; generating thinking-signature and long-context requests.
 
 ### Constants
 
@@ -588,6 +648,14 @@ These parts of the specification are not implemented:
 | Sensitivity region without a self-report | grid points within 0.10 of $W_k$ in every weight | $\Omega$ for the weight check when you have not answered the questions |
 | Sensitivity resamples | 200, seed passed in by the caller | Sampling check of the winner and the frontier |
 | Noise floor check | $c_0$, $t_0$, $\epsilon$ each halved and doubled, one at a time (6 runs plus the baseline) | Whether the winner at $W_k$ depends on the noise floors |
+| Deterministic probe thresholds | 9 or more passes, 7 or fewer fails (10 questions; provisional) | Section 11 |
+| Fingerprint probe thresholds | 8 or more passes, 5 or fewer fails (10 questions, 20 samples each; provisional) | Section 11 |
+| $\tau_{\rm JS}$ | 95th percentile (nearest rank) of per-question divergence between the two baseline runs | Fingerprint threshold |
+| Baseline validity | 30 days (inclusive) | Older baselines count as no baseline |
+| Grade run days | at least 2 for A and C; observation period 2 run days | Section 11 |
+| Log integrity | parse rate $\ge0.95$, version mismatches $\le0.05$, flag when more than 0.2 have no model | Section 11 |
+| Probe budget | 10 RMB per calendar month (Beijing time) | Section 11 |
+| Overhead pairing window | $\pm1$ hour (inclusive) | Route overhead diagnostic |
 | Time window | 30 days | Weights and references are fixed from the previous window |
 | Redo window | 30 minutes | A redo request in this period marks the task failed |
 | Rollback window | 24 hours | A full revert in this period marks a coding task failed |
@@ -624,6 +692,16 @@ npm run typecheck
 npm run build
 ```
 
+Probing a real relay (developer use; CI never uses the network). Print the request bodies for a seed and a model (the answers are not included), send them and log the replies, then judge the replies:
+
+```sh
+cargo run -p agent-value-core --example probe_plan -- <seed> <model> [tool,json|tool|json|none] > plan.jsonl
+python3 tools/probe_live.py --base https://<relay> --key-env <VAR_NAME> --plan plan.jsonl --replay replay.tsv --log run.jsonl
+cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv [tool,json|tool|json|none]
+```
+
+`tools/probe_live.py` uses only the Python standard library. It reads the key only from the named environment variable or the local git-ignored `.env`, and never writes it to any output: before writing it checks the raw text, the escaped text and the JSON-escaped form. If it finds the key in what it is about to write, it refuses to write and exits. It does not record request headers. `--base` must be https, except for a local mock server.
+
 Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell has only been compile-checked so far; it has not been run or packaged.
 
 ## Layout
@@ -633,6 +711,7 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
 | `src-tauri/` | Minimal Tauri 2 desktop shell that links the core crate. Not a member of the default Cargo workspace. |
+| `tools/` | Scripts run by hand on your own machine, not in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. |
 | `web/` | React + TypeScript + Vite front end. Display only; it never computes scores. |
 
 ## Secrets and privacy

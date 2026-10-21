@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- README (English and Chinese): section 11, probes and relay checks (§11),
+  with section 6 gate 4, the roadmap rows, constants, the local probe
+  commands and a `tools/` row in the layout table.
 - Core, spec step 13: probes and relay detection (§11, §5 rule 4, §9
   budget), new modules `probe` and `authenticity`. The core sends no
   request: probe runs are judged from recorded exchanges in a fixed
@@ -20,7 +23,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the unanswered questions would have gone.
   Fingerprint: Jensen–Shannon divergence in bits against the pooled
   two-run official baseline; `τ_JS` is the nearest-rank 95% quantile of
-  the baseline's own run-to-run divergences; a baseline older than 30 days,
+  the 10 per-question divergences between the two baseline runs (with 10
+  questions, the largest); a baseline older than 30 days,
   or kept for another model version, protocol or sampling parameters,
   counts as no baseline. Capability: tool call (`record_number`, exact arguments),
   strict JSON (the reply must be the JSON object itself, a code fence
@@ -47,10 +51,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   month's spend plus its estimate stays within the budget (10 yuan by
   default). Route overhead diagnostics (§11.4): median TTFT, total time
   and output speed against official samples within ±1 hour.
-  Examples `probe_plan` (prints the request bodies of a minimal probe,
-  capability items only as claimed) and `probe_judge` (judges a replay), and `tools/probe_live.py`, a
+  Examples `probe_plan` (prints OpenAI Chat Completions request bodies for
+  the 10 deterministic questions plus the claimed tool-call and strict-JSON
+  items; thinking-signature and long-context requests are not generated
+  yet) and `probe_judge` (judges a replay), and `tools/probe_live.py`, a
   standard-library runner for a local, opt-in run against a real relay
-  (https only, key from the environment or a git-ignored `.env`, never
+  (https required, plain http only for a local mock server; key from the
+  environment or a git-ignored `.env`, never
   written: raw and escaped output is checked for it; no headers recorded).
   A replay line of kind `ok` must carry a 2xx status. CI never touches the network.
 - Core, spec step 12: weight sensitivity data (§12), new module

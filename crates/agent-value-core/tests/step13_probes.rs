@@ -711,6 +711,16 @@ fn comparison_uses_the_pooled_baseline() {
     let mut s = vec![dist(&[("a", 20)]); 10];
     s[0] = dist(&[("a", 15), ("b", 5)]);
     assert_eq!(b.compare(&s).unwrap()[0], Some(true));
+    // Run order swapped (run 1 = {a:20}, run 2 = {a:10, b:10}; tau_JS is
+    // still 0.311278...). A route answering a=5, b=15 has JS 0.1887 against
+    // the pool (agrees) but 0.5488 against run 1 alone (would disagree).
+    let mut swapped = baseline(NOON0);
+    std::mem::swap(&mut swapped.run1, &mut swapped.run2);
+    s[0] = dist(&[("a", 5), ("b", 15)]);
+    assert_eq!(swapped.compare(&s).unwrap()[0], Some(true));
+    // Far from the pool (JS 0.5488 > tau_JS): disagrees.
+    s[0] = dist(&[("b", 20)]);
+    assert_eq!(swapped.compare(&s).unwrap()[0], Some(false));
 }
 
 // ---------------------------------------------- 13.6 models and vendors
@@ -1044,6 +1054,44 @@ fn grade_a_minus() {
         g(&[(0, Det, Pass), (0, Cap, Pass), (0, Fp, Pass), (1, Fp, Fail)]),
         AuthenticityGrade::AMinus
     );
+    // A needs every class on >=2 days: capability on 1 day gives A-, and
+    // with fingerprint on 2 days the literal A- rule gives B (13.13).
+    assert_eq!(
+        g(&[
+            (0, Det, Pass),
+            (1, Det, Pass),
+            (0, Cap, Pass),
+            (0, Fp, Pass)
+        ]),
+        AuthenticityGrade::AMinus
+    );
+    assert_eq!(
+        g(&[
+            (0, Det, Pass),
+            (1, Det, Pass),
+            (0, Cap, Pass),
+            (1, Cap, Pass),
+            (0, Fp, Pass)
+        ]),
+        AuthenticityGrade::AMinus
+    );
+    assert_eq!(
+        g(&[
+            (0, Det, Pass),
+            (1, Det, Pass),
+            (0, Cap, Pass),
+            (0, Fp, Pass),
+            (1, Fp, Pass)
+        ]),
+        AuthenticityGrade::B
+    );
+    // A hard-failure day blocks A- too.
+    let a = relay();
+    let rs = vec![pr(&a, 0, Det, Pass, true), pr(&a, 0, Cap, Pass, false)];
+    assert_eq!(
+        grade(&DaySummary::build(&a, &rs, &[]).unwrap()),
+        AuthenticityGrade::B
+    );
     // Deterministic passes on 2 days but capability never: B.
     assert_eq!(g(&[(0, Det, Pass), (1, Det, Pass)]), AuthenticityGrade::B);
 }
@@ -1114,6 +1162,11 @@ fn observation_validation_criteria() {
     // Positive control with a hard failure, or only one pass day.
     let pos1 = summary(&off, &[(0, Det, Pass), (0, Cap, Pass), (1, Cap, Pass)]);
     assert_eq!(observation(&pos1, &neg, false, true), Observation::Pending);
+    let pos_cap1 = summary(&off, &[(0, Det, Pass), (1, Det, Pass), (0, Cap, Pass)]);
+    assert_eq!(
+        observation(&pos_cap1, &neg, false, true),
+        Observation::Pending
+    );
     let rs = vec![
         pr(&off, 0, Det, Pass, true),
         pr(&off, 1, Det, Pass, false),

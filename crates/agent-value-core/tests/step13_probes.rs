@@ -1117,6 +1117,41 @@ fn grade_b_literal_reading_cases_of_13_13() {
     );
 }
 
+#[test]
+fn grade_fingerprint_second_pass_day_drops_a_minus_to_b() {
+    // 13.13: with no hard failure, a second fingerprint pass day turns A-
+    // into B whenever deterministic or capability has only 1 pass day
+    // (A needs >=2 days in every class; A- needs fingerprint "not run,
+    // uncertain or exactly 1 pass day"). All three combinations:
+    let days = |n: i64, c: ProbeClass| -> Vec<(i64, ProbeClass, ProbeVerdict)> {
+        (0..n).map(|d| (d, c, Pass)).collect()
+    };
+    for (det, cap) in [(1, 1), (1, 2), (2, 1), (3, 1), (1, 3)] {
+        let base: Vec<_> = days(det, Det).into_iter().chain(days(cap, Cap)).collect();
+        let mut fp1 = base.clone();
+        fp1.extend(days(1, Fp));
+        assert_eq!(
+            g(&fp1),
+            AuthenticityGrade::AMinus,
+            "det {det}, cap {cap}, fp 1"
+        );
+        for fp in [2, 3] {
+            let mut more = base.clone();
+            more.extend(days(fp, Fp));
+            assert_eq!(
+                g(&more),
+                AuthenticityGrade::B,
+                "det {det}, cap {cap}, fp {fp}"
+            );
+        }
+    }
+    // With >=2 days in both, the second fingerprint day gives A instead.
+    let mut full = days(2, Det);
+    full.extend(days(2, Cap));
+    full.extend(days(2, Fp));
+    assert_eq!(g(&full), AuthenticityGrade::A);
+}
+
 // ------------------------------------------------- 13.8 observation
 
 #[test]

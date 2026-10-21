@@ -20,8 +20,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the unanswered questions would have gone.
   Fingerprint: Jensen–Shannon divergence in bits against the pooled
   two-run official baseline; `τ_JS` is the nearest-rank 95% quantile of
-  the baseline's own run-to-run divergences; a baseline older than 30 days
-  is stale. Capability: tool call (`record_number`, exact arguments),
+  the baseline's own run-to-run divergences; a baseline older than 30 days,
+  or kept for another model version, protocol or sampling parameters,
+  counts as no baseline. Capability: tool call (`record_number`, exact arguments),
   strict JSON (the reply must be the JSON object itself, a code fence
   fails), thinking-signature round trip on the Anthropic protocol only
   (HTTP 400 is a rejection and a hard failure), monthly long-context
@@ -46,11 +47,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   month's spend plus its estimate stays within the budget (10 yuan by
   default). Route overhead diagnostics (§11.4): median TTFT, total time
   and output speed against official samples within ±1 hour.
-  Examples `probe_plan` (prints the request bodies of a minimal probe)
-  and `probe_judge` (judges a replay), and `tools/probe_live.py`, a
+  Examples `probe_plan` (prints the request bodies of a minimal probe,
+  capability items only as claimed) and `probe_judge` (judges a replay), and `tools/probe_live.py`, a
   standard-library runner for a local, opt-in run against a real relay
-  (key from the environment or a git-ignored `.env`, never written; no
-  headers recorded). CI never touches the network.
+  (https only, key from the environment or a git-ignored `.env`, never
+  written: raw and escaped output is checked for it; no headers recorded).
+  A replay line of kind `ok` must carry a 2xx status. CI never touches the network.
 - Core, spec step 12: weight sensitivity data (§12), new module
   `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
   group of highest `V` among the compared arms, ties reported whole;

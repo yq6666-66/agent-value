@@ -9,15 +9,16 @@ The key is read from the environment variable named by --key-env (or from a
 local, git-ignored .env file). It is never printed, logged or written: the
 outputs hold only time, question id, status, latency, the returned `model`
 field, usage field NAMES, the reply text and the first tool call. Request
-headers are not recorded. Every output line is checked not to contain the
-key before it is written.
+headers are not recorded. Every output line, and every raw value before
+escaping, is checked not to contain the key before it is written. The base
+URL must be https:// (plain http is accepted only for a local mock server).
 
 Usage:
   probe_live.py --base https://relay.example --key-env RELAY_API_KEY \\
                 --plan plan.jsonl --replay out.tsv --log out.jsonl
 Standard library only.
 """
-import argparse, json, os, random, sys, time, urllib.error, urllib.request
+import argparse, json, os, random, sys, time, urllib.error, urllib.parse, urllib.request
 
 HEADER = "question_id\tat_ms\tlatency_ms\tkind\tstatus\tmodel\tusage_fields\ttext\ttool_name\ttool_args"
 
@@ -36,7 +37,8 @@ def load_key(var):
 
 
 def esc(s):
-    return (s or "").replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+    s = s if isinstance(s, str) else ""
+    return s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
 
 
 def send(base, key, body, timeout):
@@ -73,8 +75,9 @@ def send(base, key, body, timeout):
         return at, ms, {"kind": "unparseable", "status": status}
     usage = j.get("usage") if isinstance(j.get("usage"), dict) else {}
     return at, ms, {
-        "kind": "ok", "status": status, "model": j.get("model"),
-        "usage_fields": sorted(usage.keys()),
+        "kind": "ok", "status": status,
+        "model": j.get("model") if isinstance(j.get("model"), str) else None,
+        "usage_fields": sorted(str(k) for k in usage.keys()),
         "text": msg.get("content") or "",
         "tool_name": tc["function"]["name"] if tc else None,
         "tool_args": tc["function"].get("arguments", "") if tc else None,
@@ -91,7 +94,11 @@ def main():
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--max-delay", type=float, default=4.0, help="random pause between requests (§11.1)")
     a = ap.parse_args()
+    u = urllib.parse.urlsplit(a.base)
+    if u.scheme != "https" and not (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1")):
+        sys.exit("--base must be https:// (plain http only for a local mock server)")
     key = load_key(a.key_env)
+    needles = {key, esc(key), json.dumps(key)[1:-1]}
     plan = [json.loads(l) for l in open(a.plan, encoding="utf-8") if l.strip()]
     random.shuffle(plan)  # send order is randomised too
     with open(a.replay, "w", encoding="utf-8") as rp, open(a.log, "w", encoding="utf-8") as lg:
@@ -106,8 +113,9 @@ def main():
             log = json.dumps({"at_ms": at, "id": p["id"], "kind": r["kind"], "status": r.get("status"),
                               "latency_ms": ms, "model": r.get("model"),
                               "usage_fields": r.get("usage_fields", [])}, ensure_ascii=False)
-            for out in (line, log):
-                if key in out:
+            raw = [r.get("model"), r.get("text"), r.get("tool_name"), r.get("tool_args")] + list(r.get("usage_fields", []))
+            for out in [line, log] + [x for x in raw if isinstance(x, str)]:
+                if any(n and n in out for n in needles):
                     sys.exit("refusing to write: output would contain the key")
             rp.write(line + "\n")
             lg.write(log + "\n")

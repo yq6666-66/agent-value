@@ -3,12 +3,35 @@
 //! `{"id": ..., "body": {...}}`. No network, no key: the local runner
 //! (`tools/probe_live.py`) sends them. Expected answers are not printed.
 //!
-//! Usage: `cargo run -p agent-value-core --example probe_plan -- <seed> <model>`
+//! Only the capability items the route claims are printed (§11.2):
+//! `<claims>` is a comma-separated subset of `tool,json` (default both;
+//! `none` for neither). Thinking and long context are not part of this
+//! OpenAI Chat Completions plan.
+//!
+//! Usage: `cargo run -p agent-value-core --example probe_plan -- <seed> <model> [claims]`
 
+use agent_value_core::arm::Protocol;
 use agent_value_core::probe::{
-    capability_number, deterministic_set, PROBE_MAX_TOKENS, PROBE_SYSTEM_PROMPT, PROBE_TEMPERATURE,
-    TOOL_NAME,
+    applicable_items, capability_number, deterministic_set, CapabilityClaims, CapabilityItem,
+    PROBE_MAX_TOKENS, PROBE_SYSTEM_PROMPT, PROBE_TEMPERATURE, TOOL_NAME,
 };
+
+/// Parses `tool,json` / `none` into claims (shared wording with probe_judge).
+fn claims(arg: Option<&String>) -> CapabilityClaims {
+    let s = arg.map_or("tool,json", String::as_str);
+    let mut c = CapabilityClaims::default();
+    for part in s.split(',').filter(|p| !p.is_empty() && *p != "none") {
+        match part {
+            "tool" => c.tool_call = true,
+            "json" => c.json_schema = true,
+            other => {
+                eprintln!("unknown claim {other:?} (use tool, json or none)");
+                std::process::exit(2);
+            }
+        }
+    }
+    c
+}
 
 fn json_str(s: &str) -> String {
     let mut o = String::from("\"");
@@ -40,8 +63,8 @@ fn body(model: &str, user: &str, extra: &str) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        eprintln!("usage: probe_plan <seed> <model>");
+    if args.len() != 3 && args.len() != 4 {
+        eprintln!("usage: probe_plan <seed> <model> [claims]");
         std::process::exit(2);
     }
     let seed: u64 = args[1].parse().expect("seed must be an integer");
@@ -53,21 +76,26 @@ fn main() {
             body(model, &q.prompt, "")
         );
     }
+    let items = applicable_items(&claims(args.get(3)), &Protocol::OpenAiChatCompletions);
     let n = capability_number(seed);
     let tool = format!(
         ",\"tools\":[{{\"type\":\"function\",\"function\":{{\"name\":\"{TOOL_NAME}\",\"description\":\"Record one integer.\",\"parameters\":{{\"type\":\"object\",\"properties\":{{\"n\":{{\"type\":\"integer\"}}}},\"required\":[\"n\"],\"additionalProperties\":false}}}}}}],\"tool_choice\":\"required\""
     );
-    println!(
-        "{{\"id\":\"cap-tool\",\"body\":{}}}",
-        body(model, &format!("Call {TOOL_NAME} with n = {n}."), &tool)
-    );
+    if items.contains(&CapabilityItem::ToolCall) {
+        println!(
+            "{{\"id\":\"cap-tool\",\"body\":{}}}",
+            body(model, &format!("Call {TOOL_NAME} with n = {n}."), &tool)
+        );
+    }
     let schema = ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"answer\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"integer\"}},\"required\":[\"answer\"],\"additionalProperties\":false}}}";
-    println!(
-        "{{\"id\":\"cap-json\",\"body\":{}}}",
-        body(
-            model,
-            &format!("Return a JSON object whose answer field is {n}."),
-            schema
-        )
-    );
+    if items.contains(&CapabilityItem::JsonSchema) {
+        println!(
+            "{{\"id\":\"cap-json\",\"body\":{}}}",
+            body(
+                model,
+                &format!("Return a JSON object whose answer field is {n}."),
+                schema
+            )
+        );
+    }
 }

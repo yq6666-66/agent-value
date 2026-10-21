@@ -582,10 +582,34 @@ pub fn nearest_rank(values: &[f64], p: f64) -> Result<f64> {
     Ok(v[rank.clamp(1, v.len()) - 1])
 }
 
-/// Official-direct fingerprint baseline for one (model version, protocol,
-/// sampling parameters): two independent runs of the 10 questions.
+/// What a fingerprint baseline is kept for (§11.2): model version,
+/// protocol and sampling parameters. A route's samples are compared only
+/// with a baseline of the same key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaselineKey {
+    /// Normalized model name ([`VendorTables::normalize`]).
+    pub model_version: String,
+    pub protocol: Protocol,
+    /// Sampling parameters as a canonical string chosen by the caller,
+    /// e.g. `"temperature=1"`.
+    pub sampling: String,
+}
+
+impl BaselineKey {
+    pub fn new(tables: &VendorTables, model: &str, protocol: Protocol, sampling: &str) -> Self {
+        Self {
+            model_version: tables.normalize(model),
+            protocol,
+            sampling: sampling.trim().to_string(),
+        }
+    }
+}
+
+/// Official-direct fingerprint baseline for one [`BaselineKey`]: two
+/// independent runs of the 10 questions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FingerprintBaseline {
+    pub key: BaselineKey,
     pub collected_ms: i64,
     pub run1: Vec<Distribution>,
     pub run2: Vec<Distribution>,
@@ -639,15 +663,20 @@ impl FingerprintBaseline {
     }
 }
 
-/// Fingerprint run: compare against a fresh baseline, else uncertain.
+/// Fingerprint run of samples taken under `key`: compare against a fresh
+/// baseline of the same key, else uncertain (a baseline of another model
+/// version, protocol or sampling parameters counts as no baseline).
 pub fn fingerprint_run(
     samples: &[Distribution],
+    key: &BaselineKey,
     baseline: Option<&FingerprintBaseline>,
     at_ms: i64,
 ) -> Result<ClassRun> {
     ten(samples.len())?;
     match baseline {
-        Some(b) if b.fresh_at(at_ms)? => fingerprint_verdict(&b.compare(samples)?, true),
+        Some(b) if b.key == *key && b.fresh_at(at_ms)? => {
+            fingerprint_verdict(&b.compare(samples)?, true)
+        }
         _ => fingerprint_verdict(&[None; 10], false),
     }
 }
@@ -886,8 +915,9 @@ fn unescape(s: &str) -> String {
 }
 
 /// Parses the replay format. Lines starting with `#` and the header are
-/// skipped. `kind` is one of `ok`, `rate_limited`, `timeout`, `http_error`,
-/// `unparseable`; empty optional fields are `None`.
+/// skipped. `kind` is one of `ok` (status must be 2xx), `rate_limited`,
+/// `timeout`, `http_error` (status ≥ 300 and not 429), `unparseable`;
+/// empty optional fields are `None`.
 pub fn parse_replay(text: &str) -> Result<Vec<ReplayRecord>> {
     let bad = |line: &str| CoreError::Parse {
         what: "probe replay line",
@@ -914,7 +944,7 @@ pub fn parse_replay(text: &str) -> Result<Vec<ReplayRecord>> {
         };
         let opt = |s: &str| (!s.is_empty()).then(|| unescape(s));
         let exchange = match f[3] {
-            "ok" => Exchange::Answered(Reply {
+            "ok" if (200..300).contains(&status) => Exchange::Answered(Reply {
                 text: unescape(f[7]),
                 returned_model: opt(f[5]),
                 usage_fields: f[6]

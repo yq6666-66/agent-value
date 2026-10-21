@@ -19,8 +19,8 @@ use agent_value_core::probe::{
     answer_state, applicable_items, capability_number, capability_state, check_answer,
     deterministic_set, deterministic_verdict, fingerprint_run, fingerprint_verdict, hard_failures,
     js_divergence, judge_capability, judge_deterministic, nearest_rank, other_family, parse_replay,
-    run_hard_failures, AnswerState, CapabilityClaims, CapabilityItem, Distribution, Exchange,
-    FingerprintBaseline, HardFailure, Reply, VendorTables, BASELINE_MAX_AGE_MS,
+    run_hard_failures, AnswerState, BaselineKey, CapabilityClaims, CapabilityItem, Distribution,
+    Exchange, FingerprintBaseline, HardFailure, Reply, VendorTables, BASELINE_MAX_AGE_MS,
     DETERMINISTIC_FAIL_MAX, FINGERPRINT_FAIL_MAX, TOOL_NAME,
 };
 use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult, ProbeVerdict};
@@ -279,7 +279,10 @@ fn replay_parse_rejects_bad_lines() {
         "det-01\t1\t2\thttp_error\t429\t\t\t\t\t\n", // 429 is rate_limited
         "det-01\t1\t2\thttp_error\t200\t\t\t\t\t\n", // 2xx is not an error
         "det-01\t1\t2\tmaybe\t200\t\t\t\t\t\n",      // unknown kind
-        "det-01\t1\t2\tok\t2x0\t\t\t\t\t\n",         // bad status
+        "det-01\t1\t2\tok\t2x0\t\t\t\t\t\n",
+        "det-01\t1\t2\tok\t500\t\t\t1\t\t\n", // ok needs 2xx
+        "det-01\t1\t2\tok\t429\t\t\t1\t\t\n",
+        "det-01\t1\t2\tok\t\t\t\t1\t\t\n", // bad status
     ] {
         assert!(parse_replay(&format!("{h}{bad}")).is_err(), "{bad:?}");
     }
@@ -595,10 +598,20 @@ fn baseline(collected_ms: i64) -> FingerprintBaseline {
     run1[0] = dist(&[("a", 10), ("b", 10)]);
     run2[0] = dist(&[("a", 20)]);
     FingerprintBaseline {
+        key: key(),
         collected_ms,
         run1,
         run2,
     }
+}
+
+fn key() -> BaselineKey {
+    BaselineKey::new(
+        &VendorTables::default(),
+        "claude-haiku-4-5-20251001",
+        Protocol::AnthropicMessages,
+        "temperature=1",
+    )
 }
 
 #[test]
@@ -614,7 +627,7 @@ fn baseline_tau_freshness_and_comparison() {
 
     // Same as the baseline on all 10 questions: pass.
     let same = vec![dist(&[("a", 20)]); 10];
-    let r = fingerprint_run(&same, Some(&b), NOON0).unwrap();
+    let r = fingerprint_run(&same, &key(), Some(&b), NOON0).unwrap();
     assert_eq!((r.verdict, r.correct), (Pass, 10));
     // Disjoint answers on 5 questions: 10 - 5 = 5 <= 5, fail.
     let mut five = same.clone();
@@ -622,7 +635,9 @@ fn baseline_tau_freshness_and_comparison() {
         *d = dist(&[("z", 20)]);
     }
     assert_eq!(
-        fingerprint_run(&five, Some(&b), NOON0).unwrap().verdict,
+        fingerprint_run(&five, &key(), Some(&b), NOON0)
+            .unwrap()
+            .verdict,
         Fail
     );
     // 19 valid samples: question undetermined.
@@ -631,16 +646,60 @@ fn baseline_tau_freshness_and_comparison() {
     assert_eq!(b.compare(&short).unwrap()[3], None);
     // Stale or missing baseline: uncertain.
     assert_eq!(
-        fingerprint_run(&same, Some(&b), NOON0 + BASELINE_MAX_AGE_MS + 1)
+        fingerprint_run(&same, &key(), Some(&b), NOON0 + BASELINE_MAX_AGE_MS + 1)
             .unwrap()
             .verdict,
         Uncertain
     );
     assert_eq!(
-        fingerprint_run(&same, None, NOON0).unwrap().verdict,
+        fingerprint_run(&same, &key(), None, NOON0).unwrap().verdict,
         Uncertain
     );
-    assert!(fingerprint_run(&same[..9], Some(&b), NOON0).is_err());
+    assert!(fingerprint_run(&same[..9], &key(), Some(&b), NOON0).is_err());
+}
+
+#[test]
+fn baseline_of_another_key_counts_as_no_baseline() {
+    let b = baseline(NOON0);
+    let same = vec![dist(&[("a", 20)]); 10];
+    let t = VendorTables::default();
+    // Same model version written differently: same key.
+    let alias = BaselineKey::new(
+        &t,
+        " Claude-Haiku-4-5 ",
+        Protocol::AnthropicMessages,
+        " temperature=1 ",
+    );
+    assert_eq!(alias, key());
+    assert_eq!(
+        fingerprint_run(&same, &alias, Some(&b), NOON0)
+            .unwrap()
+            .verdict,
+        Pass
+    );
+    for other in [
+        BaselineKey::new(
+            &t,
+            "claude-haiku-4-6",
+            Protocol::AnthropicMessages,
+            "temperature=1",
+        ),
+        BaselineKey::new(
+            &t,
+            "claude-haiku-4-5",
+            Protocol::OpenAiChatCompletions,
+            "temperature=1",
+        ),
+        BaselineKey::new(
+            &t,
+            "claude-haiku-4-5",
+            Protocol::AnthropicMessages,
+            "temperature=0.7",
+        ),
+    ] {
+        let r = fingerprint_run(&same, &other, Some(&b), NOON0).unwrap();
+        assert_eq!(r.verdict, Uncertain, "{other:?}");
+    }
 }
 
 #[test]
@@ -936,6 +995,12 @@ fn grade_a() {
         (1, Cap, Na),
     ];
     assert_eq!(g(&na), AuthenticityGrade::A);
+    // Literal reading (13.13): a capability or deterministic fail day next
+    // to two pass days does not block A; C counts only hard, deterministic
+    // and fingerprint failures on >=2 days.
+    let mut extra = full.to_vec();
+    extra.extend([(2, Cap, Fail), (3, Det, Fail)]);
+    assert_eq!(g(&extra), AuthenticityGrade::A);
     // One hard-failure day: neither A nor A-.
     let a = relay();
     let mut rs: Vec<ProbeResult> = full
@@ -1274,6 +1339,18 @@ fn log_integrity_version_drift_and_other_family() {
     let li = log_integrity(&t, &a, &logged(18, &[o.clone(), o])).unwrap();
     assert_eq!((li.other_family, li.version_mismatch), (2, 0));
     assert!(li.passes);
+    // The drift denominator leaves out other-family and missing-model
+    // requests: 1 mismatch among 19 comparable requests is above 0.05.
+    let v1 = LoggedModel::Returned("claude-haiku-4-6".into());
+    let li = log_integrity(
+        &t,
+        &a,
+        &logged(18, &[v1.clone(), LoggedModel::Returned("gpt-5.4".into())]),
+    )
+    .unwrap();
+    assert!(!li.passes);
+    let li = log_integrity(&t, &a, &logged(18, &[v1, LoggedModel::Missing])).unwrap();
+    assert!(!li.passes);
     // Only missing models: nothing to compare, passes with the flag.
     let li = log_integrity(&t, &a, &vec![LoggedModel::Missing; 3]).unwrap();
     assert!(li.passes && li.cannot_verify_model);
@@ -1369,6 +1446,22 @@ fn overhead_window_and_medians() {
         output_tokens: 1,
     };
     assert!(route_overhead(&[bad], &official).is_err());
+    // Extreme timestamps: the difference is i64::MIN, out of the window,
+    // no overflow.
+    let extreme = TimingSample {
+        start_ms: i64::MIN,
+        first_token_ms: None,
+        end_ms: i64::MIN + 10,
+        output_tokens: 1,
+    };
+    let at0 = TimingSample {
+        start_ms: 0,
+        first_token_ms: None,
+        end_ms: 10,
+        output_tokens: 1,
+    };
+    let o = route_overhead(&[extreme], &[at0]).unwrap();
+    assert_eq!(o.total_ms, None);
     // First token at the end: not counted in the speed.
     let flat = vec![ts(t0, 100, 100, 5)];
     let o = route_overhead(&flat, &official[..2]).unwrap();

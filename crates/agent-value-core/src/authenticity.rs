@@ -476,7 +476,7 @@ pub fn route_overhead(route: &[TimingSample], official: &[TimingSample]) -> Resu
             route.iter().any(|r| {
                 r.start_ms
                     .checked_sub(o.start_ms)
-                    .is_some_and(|d| d.abs() <= OVERHEAD_WINDOW_MS)
+                    .is_some_and(|d| d.unsigned_abs() <= OVERHEAD_WINDOW_MS.unsigned_abs())
             })
         })
         .collect();

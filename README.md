@@ -576,10 +576,10 @@ This checks whether a route really serves the model it claims. The probe results
 - Deterministic: 9 or more correct passes, 7 or fewer fails, 8 is undetermined. Fingerprint: 8 or more of the 10 questions consistent with the baseline passes, 5 or fewer fails, and 6 or 7 is undetermined. All of these thresholds are provisional until the observation period checks them.
 - A 429 rate limit, a timeout, any other HTTP error or an unparseable reply makes that question unanswered, not wrong. A class passes or fails only if no way of counting the unanswered questions would change the verdict; otherwise it is undetermined.
 - Fingerprint answers are compared with the official baseline, its two runs pooled, by Jensen-Shannon divergence (base 2). The threshold $\tau_{\rm JS}$ is the 95th percentile (nearest rank) of the per-question divergence between the two baseline runs; with 10 questions that is the largest one. A baseline older than 30 days, or not from the same model version, protocol and sampling parameters, counts as no baseline, and the class is undetermined.
-- Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or a passed-back thinking signature is rejected with HTTP 400.
-- Model names are normalised through an alias table, then lower-cased, then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`.
+- Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or, when the thinking-signature round trip applies (Anthropic Messages protocol and the route claims thinking support), a passed-back thinking signature is rejected with HTTP 400. On another protocol, or without a thinking claim, the same 400 is not a hard failure.
+- Model names are trimmed and lower-cased, then mapped through the alias table (so its keys are lower-case), then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`.
 
-**Grades**, per arm per window; the first match wins: official direct (no grade; the host is on the official host list and the vendor matches), then C, A, A− and B.
+**Grades**, per arm per window; the first match wins: official direct (no grade; the host is on the official host list and the vendor matches), then C, A, A− and B. An official direct arm with a hard failure in the window, from probes or passive logs, is flagged "official route anomaly" for troubleshooting; this does not change its status or block the gate.
 
 - **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
 - **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure. A run day on which the capability class does not apply counts as a pass.
@@ -593,8 +593,8 @@ The A− fingerprint condition follows the specification literally, which is not
 **Log-integrity gate**, compared in integers:
 
 - At least 95% of the requests in the window can be parsed.
-- Version mismatches within the same family are at most 5%. The denominator leaves out requests with no model and requests from another family.
-- If more than 20% of requests have no model, the arm is only flagged "returned model cannot be checked".
+- Version mismatches within the same family are at most 5%. The denominator is the parseable requests minus those with no model and those from another family; if that is 0, this check passes.
+- If more than 20% of the parseable requests have no model, the arm is only flagged "returned model cannot be checked".
 - Requests from another family are already hard failures and are not counted twice.
 - A window with no requests passes and is flagged "no requests to check".
 
@@ -614,7 +614,7 @@ The A− fingerprint condition follows the specification literally, which is not
 <details>
 <summary>Example: one real run</summary>
 
-A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-22 00:52–00:54 Beijing time: all 12 requests returned 200, median latency about 2.1 s (slowest 22.8 s). The returned model was `claude-haiku-4-5-20251001`, the same version. The usage block had `claude_cache_creation_*` fields, which are the model's own vendor's names and not a hard failure. Deterministic passed 10/10. Tool calling matched, but strict JSON did not (the reply was wrapped in a JSON code block), so the capability class failed. There were no hard failures. With only 1 run day and no official baseline, this route is grade B for now, and during the observation period that is only shown.
+A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-22 00:52–00:54 Beijing time: all 12 requests returned 200, median latency about 2.1 s (slowest 22.8 s). The returned model was `claude-haiku-4-5-20251001`, the same version. The usage block had `claude_cache_creation_*` fields, which are the model's own vendor's names and not a hard failure. Deterministic passed 10/10. Tool calling matched, but strict JSON did not (the reply was wrapped in a JSON code block), so the capability class failed. There were no hard failures. With 1 run day and no official baseline, A− is still possible, but it needs the capability class to pass on at least 1 run day, so this route is grade B for now, and during the observation period that is only shown.
 
 </details>
 
@@ -711,7 +711,7 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
 | `src-tauri/` | Minimal Tauri 2 desktop shell that links the core crate. Not a member of the default Cargo workspace. |
-| `tools/` | Scripts run by hand on your own machine, not in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. |
+| `tools/` | Scripts run by hand on your own machine; only their tests run in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. `test_probe_live.py` (standard-library unittest) checks it against a mock server on 127.0.0.1. |
 | `web/` | React + TypeScript + Vite front end. Display only; it never computes scores. |
 
 ## Secrets and privacy

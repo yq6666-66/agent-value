@@ -777,7 +777,9 @@ pub fn fingerprint_run(
 /// the built-in tables; callers may replace or extend them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorTables {
-    /// Exact alias → canonical name (lower case), applied first.
+    /// Exact alias → canonical name. The lookup key is the trimmed,
+    /// lower-cased model name, so keys must be lower case; the mapped value
+    /// is trimmed and lower-cased again on use (DECISIONS 13.6).
     pub aliases: BTreeMap<String, String>,
     /// Family-name prefix → vendor; the longest matching prefix wins.
     pub family_vendor: Vec<(String, String)>,
@@ -829,12 +831,13 @@ fn is_version(tok: &str) -> bool {
 }
 
 impl VendorTables {
-    /// Lower case, trim, alias, then drop a trailing date (YYYYMMDD,
-    /// YYYY-MM-DD or MMDD).
+    /// Lower case, trim, alias (its value lower-cased and trimmed too, so
+    /// a caller's table cannot reintroduce case), then drop a trailing date
+    /// (YYYYMMDD, YYYY-MM-DD or MMDD).
     pub fn normalize(&self, name: &str) -> String {
         let mut s = name.trim().to_lowercase();
         if let Some(a) = self.aliases.get(&s) {
-            s = a.clone();
+            s = a.trim().to_lowercase();
         }
         let mut toks: Vec<&str> = s.split('-').collect();
         let digits = |t: &str, n: usize| t.len() == n && t.chars().all(|c| c.is_ascii_digit());

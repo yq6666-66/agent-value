@@ -922,6 +922,28 @@ fn unanswered_counts_by_reason_reach_the_evidence_summary() {
 // ---------------------------------------------- 13.6 models and vendors
 
 #[test]
+fn alias_values_with_upper_case_still_classify() {
+    // A caller's alias table may map to a mixed-case or padded name; the
+    // value is lower-cased and trimmed on use, so family, vendor and the
+    // other-family check still work (DECISIONS 13.6).
+    let mut t = VendorTables::default();
+    t.aliases
+        .insert("my-haiku".into(), " Claude-Haiku-4-5-20251001 ".into());
+    assert_eq!(t.normalize("My-Haiku"), "claude-haiku-4-5");
+    assert_eq!(t.family("my-haiku"), "claude-haiku");
+    assert_eq!(t.vendor("my-haiku"), Some("anthropic"));
+    let claimed = ModelId::new("claude-haiku-4-5").unwrap();
+    assert!(!other_family(&t, &claimed, "my-haiku"));
+    assert!(other_family(&t, &claimed, "gpt-5.4"));
+    // Baseline keys agree whichever spelling is used.
+    let k = |m: &str| BaselineKey::new(&t, m, Protocol::AnthropicMessages, "temperature=1");
+    assert_eq!(k("my-haiku"), k("claude-haiku-4-5"));
+    // Keys are looked up after lower-casing the name: a lower-case key
+    // matches any spelling of the name.
+    assert_eq!(t.normalize(" MY-HAIKU "), "claude-haiku-4-5");
+}
+
+#[test]
 fn model_normalisation_family_and_vendor() {
     let t = VendorTables::default();
     assert_eq!(t.normalize("Claude-Haiku-4-5-20251001"), "claude-haiku-4-5");

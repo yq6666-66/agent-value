@@ -8,7 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - README (English and Chinese): section 11, probes and relay checks (§11),
   with section 6 gate 4, the roadmap rows, constants, the local probe
-  commands and a `tools/` row in the layout table.
+  commands and a `tools/` row in the layout table (the runner's tests run
+  in CI against a local mock).
 - Core, spec step 13: probes and relay detection (§11, §5 rule 4, §9
   budget), new modules `probe` and `authenticity`. The core sends no
   request: probe runs are judged from recorded exchanges in a fixed
@@ -40,8 +41,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   are allowed), thinking signature rejected where that item applies
   (Anthropic protocol, thinking claimed: `run_hard_failures` takes the
   route's claims). Model names are normalised (trimmed and lower-cased,
-  then the alias table, then the trailing date dropped) into family and
-  vendor; default official-host table.
+  then the alias table, whose mapped value is lower-cased and trimmed
+  too, then the trailing date dropped) into family and vendor; default
+  official-host table.
   Grades per arm and window by Beijing run day, first match wins:
   official direct (not graded; hard failures only flag "官方路线异常"),
   C, A, A−, B. Gate: official, A and A− pass; C fails; B fails with

@@ -6,7 +6,8 @@
 //! 3. cancel and completion rates, with **integer** comparisons
 //!    (DECISIONS D): `N^sub > 0`, then `5 n^C <= N^sub` and
 //!    `2 n^comp >= N^sub`;
-//! 4. authenticity and log-integrity (stub interface until §11);
+//! 4. authenticity and log-integrity (inputs computed by
+//!    `authenticity::assess(..).gate_input()` and `authenticity::log_integrity`, §11);
 //! 5. reference base: every `u in d+` has non-NA `(C*, T*, Q*)` for `R`.
 //!
 //! Fallback-arm selection (DECISIONS G) belongs to a later step.
@@ -21,9 +22,11 @@ use crate::constants::layer_sample_gate;
 use crate::error::{CoreError, Result};
 use crate::status::LayerStatus;
 
-/// Authenticity grade from §11 (stub until probes exist).
-///
-/// Spec: A, A−, B pass (B is shown as "authenticity undetermined"); C fails.
+/// Gate input for the authenticity half of §5 rule 4. Only `passes()` and
+/// `undetermined()` are read: B passes but is shown as "authenticity
+/// undetermined"; C fails. `authenticity::AuthenticityAssessment::gate_input`
+/// maps the §11.3 status onto it (DECISIONS 13.11); display uses the
+/// assessment, never this value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthenticityGrade {
     A,
@@ -207,8 +210,9 @@ pub fn reference_base_ok(
 
 /// Assesses the five §5 gates for one arm in one layer.
 ///
-/// `authenticity` and `log_integrity_passed` are caller-supplied stubs until
-/// §11 / step 13 wire real probes. Grade B still passes but sets
+/// `authenticity` comes from `authenticity::assess(..).gate_input()` and
+/// `log_integrity_passed` from `authenticity::log_integrity(..).passes`
+/// (DECISIONS 13.11). Grade B still passes but sets
 /// `authenticity_undetermined`.
 pub fn assess_eligibility(
     status: &LayerStatus,

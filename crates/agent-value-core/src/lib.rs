@@ -3,7 +3,7 @@
 //! All formula logic lives in this crate. It has no Tauri, GUI, network or
 //! database dependencies so it can be built and tested anywhere.
 //!
-//! Implemented so far (v22 spec, steps 1-7): §9 constants, scoring scopes
+//! Implemented so far (v22 spec, steps 1-13): §9 constants, scoring scopes
 //! `S_k`, arms `(model, route)`, time windows with freezing, weight versions
 //! `W_k` with trial versions, design cells with the zero-weight probe cell,
 //! privacy rules, the data-model records persisted by the
@@ -12,17 +12,21 @@
 //! bounds (§1), cell states with `omega_u` (§0), per-cell `C*`, `T*`, `Q*`
 //! with NA propagation and cancel-robust versions (§2, §3), and layer /
 //! overall aggregation with the value score `V` (§4), and the layer
-//! eligibility set `E_d` (§5; authenticity / log-integrity are stub
-//! inputs until §11), the diagnostic table for miss/fail arms (§5),
+//! eligibility set `E_d` (§5), the diagnostic table for miss/fail arms (§5),
 //! the layer frontiers `F_off` / `F_rob` / `F_rec` (§6), anchor tiers,
 //! overall closure and the fallback arm (§7, §13), the five-level
 //! self-report (§10.2), behaviour calibration (§10.3) and the merge rule
-//! (§10.4).
+//! (§10.4), the sensitivity analysis (§12), and the probe verdicts,
+//! authenticity grades, log-integrity gate, probe budget and route
+//! overhead of §11 (`probe`, `authenticity`), which feed the authenticity
+//! and log-integrity inputs of `E_d`. Probes are judged from recorded
+//! exchanges; this crate sends no request.
 
 #![forbid(unsafe_code)]
 
 pub mod anchor;
 pub mod arm;
+pub mod authenticity;
 pub mod behavior;
 pub mod beta_dist;
 pub mod cell_values;
@@ -37,6 +41,7 @@ pub mod grid;
 pub mod labels;
 pub mod outcome;
 pub mod privacy;
+pub mod probe;
 pub mod quality;
 pub mod recommend;
 pub mod records;

@@ -6,6 +6,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Core, spec step 13: probes and relay detection (§11, §5 rule 4, §9
+  budget), new modules `probe` and `authenticity`. The core sends no
+  request: probe runs are judged from recorded exchanges in a fixed
+  tab-separated replay format.
+  Deterministic set: 10 seeded questions (seed 0 rejected) with two
+  wordings each and unbiased random numbers; a list to sort is never shown
+  already sorted. Verdicts ≥9 pass, ≤7 fail, 8 uncertain; fingerprint ≥8
+  pass, ≤5 fail, no fresh baseline ⇒ uncertain. These thresholds and
+  `τ_JS` are provisional until the observation period. Rate limits,
+  timeouts, other HTTP errors and unparseable replies count as
+  unanswered, never wrong: a verdict is given only when it holds however
+  the unanswered questions would have gone.
+  Fingerprint: Jensen–Shannon divergence in bits against the pooled
+  two-run official baseline; `τ_JS` is the nearest-rank 95% quantile of
+  the baseline's own run-to-run divergences; a baseline older than 30 days
+  is stale. Capability: tool call (`record_number`, exact arguments),
+  strict JSON (the reply must be the JSON object itself, a code fence
+  fails), thinking-signature round trip on the Anthropic protocol only
+  (HTTP 400 is a rejection and a hard failure), monthly long-context
+  recall; only claimed items are checked, none claimed ⇒ not applicable.
+  Hard failures: returned model of another family, usage field names
+  exclusive to another vendor (the model's and the protocol's own names
+  are allowed), signature rejected. Model names are normalised (alias,
+  lower case, trailing date dropped) into family and vendor; default
+  official-host table.
+  Grades per arm and window by Beijing run day, first match wins:
+  official direct (not graded; hard failures only flag "官方路线异常"),
+  C, A, A−, B. Gate: official, A and A− pass; C fails; B fails with
+  probes on and passes with probes off ("未验证（探针已关闭）"). Until the
+  observation period (positive control on the official route, negative
+  control with a smaller model) is validated, grades are display-only:
+  every graded arm passes the gate and is shown as undetermined.
+  `AuthenticityAssessment::gate_input()` feeds the step 8 `E_d` interface
+  unchanged. Log-integrity gate (§11.3′) with integer comparisons:
+  parse rate ≥0.95, same-family version drift ≤0.05, model field missing
+  above 0.2 only flagged; other-family requests are hard failures, not
+  counted twice. Probe budget: a run is allowed only if this Beijing
+  month's spend plus its estimate stays within the budget (10 yuan by
+  default). Route overhead diagnostics (§11.4): median TTFT, total time
+  and output speed against official samples within ±1 hour.
+  Examples `probe_plan` (prints the request bodies of a minimal probe)
+  and `probe_judge` (judges a replay), and `tools/probe_live.py`, a
+  standard-library runner for a local, opt-in run against a real relay
+  (key from the environment or a git-ignored `.env`, never written; no
+  headers recorded). CI never touches the network.
 - Core, spec step 12: weight sensitivity data (§12), new module
   `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
   group of highest `V` among the compared arms, ties reported whole;

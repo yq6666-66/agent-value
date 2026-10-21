@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Local live runner for the minimal probe (v22 §11.1). Not run in CI.
+"""Local live runner for the minimal probe (v22 §11.1). CI never runs it
+against a real endpoint; tools/test_probe_live.py tests it against a mock
+server on 127.0.0.1.
 
 Sends the request bodies printed by `cargo run -p agent-value-core --example
 probe_plan -- <seed> <model>` to an OpenAI Chat Completions endpoint and

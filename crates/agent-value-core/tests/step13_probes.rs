@@ -20,15 +20,17 @@ use agent_value_core::probe::{
     deterministic_set, deterministic_verdict, fingerprint_run, fingerprint_verdict, hard_failures,
     js_divergence, judge_capability, judge_deterministic, nearest_rank, other_family, parse_replay,
     run_hard_failures, AnswerState, BaselineKey, CapabilityClaims, CapabilityItem, Distribution,
-    Exchange, FingerprintBaseline, HardFailure, Reply, VendorTables, BASELINE_MAX_AGE_MS,
-    DETERMINISTIC_FAIL_MAX, FINGERPRINT_FAIL_MAX, TOOL_NAME,
+    Exchange, FingerprintBaseline, HardFailure, Reply, Unanswered, UnansweredCounts, VendorTables,
+    BASELINE_MAX_AGE_MS, DETERMINISTIC_FAIL_MAX, FINGERPRINT_FAIL_MAX, TOOL_NAME,
 };
 use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult, ProbeVerdict};
 use agent_value_core::retry::{Prior, RetryModel};
 use agent_value_core::runday::RunDay;
 use agent_value_core::status::{layer_status, CellCounts, CellInput};
 
-use AnswerState::{Correct as C, Unanswered as U, Wrong as W};
+use AnswerState::{Correct as C, Wrong as W};
+/// An unanswered question (no record); the reason only matters for the counts.
+const U: AnswerState = AnswerState::Unanswered(Unanswered::Missing);
 
 const MIXED: &str = include_str!("fixtures/step13_replay_mixed.tsv");
 const LIVE: &str = include_str!("fixtures/step13_live_replay.tsv");
@@ -217,19 +219,26 @@ fn capability_verdict_of(s: &[AnswerState]) -> ProbeVerdict {
 
 #[test]
 fn transport_failures_are_unanswered_not_wrong() {
-    for ex in [
-        Exchange::RateLimited,
-        Exchange::Timeout,
-        Exchange::HttpError(503),
-        Exchange::HttpError(400),
-        Exchange::Unparseable,
+    for (ex, why) in [
+        (Exchange::RateLimited, Unanswered::RateLimited),
+        (Exchange::Timeout, Unanswered::Timeout),
+        (Exchange::HttpError(503), Unanswered::ServerError),
+        (Exchange::HttpError(500), Unanswered::ServerError),
+        (Exchange::HttpError(599), Unanswered::ServerError),
+        (Exchange::HttpError(400), Unanswered::OtherHttpError),
+        (Exchange::HttpError(404), Unanswered::OtherHttpError),
+        (Exchange::HttpError(600), Unanswered::OtherHttpError),
+        (Exchange::Unparseable, Unanswered::Unparseable),
     ] {
-        assert_eq!(answer_state("1095", &ex), U, "{ex:?}");
-        assert_eq!(
-            capability_state(CapabilityItem::ToolCall, "991", &ex),
-            U,
-            "{ex:?}"
-        );
+        let u = AnswerState::Unanswered(why);
+        assert_eq!(answer_state("1095", &ex), u, "{ex:?}");
+        for item in [
+            CapabilityItem::ToolCall,
+            CapabilityItem::JsonSchema,
+            CapabilityItem::LongContext,
+        ] {
+            assert_eq!(capability_state(item, "991", &ex), u, "{item:?} {ex:?}");
+        }
     }
     assert_eq!(answer_state("1095", &answered("1095")), C);
     assert_eq!(answer_state("1095", &answered("1096")), W);
@@ -392,6 +401,11 @@ fn live_relay_replay_verdicts() {
         &VendorTables::default(),
         &model,
         &Protocol::OpenAiChatCompletions,
+        &CapabilityClaims {
+            tool_call: true,
+            json_schema: true,
+            ..CapabilityClaims::default()
+        },
         &r,
     );
     assert!(hard.is_empty(), "{hard:?}");
@@ -551,13 +565,46 @@ fn capability_items_and_checks() {
         capability_state(ThinkingSignature, "", &Exchange::HttpError(400)),
         W
     );
+}
+
+#[test]
+fn thinking_transport_failures_are_unanswered_and_any_2xx_conforms() {
+    // DECISIONS 13.5: on the thinking round trip only a 400 is a rejection;
+    // 429, timeout, 5xx, other errors and unparseable stay unanswered (13.2).
+    use CapabilityItem::ThinkingSignature;
+    for (ex, why) in [
+        (Exchange::RateLimited, Unanswered::RateLimited),
+        (Exchange::Timeout, Unanswered::Timeout),
+        (Exchange::HttpError(500), Unanswered::ServerError),
+        (Exchange::HttpError(503), Unanswered::ServerError),
+        (Exchange::HttpError(401), Unanswered::OtherHttpError),
+        (Exchange::Unparseable, Unanswered::Unparseable),
+    ] {
+        assert_eq!(
+            capability_state(ThinkingSignature, "", &ex),
+            AnswerState::Unanswered(why),
+            "{ex:?}"
+        );
+    }
+    // A 2xx is accepted whatever its body: empty text, no model, no usage.
     assert_eq!(
-        capability_state(ThinkingSignature, "", &Exchange::HttpError(500)),
-        U
+        capability_state(ThinkingSignature, "", &Exchange::Answered(Reply::default())),
+        C
     );
     assert_eq!(
-        capability_state(ThinkingSignature, "", &Exchange::RateLimited),
-        U
+        capability_state(ThinkingSignature, "991", &answered("unrelated")),
+        C
+    );
+    // Judged through a replay: an empty 2xx body passes the class.
+    let h = "question_id\tat_ms\tlatency_ms\tkind\tstatus\tmodel\tusage_fields\ttext\ttool_name\ttool_args\n";
+    let r = parse_replay(&format!("{h}cap-thinking\t1\t2\tok\t200\t\t\t\t\t\n")).unwrap();
+    let cap = judge_capability(1, &[ThinkingSignature], None, &r).unwrap();
+    assert_eq!((cap.verdict, cap.correct), (Pass, 1));
+    let r = parse_replay(&format!("{h}cap-thinking\t1\t2\ttimeout\t\t\t\t\t\t\n")).unwrap();
+    let cap = judge_capability(1, &[ThinkingSignature], None, &r).unwrap();
+    assert_eq!(
+        (cap.verdict, cap.wrong, cap.unanswered_by.timeout),
+        (Uncertain, 0, 1)
     );
 }
 
@@ -723,6 +770,154 @@ fn comparison_uses_the_pooled_baseline() {
     assert_eq!(swapped.compare(&s).unwrap()[0], Some(false));
 }
 
+#[test]
+fn zero_tau_baseline_still_accepts_the_same_distribution() {
+    // §11.2 "JS ≤ τ_JS 算一致": equality counts. Two identical baseline runs
+    // (temperature 0, or a single answer) give τ_JS = 0; a route with the
+    // same distribution has JS = 0 against the pool and must agree.
+    let run = vec![dist(&[("a", 20)]); 10];
+    let mut mixed = run.clone();
+    mixed[4] = dist(&[("a", 14), ("b", 6)]);
+    let b = FingerprintBaseline {
+        key: key(),
+        collected_ms: NOON0,
+        run1: mixed.clone(),
+        run2: mixed.clone(),
+    };
+    assert_eq!(b.tau_js().unwrap(), 0.0);
+    let r = fingerprint_run(&mixed, &key(), Some(&b), NOON0).unwrap();
+    assert_eq!((r.verdict, r.correct, r.wrong), (Pass, 10, 0));
+    // Same proportions at twice the sample count: still JS = 0, agrees.
+    let mut doubled = run.clone();
+    doubled[4] = dist(&[("a", 28), ("b", 12)]);
+    assert_eq!(b.compare(&doubled).unwrap(), vec![Some(true); 10]);
+    // Any other distribution on that question: JS > 0 = τ_JS, disagrees.
+    let mut off = mixed.clone();
+    off[4] = dist(&[("a", 13), ("b", 7)]);
+    assert_eq!(b.compare(&off).unwrap()[4], Some(false));
+}
+
+#[test]
+fn unanswered_counts_by_reason_reach_the_evidence_summary() {
+    // DECISIONS 13.2: an all-unanswered run is uncertain and its evidence
+    // summary states the rate-limit and timeout counts.
+    let h = "question_id\tat_ms\tlatency_ms\tkind\tstatus\tmodel\tusage_fields\ttext\ttool_name\ttool_args\n";
+    let mut t = h.to_string();
+    for i in 1..=10 {
+        t.push_str(&format!(
+            "det-{i:02}\t{i}\t5\trate_limited\t429\t\t\t\t\t\n"
+        ));
+    }
+    let r = parse_replay(&t).unwrap();
+    let det = judge_deterministic(20261022, &r).unwrap();
+    assert_eq!(
+        det.unanswered_by,
+        UnansweredCounts {
+            rate_limited: 10,
+            ..UnansweredCounts::default()
+        }
+    );
+    let sum = det.evidence_summary();
+    assert_eq!(
+        sum,
+        "uncertain: correct 0, wrong 0, unanswered 10 (429 10, timeout 0, 5xx 0, unparseable 0, other HTTP error 0, missing 0)"
+    );
+    // The summary is a valid ProbeResult evidence summary.
+    let mut p = pr(&relay(), 0, Det, det.verdict, false);
+    p.evidence_summary = sum;
+    p.validate().unwrap();
+
+    // Every reason, from the mixed fixture plus missing records.
+    let r = parse_replay(MIXED).unwrap();
+    let det = judge_deterministic(20261022, &r).unwrap();
+    assert_eq!(
+        det.unanswered_by,
+        UnansweredCounts {
+            rate_limited: 1,
+            timeout: 1,
+            server_error: 1,
+            unparseable: 1,
+            ..UnansweredCounts::default()
+        }
+    );
+    let mut t = h.to_string();
+    t.push_str("det-01\t1\t5\ttimeout\t\t\t\t\t\t\n");
+    t.push_str("det-02\t2\t5\ttimeout\t\t\t\t\t\t\n");
+    t.push_str("det-03\t3\t5\thttp_error\t502\t\t\t\t\t\n");
+    t.push_str("det-04\t4\t5\thttp_error\t404\t\t\t\t\t\n");
+    t.push_str("det-05\t5\t5\tunparseable\t200\t\t\t\t\t\n");
+    t.push_str("det-06\t6\t5\trate_limited\t429\t\t\t\t\t\n");
+    t.push_str("cap-tool\t7\t5\thttp_error\t503\t\t\t\t\t\n");
+    let r = parse_replay(&t).unwrap();
+    let det = judge_deterministic(20261022, &r).unwrap();
+    let want = UnansweredCounts {
+        rate_limited: 1,
+        timeout: 2,
+        server_error: 1,
+        unparseable: 1,
+        other_http_error: 1,
+        missing: 4,
+    };
+    assert_eq!(
+        (det.verdict, det.unanswered, det.unanswered_by),
+        (Uncertain, 10, want)
+    );
+    assert!(det
+        .evidence_summary()
+        .ends_with("(429 1, timeout 2, 5xx 1, unparseable 1, other HTTP error 1, missing 4)"));
+    let cap = judge_capability(
+        20261022,
+        &[CapabilityItem::ToolCall, CapabilityItem::JsonSchema],
+        None,
+        &r,
+    )
+    .unwrap();
+    assert_eq!(
+        cap.unanswered_by,
+        UnansweredCounts {
+            server_error: 1,
+            missing: 1,
+            ..UnansweredCounts::default()
+        }
+    );
+    // Fingerprint: a question with fewer than 20 samples counts as missing.
+    let b = baseline(NOON0);
+    let mut short = vec![dist(&[("a", 20)]); 10];
+    short[3] = dist(&[("a", 19)]);
+    short[7] = dist(&[("a", 1)]);
+    let fp = fingerprint_run(&short, &key(), Some(&b), NOON0).unwrap();
+    assert_eq!(
+        (fp.verdict, fp.unanswered, fp.unanswered_by.missing),
+        (Pass, 2, 2)
+    );
+    // Counts add up for verdicts built from states directly.
+    let run = deterministic_verdict(&[
+        C,
+        W,
+        U,
+        AnswerState::Unanswered(Unanswered::RateLimited),
+        AnswerState::Unanswered(Unanswered::Timeout),
+        AnswerState::Unanswered(Unanswered::ServerError),
+        AnswerState::Unanswered(Unanswered::Unparseable),
+        AnswerState::Unanswered(Unanswered::OtherHttpError),
+        AnswerState::Unanswered(Unanswered::Timeout),
+        C,
+    ])
+    .unwrap();
+    assert_eq!((run.correct, run.wrong, run.unanswered), (2, 1, 7));
+    assert_eq!(
+        run.unanswered_by,
+        UnansweredCounts {
+            rate_limited: 1,
+            timeout: 2,
+            server_error: 1,
+            unparseable: 1,
+            other_http_error: 1,
+            missing: 1,
+        }
+    );
+}
+
 // ---------------------------------------------- 13.6 models and vendors
 
 #[test]
@@ -794,17 +989,23 @@ fn hard_failures_by_family_usage_and_signature() {
         })
     };
     let oc = Protocol::OpenAiChatCompletions;
+    let none = CapabilityClaims::default();
+    let think = CapabilityClaims {
+        thinking: true,
+        ..CapabilityClaims::default()
+    };
     // Real relay: claude model on the OpenAI protocol with claude_* fields.
     assert!(hard_failures(
         &t,
         &haiku,
         &oc,
+        &none,
         None,
         &reply("claude-haiku-4-5-20251001", &live_usage)
     )
     .is_empty());
     // A gpt model carrying claude_* fields: foreign usage.
-    let h = hard_failures(&t, &gpt, &oc, None, &reply("gpt-5.4", &live_usage));
+    let h = hard_failures(&t, &gpt, &oc, &none, None, &reply("gpt-5.4", &live_usage));
     assert_eq!(h.len(), 2);
     assert!(h
         .iter()
@@ -816,6 +1017,7 @@ fn hard_failures_by_family_usage_and_signature() {
         &t,
         &gpt,
         &Protocol::AnthropicMessages,
+        &none,
         None,
         &reply("gpt-5.4", &anth)
     )
@@ -827,6 +1029,7 @@ fn hard_failures_by_family_usage_and_signature() {
             &t,
             &haiku,
             &Protocol::AnthropicMessages,
+            &none,
             None,
             &reply("claude-haiku-4-5", &ds)
         ),
@@ -838,37 +1041,58 @@ fn hard_failures_by_family_usage_and_signature() {
     // Claimed opus, returned haiku: other family.
     let opus = ModelId::new("claude-opus-4-1").unwrap();
     assert_eq!(
-        hard_failures(&t, &opus, &oc, None, &reply("claude-haiku-4-5", &[])),
+        hard_failures(&t, &opus, &oc, &none, None, &reply("claude-haiku-4-5", &[])),
         vec![HardFailure::OtherFamily {
             returned: "claude-haiku-4-5".into()
         }]
     );
-    // Thinking signature rejected (HTTP 400 on the thinking item only).
+    // Thinking signature rejected: HTTP 400 on the thinking item, where it
+    // applies (Anthropic protocol, thinking claimed; DECISIONS 13.5).
     let pa = Protocol::AnthropicMessages;
+    let thinking = Some(CapabilityItem::ThinkingSignature);
+    let e400 = Exchange::HttpError(400);
     assert_eq!(
-        hard_failures(
-            &t,
-            &haiku,
-            &pa,
-            Some(CapabilityItem::ThinkingSignature),
-            &Exchange::HttpError(400)
-        ),
+        hard_failures(&t, &haiku, &pa, &think, thinking, &e400),
         vec![HardFailure::ThinkingSignatureRejected]
     );
-    assert!(hard_failures(&t, &haiku, &pa, None, &Exchange::HttpError(400)).is_empty());
-    assert!(hard_failures(
-        &t,
-        &haiku,
-        &pa,
-        Some(CapabilityItem::ThinkingSignature),
-        &Exchange::RateLimited
-    )
-    .is_empty());
+    assert!(hard_failures(&t, &haiku, &pa, &think, None, &e400).is_empty());
+    assert!(hard_failures(&t, &haiku, &pa, &think, thinking, &Exchange::RateLimited).is_empty());
+    // Not applicable: no thinking claim, or the OpenAI protocol.
+    assert!(hard_failures(&t, &haiku, &pa, &none, thinking, &e400).is_empty());
+    assert!(hard_failures(&t, &haiku, &oc, &think, thinking, &e400).is_empty());
     // In a replay, the cap-thinking id carries the item.
     let h = "question_id\tat_ms\tlatency_ms\tkind\tstatus\tmodel\tusage_fields\ttext\ttool_name\ttool_args\n";
     let r = parse_replay(&format!("{h}cap-thinking\t1\t2\thttp_error\t400\t\t\t\t\t\ndet-01\t1\t2\thttp_error\t400\t\t\t\t\t\n")).unwrap();
     assert_eq!(
-        run_hard_failures(&t, &haiku, &pa, &r),
+        run_hard_failures(&t, &haiku, &pa, &think, &r),
+        vec![HardFailure::ThinkingSignatureRejected]
+    );
+}
+
+#[test]
+fn thinking_rejection_without_its_precondition_is_no_hard_failure() {
+    // §11.2 第 766 行 "适用前提下": a 400 on cap-thinking under the OpenAI
+    // protocol, or without a thinking claim, is not a hard failure; it
+    // matches applicable_items, which leaves the item out there.
+    let t = VendorTables::default();
+    let haiku = ModelId::new("claude-haiku-4-5").unwrap();
+    let h = "question_id\tat_ms\tlatency_ms\tkind\tstatus\tmodel\tusage_fields\ttext\ttool_name\ttool_args\n";
+    let r = parse_replay(&format!(
+        "{h}cap-thinking\t1\t2\thttp_error\t400\t\t\t\t\t\n"
+    ))
+    .unwrap();
+    let think = CapabilityClaims {
+        thinking: true,
+        ..CapabilityClaims::default()
+    };
+    let oc = Protocol::OpenAiChatCompletions;
+    let pa = Protocol::AnthropicMessages;
+    assert!(applicable_items(&think, &oc).is_empty());
+    assert!(run_hard_failures(&t, &haiku, &oc, &think, &r).is_empty());
+    assert!(run_hard_failures(&t, &haiku, &oc, &CapabilityClaims::default(), &r).is_empty());
+    assert!(run_hard_failures(&t, &haiku, &pa, &CapabilityClaims::default(), &r).is_empty());
+    assert_eq!(
+        run_hard_failures(&t, &haiku, &pa, &think, &r),
         vec![HardFailure::ThinkingSignatureRejected]
     );
 }
@@ -1210,6 +1434,80 @@ fn observation_validation_criteria() {
     ];
     let pos_h = DaySummary::build(&off, &rs, &[]).unwrap();
     assert_eq!(observation(&pos_h, &neg, false, true), Observation::Pending);
+}
+
+#[test]
+fn positive_control_with_a_baseline_needs_two_fingerprint_pass_days() {
+    // DECISIONS 13.8: with a baseline the official route must pass the
+    // fingerprint on ≥2 run days; exactly 1 is not enough.
+    let off = arm(
+        "claude-haiku-4-5",
+        "api.anthropic.com",
+        Protocol::AnthropicMessages,
+    );
+    let small = arm(
+        "claude-haiku-4-5",
+        "control.local",
+        Protocol::AnthropicMessages,
+    );
+    let neg = summary(&small, &[(0, Fp, Fail), (1, Fp, Fail)]);
+    let base = [
+        (0, Det, Pass),
+        (1, Det, Pass),
+        (0, Cap, Pass),
+        (1, Cap, Pass),
+    ];
+    let with = |fp: &[(i64, ProbeClass, ProbeVerdict)]| {
+        let mut v = base.to_vec();
+        v.extend_from_slice(fp);
+        observation(&summary(&off, &v), &neg, true, true)
+    };
+    assert_eq!(with(&[(0, Fp, Pass)]), Observation::Pending);
+    assert_eq!(
+        with(&[(0, Fp, Pass), (1, Fp, Uncertain)]),
+        Observation::Pending
+    );
+    assert_eq!(
+        with(&[(0, Fp, Pass), (1, Fp, Pass)]),
+        Observation::Validated
+    );
+    // Without a baseline the fingerprint is not required.
+    assert_eq!(
+        observation(&summary(&off, &base), &neg, false, true),
+        Observation::Validated
+    );
+}
+
+#[test]
+fn not_applicable_is_for_the_capability_class_only() {
+    // DECISIONS 13.5: only capability can be not applicable. Deterministic
+    // and fingerprint results marked N/A are rejected where they enter.
+    let a = relay();
+    for class in [Det, Fp] {
+        let p = pr(&a, 0, class, Na, false);
+        assert!(p.validate().is_err(), "{class:?}");
+        assert!(DaySummary::build(&a, &[p], &[]).is_err(), "{class:?}");
+    }
+    let p = pr(&a, 0, Cap, Na, false);
+    p.validate().unwrap();
+    let s = DaySummary::build(&a, &[p], &[]).unwrap();
+    assert_eq!(s.pass_days(ProbeClassKey::Capability), 1);
+    // A summary assembled by hand: N/A is a pass day for capability only.
+    let mut s = DaySummary::default();
+    for (i, k) in [
+        ProbeClassKey::Deterministic,
+        ProbeClassKey::Fingerprint,
+        ProbeClassKey::Capability,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let day = RunDay::from_unix_ms(NOON0 + i as i64 * DAY).unwrap();
+        s.verdicts.insert((k, day), Na);
+    }
+    assert_eq!(s.pass_days(ProbeClassKey::Deterministic), 0);
+    assert_eq!(s.pass_days(ProbeClassKey::Fingerprint), 0);
+    assert_eq!(s.pass_days(ProbeClassKey::Capability), 1);
 }
 
 // ------------------------------------------- §5 rule 4 gate, 13.11 mapping

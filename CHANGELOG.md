@@ -20,7 +20,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `τ_JS` are provisional until the observation period. Rate limits,
   timeouts, other HTTP errors and unparseable replies count as
   unanswered, never wrong: a verdict is given only when it holds however
-  the unanswered questions would have gone.
+  the unanswered questions would have gone. Each class run counts its
+  unanswered questions by reason (429, timeout, 5xx, unparseable, other
+  HTTP error, missing) and `ClassRun::evidence_summary()` states them.
   Fingerprint: Jensen–Shannon divergence in bits against the pooled
   two-run official baseline; `τ_JS` is the nearest-rank 95% quantile of
   the 10 per-question divergences between the two baseline runs (with 10
@@ -31,11 +33,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fails), thinking-signature round trip on the Anthropic protocol only
   (HTTP 400 is a rejection and a hard failure), monthly long-context
   recall; only claimed items are checked, none claimed ⇒ not applicable.
+  Only the capability class can be not applicable: probe results marked
+  not applicable for the deterministic or fingerprint class are rejected.
   Hard failures: returned model of another family, usage field names
   exclusive to another vendor (the model's and the protocol's own names
-  are allowed), signature rejected. Model names are normalised (alias,
-  lower case, trailing date dropped) into family and vendor; default
-  official-host table.
+  are allowed), thinking signature rejected where that item applies
+  (Anthropic protocol, thinking claimed: `run_hard_failures` takes the
+  route's claims). Model names are normalised (trimmed and lower-cased,
+  then the alias table, then the trailing date dropped) into family and
+  vendor; default official-host table.
   Grades per arm and window by Beijing run day, first match wins:
   official direct (not graded; hard failures only flag "官方路线异常"),
   C, A, A−, B. Gate: official, A and A− pass; C fails; B fails with
@@ -59,7 +65,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (https required, plain http only for a local mock server; key from the
   environment or a git-ignored `.env`, never
   written: raw and escaped output is checked for it; no headers recorded).
-  A replay line of kind `ok` must carry a 2xx status. CI never touches the network.
+  A replay line of kind `ok` must carry a 2xx status. `tools/test_probe_live.py`
+  (standard-library unittest, run in CI) tests the runner against a mock
+  server on 127.0.0.1: 429, timeout, 4xx/5xx and unparseable
+  classification, unanswered never judged wrong, refusal to write an
+  echoed key. CI never touches the network beyond localhost.
 - Core, spec step 12: weight sensitivity data (§12), new module
   `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
   group of highest `V` among the compared arms, ties reported whole;

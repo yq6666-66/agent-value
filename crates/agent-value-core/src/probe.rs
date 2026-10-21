@@ -45,9 +45,53 @@ pub const BASELINE_MAX_AGE_MS: i64 = 30 * 86_400_000;
 pub enum AnswerState {
     Correct,
     Wrong,
-    /// Rate limit, timeout, other HTTP error or unparseable response: no
-    /// evidence either way.
-    Unanswered,
+    /// Rate limit, timeout, other HTTP error, unparseable response or no
+    /// record: no evidence either way.
+    Unanswered(Unanswered),
+}
+
+/// Why a question is unanswered (DECISIONS 13.2: the evidence summary
+/// states the rate-limit and timeout counts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unanswered {
+    /// HTTP 429.
+    RateLimited,
+    /// No response within the runner's timeout.
+    Timeout,
+    /// HTTP 5xx (`tools/probe_live.py` records a connection error as 599).
+    ServerError,
+    /// 2xx, but the body could not be parsed.
+    Unparseable,
+    /// Any other non-2xx status, such as a 4xx other than 429. A 400 on the
+    /// thinking round trip is not unanswered but a rejection (DECISIONS 13.5).
+    OtherHttpError,
+    /// No record for the question (the runner stopped early), or a
+    /// fingerprint question with fewer than 20 valid samples.
+    Missing,
+}
+
+/// Reason of an exchange that is not a 2xx reply. Callers handle
+/// `Answered` first; it never reaches here.
+fn transport_failure(ex: &Exchange) -> Unanswered {
+    match ex {
+        Exchange::RateLimited => Unanswered::RateLimited,
+        Exchange::Timeout => Unanswered::Timeout,
+        Exchange::HttpError(s) if (500..600).contains(s) => Unanswered::ServerError,
+        Exchange::Unparseable => Unanswered::Unparseable,
+        Exchange::HttpError(_) | Exchange::Answered(_) => Unanswered::OtherHttpError,
+    }
+}
+
+/// Unanswered questions of one class run, by reason. The fields add up to
+/// [`ClassRun::unanswered`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UnansweredCounts {
+    pub rate_limited: u32,
+    pub timeout: u32,
+    pub server_error: u32,
+    pub unparseable: u32,
+    pub other_http_error: u32,
+    pub missing: u32,
 }
 
 /// One request/response exchange as an outside runner recorded it.
@@ -84,21 +128,60 @@ pub struct ClassRun {
     pub correct: u32,
     pub wrong: u32,
     pub unanswered: u32,
+    /// `unanswered` by reason (DECISIONS 13.2).
+    pub unanswered_by: UnansweredCounts,
 }
 
-fn count(states: &[AnswerState]) -> Result<(u32, u32, u32)> {
-    let mut c = (0u32, 0u32, 0u32);
-    for s in states {
-        let slot = match s {
-            AnswerState::Correct => &mut c.0,
-            AnswerState::Wrong => &mut c.1,
-            AnswerState::Unanswered => &mut c.2,
-        };
-        *slot = slot.checked_add(1).ok_or(CoreError::Overflow {
-            what: "probe answer count",
-        })?;
+impl ClassRun {
+    /// Evidence summary of the run (`ProbeResult::evidence_summary`):
+    /// verdict and counts only, with the unanswered questions by reason
+    /// (DECISIONS 13.2). No reply text, no key material.
+    pub fn evidence_summary(&self) -> String {
+        let u = &self.unanswered_by;
+        format!(
+            "{}: correct {}, wrong {}, unanswered {} (429 {}, timeout {}, 5xx {}, unparseable {}, other HTTP error {}, missing {})",
+            self.verdict.as_str(),
+            self.correct,
+            self.wrong,
+            self.unanswered,
+            u.rate_limited,
+            u.timeout,
+            u.server_error,
+            u.unparseable,
+            u.other_http_error,
+            u.missing
+        )
     }
-    Ok(c)
+}
+
+fn bump(x: &mut u32) -> Result<()> {
+    *x = x.checked_add(1).ok_or(CoreError::Overflow {
+        what: "probe answer count",
+    })?;
+    Ok(())
+}
+
+fn count(states: &[AnswerState]) -> Result<(u32, u32, u32, UnansweredCounts)> {
+    let (mut correct, mut wrong, mut unanswered) = (0u32, 0u32, 0u32);
+    let mut by = UnansweredCounts::default();
+    for s in states {
+        match s {
+            AnswerState::Correct => bump(&mut correct)?,
+            AnswerState::Wrong => bump(&mut wrong)?,
+            AnswerState::Unanswered(why) => {
+                bump(&mut unanswered)?;
+                bump(match why {
+                    Unanswered::RateLimited => &mut by.rate_limited,
+                    Unanswered::Timeout => &mut by.timeout,
+                    Unanswered::ServerError => &mut by.server_error,
+                    Unanswered::Unparseable => &mut by.unparseable,
+                    Unanswered::OtherHttpError => &mut by.other_http_error,
+                    Unanswered::Missing => &mut by.missing,
+                })?;
+            }
+        }
+    }
+    Ok((correct, wrong, unanswered, by))
 }
 
 fn ten(n: usize) -> Result<()> {
@@ -129,7 +212,7 @@ fn bounded(good: u32, bad: u32, n: u32, pass_min: u32, fail_max: u32) -> ProbeVe
 /// bounds (DECISIONS 13.2).
 pub fn deterministic_verdict(states: &[AnswerState]) -> Result<ClassRun> {
     ten(states.len())?;
-    let (correct, wrong, unanswered) = count(states)?;
+    let (correct, wrong, unanswered, unanswered_by) = count(states)?;
     Ok(ClassRun {
         verdict: bounded(
             correct,
@@ -141,6 +224,7 @@ pub fn deterministic_verdict(states: &[AnswerState]) -> Result<ClassRun> {
         correct,
         wrong,
         unanswered,
+        unanswered_by,
     })
 }
 
@@ -154,10 +238,10 @@ pub fn fingerprint_verdict(per_question: &[Option<bool>], has_baseline: bool) ->
         .map(|q| match q {
             Some(true) => AnswerState::Correct,
             Some(false) => AnswerState::Wrong,
-            None => AnswerState::Unanswered,
+            None => AnswerState::Unanswered(Unanswered::Missing),
         })
         .collect();
-    let (correct, wrong, unanswered) = count(&states)?;
+    let (correct, wrong, unanswered, unanswered_by) = count(&states)?;
     let verdict = if has_baseline {
         bounded(
             correct,
@@ -174,6 +258,7 @@ pub fn fingerprint_verdict(per_question: &[Option<bool>], has_baseline: bool) ->
         correct,
         wrong,
         unanswered,
+        unanswered_by,
     })
 }
 
@@ -181,7 +266,7 @@ pub fn fingerprint_verdict(per_question: &[Option<bool>], has_baseline: bool) ->
 /// any unanswered is uncertain; else pass. No applicable item: not
 /// applicable (DECISIONS 13.5).
 pub fn capability_verdict(applicable: &[AnswerState]) -> Result<ClassRun> {
-    let (correct, wrong, unanswered) = count(applicable)?;
+    let (correct, wrong, unanswered, unanswered_by) = count(applicable)?;
     let verdict = if applicable.is_empty() {
         ProbeVerdict::NotApplicable
     } else if wrong > 0 {
@@ -196,6 +281,7 @@ pub fn capability_verdict(applicable: &[AnswerState]) -> Result<ClassRun> {
         correct,
         wrong,
         unanswered,
+        unanswered_by,
     })
 }
 
@@ -390,7 +476,7 @@ pub fn answer_state(expected: &str, ex: &Exchange) -> AnswerState {
                 AnswerState::Wrong
             }
         }
-        _ => AnswerState::Unanswered,
+        other => AnswerState::Unanswered(transport_failure(other)),
     }
 }
 
@@ -454,12 +540,14 @@ fn compact(s: &str) -> String {
 ///   `{"n":<number>}` (whitespace ignored).
 /// - JSON schema: the content is exactly `{"answer":<number>}`.
 /// - Thinking signature: the round trip with the signed thinking block sent
-///   back is accepted (2xx); HTTP 400 is a rejection (wrong and a §11.2
-///   hard failure, see [`hard_failures`]).
+///   back is accepted (any 2xx, whatever the body); HTTP 400 is a rejection
+///   (wrong and a §11.2 hard failure, see [`hard_failures`]).
 /// - Long context: the recalled key, as [`check_answer`].
+///
+/// 429, timeout, other HTTP errors and unparseable replies are unanswered
+/// for every item (DECISIONS 13.2, 13.5).
 pub fn capability_state(item: CapabilityItem, expected: &str, ex: &Exchange) -> AnswerState {
     match (item, ex) {
-        (CapabilityItem::ThinkingSignature, Exchange::Answered(_)) => AnswerState::Correct,
         (CapabilityItem::ThinkingSignature, Exchange::HttpError(400)) => AnswerState::Wrong,
         (_, Exchange::Answered(r)) => {
             let ok = match item {
@@ -478,7 +566,7 @@ pub fn capability_state(item: CapabilityItem, expected: &str, ex: &Exchange) -> 
                 AnswerState::Wrong
             }
         }
-        _ => AnswerState::Unanswered,
+        (_, other) => AnswerState::Unanswered(transport_failure(other)),
     }
 }
 
@@ -622,7 +710,9 @@ impl FingerprintBaseline {
     }
 
     /// τ_JS: 95% nearest-rank quantile of the 10 per-question JS values
-    /// between the two baseline runs.
+    /// between the two baseline runs (with 10 values, the largest).
+    /// Provisional, like the 9/10 and 8/10 thresholds: pending the
+    /// observation period (DECISIONS 13.1, 13.4).
     pub fn tau_js(&self) -> Result<f64> {
         self.check()?;
         let js: Vec<f64> = self
@@ -837,10 +927,16 @@ pub fn other_family(tables: &VendorTables, claimed: &ModelId, returned: &str) ->
 
 /// Hard failures of one exchange (§11.2 第 766 行, after excluding protocol
 /// differences: the protocol's own usage names are allowed).
+///
+/// `item` is the capability item the exchange answered, if any. A 400 on
+/// the thinking round trip is a hard failure only where that item applies
+/// ("适用前提下"): Anthropic Messages protocol with thinking claimed
+/// (DECISIONS 13.5, [`applicable_items`]).
 pub fn hard_failures(
     tables: &VendorTables,
     claimed: &ModelId,
     protocol: &Protocol,
+    claims: &CapabilityClaims,
     item: Option<CapabilityItem>,
     ex: &Exchange,
 ) -> Vec<HardFailure> {
@@ -867,7 +963,11 @@ pub fn hard_failures(
                 }
             }
         }
-        Exchange::HttpError(400) if item == Some(CapabilityItem::ThinkingSignature) => {
+        Exchange::HttpError(400)
+            if item == Some(CapabilityItem::ThinkingSignature)
+                && applicable_items(claims, protocol)
+                    .contains(&CapabilityItem::ThinkingSignature) =>
+        {
             v.push(HardFailure::ThinkingSignatureRejected);
         }
         _ => {}
@@ -1000,9 +1100,10 @@ pub fn judge_deterministic(seed: u64, records: &[ReplayRecord]) -> Result<ClassR
     let states: Vec<AnswerState> = deterministic_set(seed)?
         .iter()
         .map(|q| {
-            m.get(q.id.as_str()).map_or(AnswerState::Unanswered, |r| {
-                answer_state(&q.expected, &r.exchange)
-            })
+            m.get(q.id.as_str())
+                .map_or(AnswerState::Unanswered(Unanswered::Missing), |r| {
+                    answer_state(&q.expected, &r.exchange)
+                })
         })
         .collect();
     deterministic_verdict(&states)
@@ -1030,7 +1131,7 @@ pub fn judge_capability(
                 _ => n.as_str(),
             };
             Ok(m.get(capability_id(*it))
-                .map_or(AnswerState::Unanswered, |r| {
+                .map_or(AnswerState::Unanswered(Unanswered::Missing), |r| {
                     capability_state(*it, expected, &r.exchange)
                 }))
         })
@@ -1038,11 +1139,14 @@ pub fn judge_capability(
     capability_verdict(&states)
 }
 
-/// All hard failures in a run's records.
+/// All hard failures in a run's records. `claims` are the route's
+/// capability claims (DECISIONS 13.14): a rejected thinking round trip
+/// counts only where that item applies (DECISIONS 13.5).
 pub fn run_hard_failures(
     tables: &VendorTables,
     claimed: &ModelId,
     protocol: &Protocol,
+    claims: &CapabilityClaims,
     records: &[ReplayRecord],
 ) -> Vec<HardFailure> {
     records
@@ -1050,7 +1154,7 @@ pub fn run_hard_failures(
         .flat_map(|r| {
             let item = (r.question_id == capability_id(CapabilityItem::ThinkingSignature))
                 .then_some(CapabilityItem::ThinkingSignature);
-            hard_failures(tables, claimed, protocol, item, &r.exchange)
+            hard_failures(tables, claimed, protocol, claims, item, &r.exchange)
         })
         .collect()
 }
@@ -1065,6 +1169,7 @@ mod probe_unit_tests {
         // u32 and must not wrap (exercised through the public API).
         let r = capability_verdict(&[AnswerState::Correct; 3]).unwrap();
         assert_eq!((r.correct, r.wrong, r.unanswered), (3, 0, 0));
+        assert_eq!(r.unanswered_by, UnansweredCounts::default());
     }
 
     #[test]

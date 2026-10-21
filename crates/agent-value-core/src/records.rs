@@ -434,6 +434,15 @@ impl ProbeResult {
         check_id("probe version", &self.probe_version)?;
         check_evidence_summary(&self.evidence_summary)?;
         self.run_day()?;
+        // Only the capability class can be not applicable (no claimed item,
+        // DECISIONS 13.5); the deterministic and fingerprint classes always
+        // apply, and a fingerprint run without a baseline is uncertain.
+        if self.verdict == ProbeVerdict::NotApplicable && self.class != ProbeClass::Capability {
+            return Err(CoreError::InvalidField {
+                field: "probe verdict",
+                reason: "not-applicable is allowed for the capability class only",
+            });
+        }
         Ok(())
     }
 }

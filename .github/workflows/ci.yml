@@ -27,6 +27,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      # tools/probe_live.py against a mock server on 127.0.0.1 (ephemeral
+      # port, made-up key): no network beyond localhost. The replay it writes
+      # is judged by the probe_judge example.
+      - name: probe runner tests (local mock)
+        run: |
+          cargo build -p agent-value-core --example probe_judge
+          PROBE_JUDGE="$PWD/target/debug/examples/probe_judge" python3 tools/test_probe_live.py
 
   web:
     name: Web (lint, typecheck, build)

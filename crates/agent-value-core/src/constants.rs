@@ -83,10 +83,13 @@ pub const GRID_STEP: f64 = 0.05;
 pub const GRID_POINTS: usize = 171;
 /// §9 deterministic probe class: one run of 10 questions ...
 pub const PROBE_QUESTIONS_PER_RUN: u32 = 10;
-/// ... passes with at least 9 correct.
+/// ... passes with at least 9 correct. Provisional (暂定) until the §11.3
+/// observation period validates it (DECISIONS 13.1).
 pub const DETERMINISTIC_PASS_MIN: u32 = 9;
 /// §9 fingerprint probe class: at least 8 of 10 questions with JS <= tau_JS
 /// (needs an official baseline; tau_JS itself is not fixed in §9).
+/// Provisional (暂定) until the §11.3 observation period validates it
+/// (DECISIONS 13.1).
 pub const FINGERPRINT_PASS_MIN: u32 = 8;
 /// §9 authenticity-gate statistical unit: the run day, a natural day in
 /// Beijing time. This is the UTC offset of Beijing time in seconds (UTC+8).

@@ -1,0 +1,14 @@
+# Step 13 replay fixture, seed 20261022 (hand-written): one row per branch.
+question_id	at_ms	latency_ms	kind	status	model	usage_fields	text	tool_name	tool_args
+det-01	1792601568000	1000	rate_limited	429					
+det-02	1792601571000	1001	timeout						
+det-03	1792601574000	1002	http_error	503					
+det-04	1792601577000	1003	unparseable	200					
+det-05	1792601580000	1004	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	338474		
+det-06	1792601583000	1005	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	**JCXPTRJ**		
+det-07	1792601586000	1006	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	683.		
+det-08	1792601589000	1007	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	10, 51, 53, 67		
+det-09	1792601592000	1008	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	5		
+det-10	1792601595000	1009	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	29		
+cap-tool	1792601598000	1010	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens		record_number	{"n": 991}
+cap-json	1792601601000	1011	ok	200	claude-haiku-4-5-20251001	claude_cache_creation_5_m_tokens,completion_tokens,prompt_tokens,total_tokens	```json\n{"answer": 991}\n```		

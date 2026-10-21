@@ -6,6 +6,72 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- README (English and Chinese): section 11, probes and relay checks (§11),
+  with section 6 gate 4, the roadmap rows, constants, the local probe
+  commands and a `tools/` row in the layout table (the runner's tests run
+  in CI against a local mock).
+- Core, spec step 13: probes and relay detection (§11, §5 rule 4, §9
+  budget), new modules `probe` and `authenticity`. The core sends no
+  request: probe runs are judged from recorded exchanges in a fixed
+  tab-separated replay format.
+  Deterministic set: 10 seeded questions (seed 0 rejected) with two
+  wordings each and unbiased random numbers; a list to sort is never shown
+  already sorted. Verdicts ≥9 pass, ≤7 fail, 8 uncertain; fingerprint ≥8
+  pass, ≤5 fail, no fresh baseline ⇒ uncertain. These thresholds and
+  `τ_JS` are provisional until the observation period. Rate limits,
+  timeouts, other HTTP errors and unparseable replies count as
+  unanswered, never wrong: a verdict is given only when it holds however
+  the unanswered questions would have gone. Each class run counts its
+  unanswered questions by reason (429, timeout, 5xx, unparseable, other
+  HTTP error, missing) and `ClassRun::evidence_summary()` states them.
+  Fingerprint: Jensen–Shannon divergence in bits against the pooled
+  two-run official baseline; `τ_JS` is the nearest-rank 95% quantile of
+  the 10 per-question divergences between the two baseline runs (with 10
+  questions, the largest); a baseline older than 30 days,
+  or kept for another model version, protocol or sampling parameters,
+  counts as no baseline. Capability: tool call (`record_number`, exact arguments),
+  strict JSON (the reply must be the JSON object itself, a code fence
+  fails), thinking-signature round trip on the Anthropic protocol only
+  (HTTP 400 is a rejection and a hard failure), monthly long-context
+  recall; only claimed items are checked, none claimed ⇒ not applicable.
+  Only the capability class can be not applicable: probe results marked
+  not applicable for the deterministic or fingerprint class are rejected.
+  Hard failures: returned model of another family, usage field names
+  exclusive to another vendor (the model's and the protocol's own names
+  are allowed), thinking signature rejected where that item applies
+  (Anthropic protocol, thinking claimed: `run_hard_failures` takes the
+  route's claims). Model names are normalised (trimmed and lower-cased,
+  then the alias table, whose mapped value is lower-cased and trimmed
+  too, then the trailing date dropped) into family and vendor; default
+  official-host table.
+  Grades per arm and window by Beijing run day, first match wins:
+  official direct (not graded; hard failures only flag "官方路线异常"),
+  C, A, A−, B. Gate: official, A and A− pass; C fails; B fails with
+  probes on and passes with probes off ("未验证（探针已关闭）"). Until the
+  observation period (positive control on the official route, negative
+  control with a smaller model) is validated, grades are display-only:
+  every graded arm passes the gate and is shown as undetermined.
+  `AuthenticityAssessment::gate_input()` feeds the step 8 `E_d` interface
+  unchanged. Log-integrity gate (§11.3′) with integer comparisons:
+  parse rate ≥0.95, same-family version drift ≤0.05, model field missing
+  above 0.2 only flagged; other-family requests are hard failures, not
+  counted twice. Probe budget: a run is allowed only if this Beijing
+  month's spend plus its estimate stays within the budget (10 yuan by
+  default). Route overhead diagnostics (§11.4): median TTFT, total time
+  and output speed against official samples within ±1 hour.
+  Examples `probe_plan` (prints OpenAI Chat Completions request bodies for
+  the 10 deterministic questions plus the claimed tool-call and strict-JSON
+  items; thinking-signature and long-context requests are not generated
+  yet) and `probe_judge` (judges a replay), and `tools/probe_live.py`, a
+  standard-library runner for a local, opt-in run against a real relay
+  (https required, plain http only for a local mock server; key from the
+  environment or a git-ignored `.env`, never
+  written: raw and escaped output is checked for it; no headers recorded).
+  A replay line of kind `ok` must carry a 2xx status. `tools/test_probe_live.py`
+  (standard-library unittest, run in CI) tests the runner against a mock
+  server on 127.0.0.1: 429, timeout, 4xx/5xx and unparseable
+  classification, unanswered never judged wrong, refusal to write an
+  echoed key. CI never touches the network beyond localhost.
 - Core, spec step 12: weight sensitivity data (§12), new module
   `sensitivity`. Winner map on the 171-point grid: `Win(w)` is the tie
   group of highest `V` among the compared arms, ties reported whole;

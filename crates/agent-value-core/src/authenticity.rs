@@ -122,8 +122,11 @@ pub enum AuthStatus {
 
 /// §11.3 rules 2–5 (first match wins) for a non-official arm.
 ///
-/// A− keeps the spec's fingerprint condition word for word: "not run,
-/// uncertain, or passed on exactly 1 run day" (DECISIONS 13.13).
+/// A− fingerprint is monotonic (DECISIONS 13.13): it qualifies unless
+/// there are zero pass days and at least one fail day. Not run, only
+/// uncertain, or at least one pass day all qualify. The other A− guards
+/// are unchanged: no hard-failure day, and deterministic and capability
+/// each on at least one pass day. A is unchanged.
 pub fn grade(s: &DaySummary) -> AuthenticityGrade {
     use ProbeClassKey::*;
     let hard = s.hard_failure_days.len();
@@ -140,9 +143,9 @@ pub fn grade(s: &DaySummary) -> AuthenticityGrade {
     {
         return AuthenticityGrade::A;
     }
-    let fp_pass = s.pass_days(Fingerprint);
-    let fp_ok =
-        !s.ran(Fingerprint) || (fp_pass == 0 && s.fail_days(Fingerprint) == 0) || fp_pass == 1;
+    // ¬(pass days = 0 ∧ fail days ≥ 1). Stronger fingerprint evidence
+    // must not drop A− to B (DECISIONS 13.13).
+    let fp_ok = !(s.pass_days(Fingerprint) == 0 && s.fail_days(Fingerprint) >= 1);
     if hard == 0 && s.pass_days(Deterministic) >= 1 && s.pass_days(Capability) >= 1 && fp_ok {
         return AuthenticityGrade::AMinus;
     }

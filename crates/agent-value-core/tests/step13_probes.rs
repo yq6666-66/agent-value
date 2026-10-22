@@ -1261,9 +1261,10 @@ fn grade_a() {
         (1, Cap, Na),
     ];
     assert_eq!(g(&na), AuthenticityGrade::A);
-    // Literal reading (13.13): a capability or deterministic fail day next
-    // to two pass days does not block A; C counts only hard, deterministic
-    // and fingerprint failures on >=2 days.
+    // A is unchanged (13.13): a capability or deterministic fail day next
+    // to two pass days does not block A. C counts only hard, deterministic
+    // and fingerprint failures on >=2 days. Capability fail days do not
+    // cap A or A−.
     let mut extra = full.to_vec();
     extra.extend([(2, Cap, Fail), (3, Det, Fail)]);
     assert_eq!(g(&extra), AuthenticityGrade::A);
@@ -1310,8 +1311,8 @@ fn grade_a_minus() {
         g(&[(0, Det, Pass), (0, Cap, Pass), (0, Fp, Pass), (1, Fp, Fail)]),
         AuthenticityGrade::AMinus
     );
-    // A needs every class on >=2 days: capability on 1 day gives A-, and
-    // with fingerprint on 2 days the literal A- rule gives B (13.13).
+    // A needs every class on >=2 pass days. One capability pass day stays
+    // A−, including when fingerprint has passed on 2 days (13.13).
     assert_eq!(
         g(&[
             (0, Det, Pass),
@@ -1339,7 +1340,7 @@ fn grade_a_minus() {
             (0, Fp, Pass),
             (1, Fp, Pass)
         ]),
-        AuthenticityGrade::B
+        AuthenticityGrade::AMinus
     );
     // A hard-failure day blocks A- too.
     let a = relay();
@@ -1353,14 +1354,11 @@ fn grade_a_minus() {
 }
 
 #[test]
-fn grade_b_literal_reading_cases_of_13_13() {
-    // Non-monotonic case 1: fingerprint passed on 2 days, deterministic
-    // and capability on 1 day only => neither A nor A- => B.
-    assert_eq!(
-        g(&[(0, Det, Pass), (0, Cap, Pass), (0, Fp, Pass), (1, Fp, Pass)]),
-        AuthenticityGrade::B
-    );
-    // Case 2: fingerprint failed on 1 day, never passed => B.
+fn grade_b_fingerprint_fail_day_and_thin_evidence() {
+    // Fingerprint failed on 1 day and never passed: still B, not yet C
+    // (13.13). Two fingerprint pass days with one deterministic and one
+    // capability pass day are A−; see
+    // `grade_stronger_fingerprint_stays_a_minus`.
     assert_eq!(
         g(&[(0, Det, Pass), (0, Cap, Pass), (0, Fp, Fail)]),
         AuthenticityGrade::B
@@ -1374,34 +1372,42 @@ fn grade_b_literal_reading_cases_of_13_13() {
 }
 
 #[test]
-fn grade_fingerprint_second_pass_day_drops_a_minus_to_b() {
-    // 13.13: with no hard failure, a second fingerprint pass day turns A-
-    // into B whenever deterministic or capability has only 1 pass day
-    // (A needs >=2 days in every class; A- needs fingerprint "not run,
-    // uncertain or exactly 1 pass day"). All three combinations:
+fn grade_stronger_fingerprint_stays_a_minus() {
+    // DECISIONS 13.13: with no hard failure, extra fingerprint pass days
+    // must not drop A− to B. A still needs >=2 pass days in every class.
     let days = |n: i64, c: ProbeClass| -> Vec<(i64, ProbeClass, ProbeVerdict)> {
         (0..n).map(|d| (d, c, Pass)).collect()
     };
-    for (det, cap) in [(1, 1), (1, 2), (2, 1), (3, 1), (1, 3)] {
-        let base: Vec<_> = days(det, Det).into_iter().chain(days(cap, Cap)).collect();
-        let mut fp1 = base.clone();
+    // Exactly one fingerprint pass day is still A−.
+    for (det, cap) in [(1, 1), (1, 2), (2, 1)] {
+        let mut fp1: Vec<_> = days(det, Det).into_iter().chain(days(cap, Cap)).collect();
         fp1.extend(days(1, Fp));
         assert_eq!(
             g(&fp1),
             AuthenticityGrade::AMinus,
             "det {det}, cap {cap}, fp 1"
         );
-        for fp in [2, 3] {
-            let mut more = base.clone();
-            more.extend(days(fp, Fp));
-            assert_eq!(
-                g(&more),
-                AuthenticityGrade::B,
-                "det {det}, cap {cap}, fp {fp}"
-            );
-        }
     }
-    // With >=2 days in both, the second fingerprint day gives A instead.
+    // The three combinations the literal reading graded B.
+    for (det, cap, fp) in [
+        (1, 1, 2),
+        (1, 1, 3),
+        (1, 2, 2),
+        (1, 3, 2),
+        (1, 2, 3),
+        (2, 1, 2),
+        (3, 1, 2),
+        (2, 1, 3),
+    ] {
+        let mut more: Vec<_> = days(det, Det).into_iter().chain(days(cap, Cap)).collect();
+        more.extend(days(fp, Fp));
+        assert_eq!(
+            g(&more),
+            AuthenticityGrade::AMinus,
+            "det {det}, cap {cap}, fp {fp}"
+        );
+    }
+    // With >=2 pass days in every class, the grade is A.
     let mut full = days(2, Det);
     full.extend(days(2, Cap));
     full.extend(days(2, Fp));

@@ -8,7 +8,7 @@ agent-value 是一个给个人用的本地桌面工具。它按成本、时间�
 
 ## 状态
 
-现在还没有能用的应用。下面的公式已经写成一个带测试的 Rust 库，本地数据库是另一个独立的 crate，但两者还没接起来，界面也只有一个占位页。目前没有任何东西能从头到尾算出分数。
+现在还没有能用的应用。下面的公式已经写成一个带测试的 Rust 库，本地数据库是另一个独立的 crate，但两者还没接起来。桌面窗口仍是占位页，只显示外壳读到的核心版本。目前没有任何东西能从头到尾算出分数。
 
 | 规范步骤 | 内容 | 状态 |
 |---|---|---|
@@ -689,6 +689,7 @@ cd web
 npm ci
 npm run lint
 npm run typecheck
+npm test
 npm run build
 ```
 
@@ -712,7 +713,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 | `crates/agent-value-store/` | 本地 SQLite 存储（内置 SQLite，不需要系统库）。 |
 | `src-tauri/` | 最小的 Tauri 2 桌面外壳，链接核心库。不属于默认的 Cargo workspace。 |
 | `tools/` | 在本机手动运行的脚本，CI 里只跑它们的测试。`probe_live.py` 只用 Python 标准库，把 `probe_plan` 生成的探针请求发到 https 中转站，写出供 `probe_judge` 判定的回放数据和脱敏日志。`test_probe_live.py`（标准库 unittest）在 127.0.0.1 的模拟服务器上测它。 |
-| `web/` | React + TypeScript + Vite 前端。只负责展示，从不计算分数。 |
+| `web/` | React + TypeScript + Vite 前端（shadcn/ui Nova、Tailwind）。只负责展示，从不计算分数。关于区域显示外壳返回的核心版本。 |
 
 ## 密钥和隐私
 

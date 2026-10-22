@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Desktop window: the placeholder page shows `CORE_VERSION` from the Tauri
+  `core_version` command in an About area. The string is whatever the shell
+  returns; the web UI does not compute it. Scoring is still not wired up.
 - README (English and Chinese): section 11, probes and relay checks (§11),
   with section 6 gate 4, the roadmap rows, constants, the local probe
   commands and a `tools/` row in the layout table (the runner's tests run

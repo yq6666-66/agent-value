@@ -807,10 +807,14 @@ pub struct VendorTables {
     /// is trimmed and lower-cased again on use (DECISIONS 13.6).
     pub aliases: BTreeMap<String, String>,
     /// Family-name prefix → vendor; the longest matching prefix wins.
-    /// Both sides are trimmed and lower-cased on lookup (DECISIONS 13.6).
+    /// Both sides are trimmed and lower-cased on lookup. The same
+    /// normalized length keeps the later entry, so `push` overrides a
+    /// built-in prefix (DECISIONS 13.6).
     pub family_vendor: Vec<(String, String)>,
     /// Official host → vendor. The host key and the vendor are trimmed
-    /// and lower-cased on lookup (DECISIONS 13.7).
+    /// and lower-cased on lookup. A key that is not already that
+    /// canonical host overrides the built-in row, so a mixed-case insert
+    /// is not lost to `BTreeMap` order (DECISIONS 13.7).
     pub official_hosts: BTreeMap<String, String>,
 }
 
@@ -898,7 +902,8 @@ impl VendorTables {
     /// The prefix and the vendor are trimmed and lower-cased before the
     /// match, and the returned vendor is that lower-cased form, so a
     /// caller-supplied table stays aligned with [`protocol_vendor`] and
-    /// [`usage_field_vendor`] (DECISIONS 13.6).
+    /// [`usage_field_vendor`] (DECISIONS 13.6). Equal lengths keep the
+    /// later entry in [`VendorTables::family_vendor`].
     pub fn vendor(&self, name: &str) -> Option<String> {
         let fam = self.family(name);
         let first = self.normalize(name);
@@ -926,25 +931,32 @@ impl VendorTables {
     ///
     /// The stored host and the query are both trimmed and lower-cased, and
     /// the returned vendor is trimmed and lower-cased (DECISIONS 13.7).
-    /// When several keys normalize to the same host, the last one in
-    /// `BTreeMap` order wins.
+    /// The map is not rewritten: the fields are public, so a caller can
+    /// insert after [`VendorTables::default`]. A stored key that is not
+    /// already the canonical host overrides one that is, which is how
+    /// `" API.Anthropic.com "` replaces `"api.anthropic.com"` instead of
+    /// losing on `BTreeMap` order. If several such overrides match, the
+    /// last in `BTreeMap` order wins.
     pub fn official_vendor(&self, host: &str) -> Option<String> {
         let host = table_token(host);
         if host.is_empty() {
             return None;
         }
-        let mut found = None;
+        let mut canonical = None;
+        let mut override_vendor = None;
         for (key, vendor) in &self.official_hosts {
-            let key = table_token(key);
+            let key_norm = table_token(key);
             let vendor = table_token(vendor);
-            if key.is_empty() || vendor.is_empty() {
+            if key_norm.is_empty() || vendor.is_empty() || key_norm != host {
                 continue;
             }
-            if key == host {
-                found = Some(vendor);
+            if key.as_str() == key_norm {
+                canonical = Some(vendor);
+            } else {
+                override_vendor = Some(vendor);
             }
         }
-        found
+        override_vendor.or(canonical)
     }
 }
 

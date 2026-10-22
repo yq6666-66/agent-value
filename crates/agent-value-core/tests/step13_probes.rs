@@ -1061,6 +1061,46 @@ fn caller_vendor_tables_with_upper_case_still_classify() {
 }
 
 #[test]
+fn mixed_case_insert_overrides_the_builtin_row() {
+    // Fields stay public, so a later insert is not rewritten in the map.
+    // A padded or mixed-case host that normalizes to a built-in key must
+    // override that row. BTreeMap order would keep the built-in key, which
+    // sorts after a leading space (DECISIONS 13.7).
+    let mut t = VendorTables::default();
+    t.official_hosts
+        .insert(" API.Anthropic.com ".into(), " Custom ".into());
+    assert_eq!(
+        t.official_vendor("api.anthropic.com").as_deref(),
+        Some("custom")
+    );
+    assert!(!is_official_direct(
+        &t,
+        &arm(
+            "claude-haiku-4-5",
+            "api.anthropic.com",
+            Protocol::AnthropicMessages
+        )
+    ));
+    // Same normalized prefix length: the later vec entry wins, so push
+    // overrides the built-in family row (DECISIONS 13.6).
+    t.family_vendor.push((" Claude ".into(), " Custom ".into()));
+    assert_eq!(t.vendor("claude-haiku-4-5").as_deref(), Some("custom"));
+    assert!(is_official_direct(
+        &t,
+        &arm(
+            "claude-haiku-4-5",
+            "api.anthropic.com",
+            Protocol::AnthropicMessages
+        )
+    ));
+    assert_eq!(
+        t.official_vendor("api.openai.com").as_deref(),
+        Some("openai")
+    );
+    assert_eq!(t.vendor("gpt-5.4").as_deref(), Some("openai"));
+}
+
+#[test]
 fn model_normalisation_family_and_vendor() {
     let t = VendorTables::default();
     assert_eq!(t.normalize("Claude-Haiku-4-5-20251001"), "claude-haiku-4-5");

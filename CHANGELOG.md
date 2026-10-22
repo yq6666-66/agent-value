@@ -128,13 +128,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Core, authenticity `grade` (DECISIONS 13.13): the A− fingerprint condition
   is monotonic. Fingerprint qualifies unless it has 0 pass days and at
   least 1 fail day, so these three combinations are A− (the literal
-  reading graded them B): deterministic 1 day with capability 1 day and
-  fingerprint on 2 or more days; deterministic 1 day with capability on
-  2 or more days and fingerprint on 2 or more days; deterministic on
-  2 or more days with capability 1 day and fingerprint on 2 or more days.
-  A fingerprint fail day with no pass day is still B. Exactly one
-  fingerprint pass day is still A−. A is unchanged. The English and
-  Chinese READMEs state the same condition.
+  reading graded them B): deterministic passing on 1 day, capability
+  passing on 1 day, and fingerprint passing on 2 or more days;
+  deterministic passing on 1 day, capability passing on 2 or more days,
+  and fingerprint passing on 2 or more days; deterministic passing on
+  2 or more days, capability passing on 1 day, and fingerprint passing
+  on 2 or more days. A single fingerprint fail day with no pass day is
+  still B; two or more fingerprint fail days is C. Exactly one
+  fingerprint pass day is still A− when the other A− guards hold (no
+  hard-failure day, deterministic and capability each passing on at
+  least 1 day) and fingerprint fail days are fewer than 2. A is
+  unchanged. The English and Chinese READMEs state the same condition.
 - README section 9 (English and Chinese): in a question's equal dimension
   both options show the base up to at most 1 ulp of (base + noise floor).
 - Core: `resolve_fallback` validates the candidate (finite, non-negative

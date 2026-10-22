@@ -1263,8 +1263,8 @@ fn grade_a() {
     assert_eq!(g(&na), AuthenticityGrade::A);
     // A is unchanged (13.13): a capability or deterministic fail day next
     // to two pass days does not block A. C counts only hard, deterministic
-    // and fingerprint failures on >=2 days. Capability fail days do not
-    // cap A or A−.
+    // and fingerprint failures on >=2 days. A capability-fail-day cap is
+    // still open and is not part of this change.
     let mut extra = full.to_vec();
     extra.extend([(2, Cap, Fail), (3, Det, Fail)]);
     assert_eq!(g(&extra), AuthenticityGrade::A);
@@ -1407,6 +1407,19 @@ fn grade_stronger_fingerprint_stays_a_minus() {
             "det {det}, cap {cap}, fp {fp}"
         );
     }
+    // Two fingerprint pass days and one fail day, on distinct run days:
+    // still A−. C needs two fingerprint fail days. Same-day pass and fail
+    // would merge to fail (13.3), so the fail day is a third run day.
+    assert_eq!(
+        g(&[
+            (0, Det, Pass),
+            (0, Cap, Pass),
+            (0, Fp, Pass),
+            (1, Fp, Pass),
+            (2, Fp, Fail),
+        ]),
+        AuthenticityGrade::AMinus
+    );
     // With >=2 pass days in every class, the grade is A.
     let mut full = days(2, Det);
     full.extend(days(2, Cap));

@@ -1261,10 +1261,9 @@ fn grade_a() {
         (1, Cap, Na),
     ];
     assert_eq!(g(&na), AuthenticityGrade::A);
-    // A is unchanged (13.13): a capability or deterministic fail day next
-    // to two pass days does not block A. C counts only hard, deterministic
-    // and fingerprint failures on >=2 days. A capability-fail-day cap is
-    // still open and is not part of this change.
+    // One capability fail day does not block A (13.15, cf ≤ 1). One
+    // deterministic fail day does not block A either. C counts only hard,
+    // deterministic and fingerprint failures on >=2 days.
     let mut extra = full.to_vec();
     extra.extend([(2, Cap, Fail), (3, Det, Fail)]);
     assert_eq!(g(&extra), AuthenticityGrade::A);
@@ -1420,11 +1419,62 @@ fn grade_stronger_fingerprint_stays_a_minus() {
         ]),
         AuthenticityGrade::AMinus
     );
-    // With >=2 pass days in every class, the grade is A.
+    // With >=2 pass days in every class and no capability fail day, the
+    // grade is A.
     let mut full = days(2, Det);
     full.extend(days(2, Cap));
     full.extend(days(2, Fp));
     assert_eq!(g(&full), AuthenticityGrade::A);
+}
+
+#[test]
+fn grade_capability_fail_days_cap_a_and_a_minus() {
+    // DECISIONS 13.15. Pass and fail are on distinct run days: a same-day
+    // pass and fail merge to fail (13.3).
+    let pass_days = |n: i64, c: ProbeClass| -> Vec<(i64, ProbeClass, ProbeVerdict)> {
+        (0..n).map(|d| (d, c, Pass)).collect()
+    };
+    // det≥2, fp≥2, cap≥2 pass, cf=1 → A.
+    let mut a_cf1 = pass_days(2, Det);
+    a_cf1.extend(pass_days(2, Fp));
+    a_cf1.extend(pass_days(2, Cap));
+    a_cf1.push((2, Cap, Fail));
+    assert_eq!(g(&a_cf1), AuthenticityGrade::A);
+    // The same evidence with cf=2 → B (not C).
+    let mut a_cf2 = a_cf1;
+    a_cf2.push((3, Cap, Fail));
+    assert_eq!(g(&a_cf2), AuthenticityGrade::B);
+    // A− guards (det 1, cap 1, fingerprint not run), cf=1 → A−.
+    assert_eq!(
+        g(&[(0, Det, Pass), (0, Cap, Pass), (1, Cap, Fail)]),
+        AuthenticityGrade::AMinus
+    );
+    // The same evidence with cf=2 → B.
+    assert_eq!(
+        g(&[
+            (0, Det, Pass),
+            (0, Cap, Pass),
+            (1, Cap, Fail),
+            (2, Cap, Fail)
+        ]),
+        AuthenticityGrade::B
+    );
+    // cf=2 and deterministic fail on ≥2 days is still C. C is first.
+    assert_eq!(
+        g(&[
+            (0, Det, Pass),
+            (1, Det, Pass),
+            (2, Det, Fail),
+            (3, Det, Fail),
+            (0, Fp, Pass),
+            (1, Fp, Pass),
+            (0, Cap, Pass),
+            (1, Cap, Pass),
+            (2, Cap, Fail),
+            (3, Cap, Fail),
+        ]),
+        AuthenticityGrade::C
+    );
 }
 
 // ------------------------------------------------- 13.8 observation

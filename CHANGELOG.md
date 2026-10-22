@@ -137,8 +137,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still B; two or more fingerprint fail days is C. Exactly one
   fingerprint pass day is still A− when the other A− guards hold (no
   hard-failure day, deterministic and capability each passing on at
-  least 1 day) and fingerprint fail days are fewer than 2. A is
-  unchanged. The English and Chinese READMEs state the same condition.
+  least 1 day, at most one capability fail day) and fingerprint fail
+  days are fewer than 2. The English and Chinese READMEs state the same
+  condition.
+- Core, authenticity `grade` (DECISIONS 13.15): capability fail days cap
+  both A and A−. With `cf` the number of capability fail days, A and A−
+  each require their existing conditions and `cf ≤ 1`. If `cf ≥ 2` and
+  the arm is not already C, the grade is at most B. Capability fails
+  still do not count toward C.
 - README section 9 (English and Chinese): in a question's equal dimension
   both options show the base up to at most 1 ulp of (base + noise floor).
 - Core: `resolve_fallback` validates the candidate (finite, non-negative

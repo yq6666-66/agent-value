@@ -4,6 +4,7 @@
 
 mod demo_example6;
 mod store_cmd;
+mod window_chrome;
 
 use tauri::Manager;
 
@@ -49,6 +50,12 @@ fn delete_all(state: tauri::State<store_cmd::AppState>) -> Result<(), String> {
     store_cmd::delete_all(&state)
 }
 
+/// Sample first or later window. The label is the core's, when one applies.
+#[tauri::command]
+fn window_chrome(sample: String) -> Result<window_chrome::WindowChrome, String> {
+    window_chrome::sample_window_chrome(&sample)
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .setup(|app| {
@@ -64,7 +71,8 @@ fn main() {
             upsert_arm,
             store_data_path,
             export_store,
-            delete_all
+            delete_all,
+            window_chrome
         ])
         .run(tauri::generate_context!());
     if let Err(err) = result {

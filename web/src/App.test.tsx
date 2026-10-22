@@ -12,6 +12,7 @@ import {
   STORE_DATA_PATH_COMMAND,
   UPSERT_ARM_COMMAND,
 } from "@/lib/store";
+import { WINDOW_CHROME_COMMAND } from "@/lib/window-chrome";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -33,6 +34,9 @@ function storeFallback(cmd: string): unknown {
   }
   if (cmd === DELETE_ALL_COMMAND || cmd === UPSERT_ARM_COMMAND) {
     return null;
+  }
+  if (cmd === WINDOW_CHROME_COMMAND) {
+    return { window_index: 0, is_first: true, first_window_label: "LABEL-FROM-CORE" };
   }
   throw new Error(cmd);
 }

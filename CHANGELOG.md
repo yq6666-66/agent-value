@@ -15,7 +15,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Desktop window: the shell opens the local store and the page can list and
   add arms, show the database path, export, and delete all rows. Arm rows
   have no key column. Export is the store dump, which keeps a digest instead
-  of prompt text. User scoring is still not wired up.
+  of prompt text.
+- Desktop window: a resizable frontier pane and a weight panel. The panel
+  reads sample window chrome from the core. A first window shows
+  `FIRST_WINDOW_LABEL` and does not show V. A later window has an empty V
+  slot. User scoring is still not wired up.
 - README (English and Chinese): section 11, probes and relay checks (§11),
   with section 6 gate 4, the roadmap rows, constants, the local probe
   commands and a `tools/` row in the layout table (the runner's tests run

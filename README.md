@@ -582,11 +582,11 @@ This checks whether a route really serves the model it claims. The probe results
 **Grades**, per arm per window; the first match wins: official direct (no grade; the host is on the official host list and the vendor matches), then C, A, A− and B. An official direct arm with a hard failure in the window, from probes or passive logs, is flagged "official route anomaly" for troubleshooting; this does not change its status or block the gate.
 
 - **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
-- **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure. A run day on which the capability class does not apply counts as a pass.
-- **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, and fingerprint was not run, is undetermined or passed on only 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
+- **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure, and the capability class fails on at most 1 run day. A run day on which the capability class does not apply counts as a pass.
+- **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, fingerprint is acceptable unless it has zero pass days and at least one fail day (not run, only undetermined, or at least one pass day all qualify), and the capability class fails on at most 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
 - **B** (unverified): everything else.
 
-The A− fingerprint condition follows the specification literally, which is not monotonic in some cases: for example, fingerprint passing on 2 days but deterministic on only 1 gives B.
+If the capability class fails on 2 or more run days and the arm is not already C, the grade is B.
 
 **Authenticity gate.** Official direct, A and A− pass and C fails. B fails when probes are on; when probes are off it passes and is flagged "unverified (probes off)". Until the observation period has passed its check, grades are only shown: every graded arm passes the gate and is flagged "authenticity undetermined". The observation period is meant to run an official direct route as a positive control and a smaller model as a negative control, each for 2 full run days; it has not been run yet (section 12). What is shown is the assessment's real status, so an official direct arm is never shown as A.
 

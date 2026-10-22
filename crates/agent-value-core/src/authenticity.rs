@@ -1,6 +1,6 @@
 //! Authenticity grade, gate and log-integrity gate per arm and window
 //! (v22 §11.3, §11.3′, §11.4, §5 rule 4, §9 probe budget; DECISIONS 13.3,
-//! 13.7–13.13).
+//! 13.7–13.15).
 //!
 //! Grades only say how strong the evidence of consistency with the
 //! baseline is; none of them means "proven fake" (§11 preamble). The grade
@@ -122,8 +122,15 @@ pub enum AuthStatus {
 
 /// §11.3 rules 2–5 (first match wins) for a non-official arm.
 ///
-/// A− keeps the spec's fingerprint condition word for word: "not run,
-/// uncertain, or passed on exactly 1 run day" (DECISIONS 13.13).
+/// A− fingerprint is monotonic (DECISIONS 13.13): it qualifies unless
+/// there are zero pass days and at least one fail day. Not run, only
+/// uncertain, or at least one pass day all qualify. Other A− guards: no
+/// hard-failure day, and deterministic and capability each on at least
+/// one pass day.
+///
+/// Capability fail days cap both A and A− (DECISIONS 13.15): `cf ≤ 1`.
+/// If `cf ≥ 2` and the arm is not already C, the grade is at most B.
+/// Capability fails do not count toward C.
 pub fn grade(s: &DaySummary) -> AuthenticityGrade {
     use ProbeClassKey::*;
     let hard = s.hard_failure_days.len();
@@ -133,17 +140,26 @@ pub fn grade(s: &DaySummary) -> AuthenticityGrade {
     {
         return AuthenticityGrade::C;
     }
+    // cf does not count toward C. Two or more capability fail days cap
+    // both A and A− at B (DECISIONS 13.15).
+    let cf = s.fail_days(Capability);
     if hard == 0
+        && cf <= 1
         && s.pass_days(Deterministic) >= GRADE_RUN_DAYS
         && s.pass_days(Fingerprint) >= GRADE_RUN_DAYS
         && s.pass_days(Capability) >= GRADE_RUN_DAYS
     {
         return AuthenticityGrade::A;
     }
-    let fp_pass = s.pass_days(Fingerprint);
-    let fp_ok =
-        !s.ran(Fingerprint) || (fp_pass == 0 && s.fail_days(Fingerprint) == 0) || fp_pass == 1;
-    if hard == 0 && s.pass_days(Deterministic) >= 1 && s.pass_days(Capability) >= 1 && fp_ok {
+    // ¬(pass days = 0 ∧ fail days ≥ 1). Stronger fingerprint evidence
+    // must not drop A− to B (DECISIONS 13.13).
+    let fp_ok = !(s.pass_days(Fingerprint) == 0 && s.fail_days(Fingerprint) >= 1);
+    if hard == 0
+        && cf <= 1
+        && s.pass_days(Deterministic) >= 1
+        && s.pass_days(Capability) >= 1
+        && fp_ok
+    {
         return AuthenticityGrade::AMinus;
     }
     AuthenticityGrade::B

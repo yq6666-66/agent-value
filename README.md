@@ -8,7 +8,7 @@ The scoring rules follow a written specification (v22) plus a decision record fo
 
 ## Status
 
-There is no usable app yet. The formulas below exist as a tested Rust library, and the local database exists as a separate crate, but they are not wired together. The desktop window is a placeholder that shows the core version read from the shell; nothing is scored end to end.
+There is no usable app yet. The formulas below exist as a tested Rust library, and the local database exists as a separate crate, but they are not wired to your own tasks. The desktop window is a placeholder that shows the core version and example 6's diagnostic anchor, both read from the shell. Nothing of yours is scored end to end.
 
 | Spec step | What it covers | Status |
 |---|---|---|

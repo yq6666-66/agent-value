@@ -1,7 +1,8 @@
 import { AboutStatus } from "@/components/about-status";
+import { DemoFixture } from "@/components/demo-fixture";
 
-// Display only. Every string shown as a version comes from agent-value-core
-// through the Tauri `core_version` command. This file does not compute one.
+// Display only. Versions and scores come from agent-value-core through Tauri
+// commands. This file does not compute them.
 export function App() {
   return (
     <div className="flex min-h-svh flex-col bg-background text-foreground">
@@ -15,9 +16,10 @@ export function App() {
         <section className="flex flex-col gap-2">
           <h2 className="text-base font-medium">占位界面</h2>
           <p className="text-sm leading-6 text-muted-foreground">
-            还没有开始评分。界面只展示本地核心给出的结果，不在这里计算分数。
+            还没有接入你的任务。界面只展示本地核心给出的结果，不在这里计算分数。
           </p>
         </section>
+        <DemoFixture />
         <AboutStatus />
       </main>
     </div>

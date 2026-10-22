@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "allow-core-version",
-    "allow-demo-example6-layer"
+    "allow-demo-example6-layer",
+    "allow-store"
   ]
 }

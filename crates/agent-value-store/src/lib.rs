@@ -202,6 +202,21 @@ impl Store {
         count(&self.conn, "SELECT COUNT(*) FROM arms")
     }
 
+    /// Every arm, in id order. Rows contain only the model and route fields
+    /// stored in `arms` (no key material; the table has no such column).
+    pub fn list_arms(&self) -> StoreResult<Vec<(ArmId, Arm)>> {
+        let mut statement = self.conn.prepare("SELECT id FROM arms ORDER BY id")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.into_iter()
+            .map(|id| {
+                let arm_id = ArmId(id);
+                Ok((arm_id, load_arm(&self.conn, arm_id)?))
+            })
+            .collect()
+    }
+
     // ---- tasks and requests ----
 
     pub fn insert_task(&self, task: &TaskRecord) -> StoreResult<()> {

@@ -5,6 +5,13 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "@/App";
 import { CORE_VERSION_COMMAND } from "@/lib/core-version";
 import { DEMO_EXAMPLE6_LAYER_COMMAND } from "@/lib/demo-example6";
+import {
+  DELETE_ALL_COMMAND,
+  EXPORT_STORE_COMMAND,
+  LIST_ARMS_COMMAND,
+  STORE_DATA_PATH_COMMAND,
+  UPSERT_ARM_COMMAND,
+} from "@/lib/store";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -13,6 +20,22 @@ vi.mock("@tauri-apps/api/core", () => ({
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
 });
+
+function storeFallback(cmd: string): unknown {
+  if (cmd === LIST_ARMS_COMMAND) {
+    return [];
+  }
+  if (cmd === STORE_DATA_PATH_COMMAND) {
+    return "/data/from-shell.sqlite";
+  }
+  if (cmd === EXPORT_STORE_COMMAND) {
+    return { schema_version: 2, table_count: 14, row_count: 0, path: null };
+  }
+  if (cmd === DELETE_ALL_COMMAND || cmd === UPSERT_ARM_COMMAND) {
+    return null;
+  }
+  throw new Error(cmd);
+}
 
 function stubCommands(core: unknown, demo: unknown) {
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
@@ -28,7 +51,7 @@ function stubCommands(core: unknown, demo: unknown) {
       }
       return demo;
     }
-    throw new Error(cmd);
+    return storeFallback(cmd);
   });
 }
 
@@ -80,7 +103,7 @@ test("retries by calling core_version again", async () => {
       }
       return "0.0.0-from-core";
     }
-    throw new Error(cmd);
+    return storeFallback(cmd);
   });
 
   render(<App />);

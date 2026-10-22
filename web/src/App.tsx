@@ -1,9 +1,15 @@
-import { AboutStatus } from "@/components/about-status";
-import { DemoFixture } from "@/components/demo-fixture";
+import { useState } from "react";
 
-// Display only. Versions and scores come from agent-value-core through Tauri
-// commands. This file does not compute them.
+import { AboutStatus } from "@/components/about-status";
+import { ArmsList } from "@/components/arms-list";
+import { DemoFixture } from "@/components/demo-fixture";
+import { SettingsPanel } from "@/components/settings-panel";
+
+// Display only. Versions, the demo anchor, and stored arms come from the
+// shell. This file does not compute scores.
 export function App() {
+  const [refreshToken, setRefreshToken] = useState(0);
+
   return (
     <div className="flex min-h-svh flex-col bg-background text-foreground">
       <header className="border-b">
@@ -13,12 +19,8 @@ export function App() {
         </div>
       </header>
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-6 py-8">
-        <section className="flex flex-col gap-2">
-          <h2 className="text-base font-medium">占位界面</h2>
-          <p className="text-sm leading-6 text-muted-foreground">
-            还没有接入你的任务。界面只展示本地核心给出的结果，不在这里计算分数。
-          </p>
-        </section>
+        <ArmsList refreshToken={refreshToken} />
+        <SettingsPanel onWiped={() => setRefreshToken((token) => token + 1)} />
         <DemoFixture />
         <AboutStatus />
       </main>

@@ -7,6 +7,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.2.0] - 2026-10-23
+
+### Added
+
 - Desktop window: probe consent and recorded results. The first consent
   decision is stored locally and is not asked again. Budget and
   observation-period sentences come from the core constants. A grade band
@@ -34,10 +42,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   authenticity source are on the page. The web view does not recompute
   them. Starting a window stores the real prior task count and the stored
   input versions.
-
-### Changed
-
-### Fixed
 
 ## [0.1.0] - 2026-10-23
 

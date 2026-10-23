@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Scale } from "lucide-react";
 
+import { SelfReportWizard } from "@/components/self-report-wizard";
 import { Button } from "@/components/ui/button";
+import { WeightTrial } from "@/components/weight-trial";
 import { fetchWindowChrome, type WindowChrome, type WindowSample } from "@/lib/window-chrome";
 
 type ChromeState =
@@ -9,10 +11,12 @@ type ChromeState =
   | { status: "ready"; chrome: WindowChrome }
   | { status: "error" };
 
-export function WeightPanel() {
+export function WeightPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [sample, setSample] = useState<WindowSample>("first");
   const [state, setState] = useState<ChromeState>({ status: "loading" });
   const [requestId, setRequestId] = useState(0);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [trialOpen, setTrialOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,6 +81,29 @@ export function WeightPanel() {
           <dd className="text-sm text-muted-foreground">尚未接入</dd>
         </dl>
       ) : null}
+      <div className="flex flex-col gap-3 border-t pt-4">
+        <p className="text-sm text-muted-foreground">五档自报和窗中试算。数字来自核心库。</p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant={wizardOpen ? "default" : "outline"}
+            aria-pressed={wizardOpen}
+            onClick={() => setWizardOpen((open) => !open)}
+          >
+            五档自报
+          </Button>
+          <Button
+            type="button"
+            variant={trialOpen ? "default" : "outline"}
+            aria-pressed={trialOpen}
+            onClick={() => setTrialOpen((open) => !open)}
+          >
+            窗中改权重
+          </Button>
+        </div>
+        {wizardOpen ? <SelfReportWizard key={refreshToken} /> : null}
+        {trialOpen ? <WeightTrial key={refreshToken} /> : null}
+      </div>
     </section>
   );
 }

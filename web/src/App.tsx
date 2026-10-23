@@ -6,8 +6,8 @@ import { DemoFixture } from "@/components/demo-fixture";
 import { SettingsPanel } from "@/components/settings-panel";
 import { ShellLayout } from "@/components/shell-layout";
 
-// Display only. Versions, the demo anchor, stored arms, and window chrome
-// come from the shell. This file does not compute scores.
+// Display only. Versions, the demo anchor, stored arms, window chrome, and the
+// self-report wizard come from the shell. This file does not compute scores.
 export function App() {
   const [refreshToken, setRefreshToken] = useState(0);
 
@@ -19,7 +19,7 @@ export function App() {
           <p className="text-sm text-muted-foreground">本地桌面工具</p>
         </div>
       </header>
-      <ShellLayout>
+      <ShellLayout refreshToken={refreshToken}>
         <div className="flex flex-col gap-6 p-6">
           <ArmsList refreshToken={refreshToken} />
           <SettingsPanel onWiped={() => setRefreshToken((token) => token + 1)} />

@@ -1,0 +1,15 @@
+[[permission]]
+identifier = "allow-elicit"
+description = "Allows the webview to run the five-level self-report and to preview a mid-window weight change."
+commands.allow = [
+  "elicit_start",
+  "elicit_next",
+  "elicit_answer",
+  "elicit_skip",
+  "elicit_regions",
+  "elicit_finish",
+  "elicit_save",
+  "weight_context",
+  "begin_window",
+  "edit_weights",
+]

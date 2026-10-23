@@ -8,6 +8,7 @@
     "allow-core-version",
     "allow-demo-example6-layer",
     "allow-store",
-    "allow-window-chrome"
+    "allow-window-chrome",
+    "allow-elicit"
   ]
 }

@@ -7,6 +7,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Core: `probe::build_openai_chat_plan` returns the OpenAI Chat Completions
+  request bodies for one minimal probe (`det-01`…`det-10`, plus `cap-tool`
+  and `cap-json` when those capabilities are claimed). The `probe_plan`
+  example prints that plan and no longer builds the JSON itself.
+  Thinking-signature and long-context bodies are still not generated.
+  The core still sends no request.
+
 ### Changed
 
 ### Fixed

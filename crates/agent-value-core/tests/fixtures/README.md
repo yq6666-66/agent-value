@@ -22,3 +22,7 @@
   reply text, returned model and usage field names only: no key, no
   headers, no prompts. The expected answers for both seeds come from the
   independent Python reference generator (see `tests/step13_probes.rs`).
+- `openai_chat_plan_20261022.jsonl` and `openai_chat_plan_7.jsonl`: stdout
+  of `probe_plan` for model `probe-model` and claims `tool,json` (seeds
+  20261022 and 7). Compact JSONL, one `{"id","body"}` object per line, the
+  shape `tools/probe_live.py` reads. No key.

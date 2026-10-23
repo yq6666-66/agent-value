@@ -111,8 +111,9 @@ export function FrontierPane({ refreshToken = 0 }: { refreshToken?: number }) {
             <SourceLine label="分类规则" value={result.classification_rules_version} />
             <dt className="text-muted-foreground">真实性</dt>
             <dd className="text-sm break-all">
-              {result.authenticity_grade} · {result.authenticity_source}
-              {result.authenticity_undetermined ? " · 未测定" : ""}
+              {result.authenticity_note
+                ? `${result.authenticity_grade} · ${result.authenticity_source} · ${result.authenticity_note}`
+                : `${result.authenticity_grade} · ${result.authenticity_source}`}
             </dd>
             <dt className="text-muted-foreground">日志</dt>
             <dd className="text-sm break-all">{result.log_integrity_source}</dd>

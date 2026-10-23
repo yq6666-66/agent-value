@@ -45,6 +45,7 @@ export function windowResultFixture(overrides: Partial<WindowResult> = {}): Wind
     authenticity_grade: "B",
     authenticity_source: "SRC-AUTH",
     authenticity_undetermined: true,
+    authenticity_note: null,
     log_integrity_source: "probes-off",
     anchor_tier: "II",
     anchor_headers: ["HEADER-FROM-SHELL"],

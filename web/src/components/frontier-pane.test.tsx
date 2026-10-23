@@ -74,6 +74,7 @@ function resultFor(source: unknown): WindowResult {
     classification_rules_version: "SRC-RULES",
     authenticity_grade: "B",
     authenticity_source: "SRC-AUTH",
+    authenticity_note: "NOTE-FROM-SHELL",
   });
 }
 
@@ -159,7 +160,8 @@ test("source fields from the shell are visible", async () => {
   expect(screen.getByText("SRC-FALLBACK")).toBeTruthy();
   expect(screen.getByText("SRC-PRICE")).toBeTruthy();
   expect(screen.getByText("SRC-RULES")).toBeTruthy();
-  expect(screen.getByText("B · SRC-AUTH · 未测定")).toBeTruthy();
+  expect(screen.getByText("B · SRC-AUTH · NOTE-FROM-SHELL")).toBeTruthy();
+  expect(screen.queryByText("未测定")).toBeNull();
 });
 
 test("shows an empty reason from the shell", async () => {

@@ -12,6 +12,7 @@ import {
   STORE_DATA_PATH_COMMAND,
   UPSERT_ARM_COMMAND,
 } from "@/lib/store";
+import { PROBE_PANEL_COMMAND, SET_PROBE_CONSENT_COMMAND } from "@/lib/probe";
 import { SENSITIVITY_COMMAND } from "@/lib/sensitivity";
 import { WINDOW_CHROME_COMMAND } from "@/lib/window-chrome";
 import { WINDOW_RESULT_COMMAND } from "@/lib/window-result";
@@ -44,6 +45,28 @@ function storeFallback(cmd: string): unknown {
   }
   if (cmd === SENSITIVITY_COMMAND) {
     return sensitivityView();
+  }
+  if (cmd === PROBE_PANEL_COMMAND || cmd === SET_PROBE_CONSENT_COMMAND) {
+    return {
+      source: "store",
+      fixture: false,
+      decided: true,
+      accepted: false,
+      consent_prompt: "CONSENT-STUB",
+      monthly_budget_label: "BUDGET-STUB",
+      spent_label: "SPENT-STUB",
+      estimate_label: "ESTIMATE-STUB",
+      budget_decision: "allow",
+      over_budget_prompt: null,
+      observation: "pending",
+      observation_label: "OBS-STUB",
+      grade_run_days_label: "DAYS-STUB",
+      launch: "blocked-consent",
+      launch_label: "LAUNCH-STUB",
+      sends_http: false,
+      arms: [],
+      empty_reason: null,
+    };
   }
   if (cmd === WINDOW_RESULT_COMMAND) {
     return windowResultFixture({

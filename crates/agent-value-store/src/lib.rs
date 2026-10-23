@@ -27,7 +27,10 @@ use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
 use agent_value_core::cells::{CellId, CellWeights};
 use agent_value_core::outcome::{Judgement, Rule};
 use agent_value_core::privacy::{has_secret_prefix, TextFacts, RETENTION_DAYS};
-use agent_value_core::records::{BehaviorEvent, Outcome, ProbeResult, RequestRecord, TaskRecord};
+use agent_value_core::records::{
+    BehaviorEvent, MicroYuan, Outcome, ProbeClass, ProbeResult, ProbeVerdict, RequestRecord,
+    TaskRecord,
+};
 use agent_value_core::scope::ScopeId;
 use agent_value_core::weights::{
     Evidence, FiveLevel, FrozenWindowParts, SelfReportAnswer, TrialResolution, VersionId,
@@ -55,6 +58,13 @@ const MS_PER_DAY: i64 = 86_400_000;
 /// Row id of an arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ArmId(pub i64);
+
+/// The first probe-consent decision stored for this database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbeConsent {
+    pub accepted: bool,
+    pub at_ms: i64,
+}
 
 /// Kinds of versioned configuration frozen at window start (§8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,6 +640,96 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Every stored probe result, ordered by arm, time, then id.
+    pub fn list_probe_results(&self) -> StoreResult<Vec<ProbeResult>> {
+        let mut st = self.conn.prepare(
+            "SELECT probe_id, probe_version, arm_id, at_ms, class, verdict, hard_failure,
+                    evidence_summary
+             FROM probe_results ORDER BY arm_id, at_ms, id",
+        )?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (probe_id, probe_version, arm_id, at_ms, class, verdict, hard, evidence) in rows {
+            let result = ProbeResult {
+                probe_id,
+                probe_version,
+                arm: load_arm(&self.conn, ArmId(arm_id))?,
+                at_ms,
+                class: ProbeClass::parse(&class)?,
+                verdict: ProbeVerdict::parse(&verdict)?,
+                hard_failure: hard != 0,
+                evidence_summary: evidence,
+            };
+            result.validate()?;
+            out.push(result);
+        }
+        Ok(out)
+    }
+
+    /// The first probe-consent decision, if one was stored.
+    pub fn probe_consent(&self) -> StoreResult<Option<ProbeConsent>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT accepted, at_ms FROM probe_consent WHERE id = 1",
+                [],
+                |r| {
+                    let accepted: i64 = r.get(0)?;
+                    Ok(ProbeConsent {
+                        accepted: accepted != 0,
+                        at_ms: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Records the first consent decision. A later call returns the stored
+    /// row and does not change it.
+    pub fn set_probe_consent(&self, accepted: bool, at_ms: i64) -> StoreResult<ProbeConsent> {
+        if let Some(existing) = self.probe_consent()? {
+            return Ok(existing);
+        }
+        self.conn.execute(
+            "INSERT INTO probe_consent (id, accepted, at_ms) VALUES (1, ?1, ?2)",
+            params![i64::from(accepted), at_ms],
+        )?;
+        Ok(ProbeConsent { accepted, at_ms })
+    }
+
+    /// Records money already spent on probes. This does not send a request.
+    pub fn record_probe_charge(&self, at_ms: i64, charged: MicroYuan) -> StoreResult<()> {
+        self.conn.execute(
+            "INSERT INTO probe_charges (at_ms, charged_micro_yuan) VALUES (?1, ?2)",
+            params![at_ms, charged.micros()],
+        )?;
+        Ok(())
+    }
+
+    /// Probe charges as `(at_ms, micro-yuan)`, ordered by time.
+    pub fn probe_charges(&self) -> StoreResult<Vec<(i64, i64)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT at_ms, charged_micro_yuan FROM probe_charges ORDER BY at_ms, id")?;
+        let rows = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Stored run days of probe results for `arm`, sorted.

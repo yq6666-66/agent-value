@@ -6,7 +6,7 @@
 pub(crate) const PROBE_CELL_SQL: &str = "__probe__";
 
 /// Migration `i` brings the schema from version `i` to `i + 1`.
-pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2];
+pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE arms (
@@ -207,6 +207,8 @@ pub(crate) const TABLES: &[&str] = &[
     "behavior_events",
     "event_available_arms",
     "probe_results",
+    "probe_consent",
+    "probe_charges",
     "cell_weights",
     "weight_versions",
     "weight_evidence",
@@ -237,4 +239,21 @@ CREATE TABLE outcome_judgements (
 );
 CREATE TRIGGER outcome_judgements_immutable BEFORE UPDATE ON outcome_judgements
 BEGIN SELECT RAISE(ABORT, 'outcome_judgements rows are immutable'); END;
+"#;
+
+/// First-time probe consent and recorded probe charges. Consent is one row
+/// and is not updated: the first decision stays. Charges are amounts only.
+const MIGRATION_3: &str = r#"
+CREATE TABLE probe_consent (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)),
+    at_ms   INTEGER NOT NULL
+);
+
+CREATE TABLE probe_charges (
+    id                   INTEGER PRIMARY KEY,
+    at_ms                INTEGER NOT NULL,
+    charged_micro_yuan   INTEGER NOT NULL CHECK (charged_micro_yuan >= 0)
+);
+CREATE INDEX probe_charges_time ON probe_charges (at_ms);
 "#;

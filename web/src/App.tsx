@@ -3,6 +3,7 @@ import { useState } from "react";
 import { AboutStatus } from "@/components/about-status";
 import { ArmsList } from "@/components/arms-list";
 import { DemoFixture } from "@/components/demo-fixture";
+import { ProbePanel } from "@/components/probe-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { ShellLayout } from "@/components/shell-layout";
 
@@ -21,6 +22,7 @@ export function App() {
       </header>
       <ShellLayout refreshToken={refreshToken}>
         <div className="flex flex-col gap-6 p-6">
+          <ProbePanel refreshToken={refreshToken} />
           <ArmsList refreshToken={refreshToken} />
           <SettingsPanel onWiped={() => setRefreshToken((token) => token + 1)} />
           <DemoFixture />

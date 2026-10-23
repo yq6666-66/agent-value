@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::arm::Arm;
+use crate::constants::PROBE_MONTHLY_BUDGET_YUAN;
 use crate::eligibility::AuthenticityGrade;
 use crate::error::{CoreError, Result};
 use crate::probe::VendorTables;
@@ -19,6 +20,9 @@ use crate::runday::RunDay;
 pub const GRADE_RUN_DAYS: usize = 2;
 /// §11.3 observation period: 2 run days of positive and negative controls.
 pub const OBSERVATION_RUN_DAYS: usize = 2;
+/// Shown beside a grade band while the observation period is still pending.
+/// The band is display-only until the controls validate the thresholds.
+pub const GRADE_REFERENCE_ONLY_LABEL: &str = "仅供参考";
 /// §11.3′ "model missing > 0.2" flag, as the integer test 5·M > P.
 const MISSING_FLAG_DEN: u64 = 5;
 /// §11.4 pairing window: ±1 hour.
@@ -187,6 +191,38 @@ pub enum Observation {
     Validated,
 }
 
+impl Observation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Validated => "validated",
+        }
+    }
+
+    /// Copy for the panel. The run-day count is [`OBSERVATION_RUN_DAYS`].
+    pub fn label(self) -> String {
+        match self {
+            Self::Pending => format!(
+                "观察期未校验：正对照与负对照各 {OBSERVATION_RUN_DAYS} 个运行日。档位{GRADE_REFERENCE_ONLY_LABEL}。"
+            ),
+            Self::Validated => {
+                format!("观察期已校验：正对照与负对照各满 {OBSERVATION_RUN_DAYS} 个运行日。")
+            }
+        }
+    }
+}
+
+/// A graded band is reference-only until the observation period is validated.
+/// Official direct is not a grade band.
+pub fn grade_reference_only(observation: Observation, status: AuthStatus) -> bool {
+    observation == Observation::Pending && matches!(status, AuthStatus::Graded(_))
+}
+
+/// How many run days A and C require. The count is [`GRADE_RUN_DAYS`].
+pub fn grade_run_days_label() -> String {
+    format!("档位运行日：A 与 C 至少 {GRADE_RUN_DAYS} 个运行日")
+}
+
 /// Observation-period check (DECISIONS 13.8). `positive`: the official
 /// direct route of the model; `negative`: a smaller model presented as the
 /// tested model, compared with the tested model's baseline.
@@ -224,6 +260,21 @@ pub enum AuthLabel {
     UnverifiedProbesOff,
     /// Observation period: the grade is shown only (DECISIONS 13.8).
     ObservationOnly,
+}
+
+impl AuthLabel {
+    /// The display phrase from §5 rule 4 and §11.3. The shell shows this
+    /// string; it does not invent another one.
+    pub fn zh(self) -> &'static str {
+        match self {
+            Self::OfficialDirect => "官方直连",
+            Self::OfficialRouteAnomaly => "官方路线异常",
+            Self::SuspectedInconsistent => "与基线不一致的嫌疑",
+            Self::Unverified => "未验证",
+            Self::UnverifiedProbesOff => "未验证（探针已关闭）",
+            Self::ObservationOnly => "真实性未定",
+        }
+    }
 }
 
 /// Gate context.
@@ -429,6 +480,35 @@ pub fn probe_budget(
     })
 }
 
+/// Monthly probe budget as a display label. The amount is
+/// [`PROBE_MONTHLY_BUDGET_YUAN`].
+pub fn monthly_budget_label() -> Result<String> {
+    let amount = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN)?;
+    Ok(format!(
+        "探针月预算 {} 元（北京时间自然月）",
+        amount.format_yuan()
+    ))
+}
+
+/// Shown when [`probe_budget`] returns [`BudgetDecision::Stop`].
+/// The three amounts are the spent total, the next-run estimate, and
+/// [`PROBE_MONTHLY_BUDGET_YUAN`]. `year` and `month` are a Beijing-time
+/// calendar month from [`budget_month`].
+pub fn over_budget_label(
+    spent: MicroYuan,
+    estimate: MicroYuan,
+    year: i32,
+    month: u8,
+) -> Result<String> {
+    let budget = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN)?;
+    Ok(format!(
+        "已花 {} 元，这次估价 {} 元，月预算 {} 元（北京时间 {year}-{month:02}）。本月停止探测。",
+        spent.format_yuan(),
+        estimate.format_yuan(),
+        budget.format_yuan()
+    ))
+}
+
 /// Beijing-time calendar month (year, month) of a timestamp, the budget period.
 pub fn budget_month(at_ms: i64) -> Result<(i32, u8)> {
     let d = RunDay::from_unix_ms(at_ms)?;
@@ -532,4 +612,81 @@ pub fn route_overhead(route: &[TimingSample], official: &[TimingSample]) -> Resu
         total_ms: d(total(&r), total(&near)),
         speed_tps: d(speed(&r), speed(&near)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observation_copy_uses_the_run_day_constant() {
+        assert_eq!(
+            Observation::Pending.label(),
+            format!(
+                "观察期未校验：正对照与负对照各 {OBSERVATION_RUN_DAYS} 个运行日。档位{GRADE_REFERENCE_ONLY_LABEL}。"
+            )
+        );
+        assert_eq!(
+            Observation::Validated.label(),
+            format!("观察期已校验：正对照与负对照各满 {OBSERVATION_RUN_DAYS} 个运行日。")
+        );
+        assert!(!Observation::Validated
+            .label()
+            .contains(GRADE_REFERENCE_ONLY_LABEL));
+        assert_eq!(
+            grade_run_days_label(),
+            format!("档位运行日：A 与 C 至少 {GRADE_RUN_DAYS} 个运行日")
+        );
+    }
+
+    #[test]
+    fn reference_only_applies_to_pending_grades() {
+        assert!(grade_reference_only(
+            Observation::Pending,
+            AuthStatus::Graded(AuthenticityGrade::B)
+        ));
+        assert!(grade_reference_only(
+            Observation::Pending,
+            AuthStatus::Graded(AuthenticityGrade::A)
+        ));
+        assert!(!grade_reference_only(
+            Observation::Pending,
+            AuthStatus::OfficialDirect
+        ));
+        assert!(!grade_reference_only(
+            Observation::Validated,
+            AuthStatus::Graded(AuthenticityGrade::C)
+        ));
+    }
+
+    #[test]
+    fn auth_labels_match_the_spec_phrases() {
+        assert_eq!(AuthLabel::OfficialDirect.zh(), "官方直连");
+        assert_eq!(AuthLabel::OfficialRouteAnomaly.zh(), "官方路线异常");
+        assert_eq!(AuthLabel::SuspectedInconsistent.zh(), "与基线不一致的嫌疑");
+        assert_eq!(AuthLabel::Unverified.zh(), "未验证");
+        assert_eq!(AuthLabel::UnverifiedProbesOff.zh(), "未验证（探针已关闭）");
+        assert_eq!(AuthLabel::ObservationOnly.zh(), "真实性未定");
+    }
+
+    #[test]
+    fn budget_labels_use_the_monthly_constant() {
+        let budget = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+        assert_eq!(
+            monthly_budget_label().unwrap(),
+            format!("探针月预算 {} 元（北京时间自然月）", budget.format_yuan())
+        );
+        let spent = MicroYuan::new(9_990_000).unwrap();
+        let estimate = MicroYuan::from_yuan(0.02).unwrap();
+        let text = over_budget_label(spent, estimate, 2026, 10).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "已花 {} 元，这次估价 {} 元，月预算 {} 元（北京时间 2026-10）。本月停止探测。",
+                spent.format_yuan(),
+                estimate.format_yuan(),
+                budget.format_yuan()
+            )
+        );
+    }
 }

@@ -50,6 +50,7 @@ export type WindowResult = {
   authenticity_grade: string;
   authenticity_source: string;
   authenticity_undetermined: boolean;
+  authenticity_note: string | null;
   log_integrity_source: string;
   anchor_tier: string | null;
   anchor_headers: string[];
@@ -173,6 +174,7 @@ export function windowResult(value: unknown): WindowResult {
     authenticity_grade: text(row.authenticity_grade, WINDOW_RESULT_COMMAND),
     authenticity_source: text(row.authenticity_source, WINDOW_RESULT_COMMAND),
     authenticity_undetermined: flag(row.authenticity_undetermined, WINDOW_RESULT_COMMAND),
+    authenticity_note: optionalText(row.authenticity_note, WINDOW_RESULT_COMMAND),
     log_integrity_source: text(row.log_integrity_source, WINDOW_RESULT_COMMAND),
     anchor_tier: optionalText(row.anchor_tier, WINDOW_RESULT_COMMAND),
     anchor_headers: stringList(row.anchor_headers, WINDOW_RESULT_COMMAND),

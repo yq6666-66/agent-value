@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_value_core::anchor::{certify_reference_layer, layer_value, AnchorTier, TierIIIReason};
 use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
+use agent_value_core::authenticity::{AuthLabel, GRADE_REFERENCE_ONLY_LABEL};
 use agent_value_core::cell_values::{
     cell_values, unit_price, CellInputs, CellValues, DimInputs, PriceSource, Role, Triple,
 };
@@ -86,6 +87,9 @@ pub struct WindowResult {
     pub authenticity_grade: String,
     pub authenticity_source: String,
     pub authenticity_undetermined: bool,
+    /// Core phrases for an undetermined grade band. Absent when the band is
+    /// not reference-only.
+    pub authenticity_note: Option<String>,
     pub log_integrity_source: String,
     pub anchor_tier: Option<String>,
     pub anchor_headers: Vec<String>,
@@ -185,6 +189,26 @@ fn omega_text(source: OmegaSource) -> &'static str {
     }
 }
 
+fn mark_probes_off(view: &mut WindowResult) {
+    view.authenticity_grade = AuthenticityGrade::B.as_str().to_string();
+    view.authenticity_source = PROBES_OFF.to_string();
+    view.authenticity_undetermined = true;
+    view.authenticity_note = authenticity_note(AuthenticityGrade::B, PROBES_OFF);
+    view.log_integrity_source = PROBES_OFF.to_string();
+}
+
+fn authenticity_note(grade: AuthenticityGrade, source: &str) -> Option<String> {
+    if !grade.undetermined() {
+        return None;
+    }
+    let band = if source == PROBES_OFF {
+        AuthLabel::UnverifiedProbesOff.zh()
+    } else {
+        AuthLabel::Unverified.zh()
+    };
+    Some(format!("{band} · {GRADE_REFERENCE_ONLY_LABEL}"))
+}
+
 fn price_text(source: PriceSource) -> &'static str {
     match source {
         PriceSource::Shrunk => "shrunk",
@@ -231,6 +255,7 @@ fn blank(source: &str, fixture: bool) -> WindowResult {
         authenticity_grade: String::new(),
         authenticity_source: String::new(),
         authenticity_undetermined: false,
+        authenticity_note: None,
         log_integrity_source: String::new(),
         anchor_tier: None,
         anchor_headers: Vec::new(),
@@ -600,6 +625,8 @@ fn score(snapshot: &Snapshot) -> Result<WindowResult, String> {
     view.authenticity_grade = snapshot.authenticity.as_str().to_string();
     view.authenticity_source = snapshot.authenticity_source.clone();
     view.authenticity_undetermined = snapshot.authenticity.undetermined();
+    view.authenticity_note =
+        authenticity_note(snapshot.authenticity, &snapshot.authenticity_source);
     view.log_integrity_source = snapshot.log_integrity_source.clone();
     view.anchor_tier = Some(tier_text(anchor.tier).to_string());
     view.anchor_headers = headers_for(anchor.tier, &anchor.tier_iii_reasons, &anchor);
@@ -1301,19 +1328,13 @@ fn load_store(app: &AppState) -> Result<StoreLoad, String> {
         else {
             let mut view = blank("store", false);
             view.empty_reason = Some("还没有开始的窗".to_string());
-            view.authenticity_grade = AuthenticityGrade::B.as_str().to_string();
-            view.authenticity_source = PROBES_OFF.to_string();
-            view.authenticity_undetermined = true;
-            view.log_integrity_source = PROBES_OFF.to_string();
+            mark_probes_off(&mut view);
             return Ok(StoreLoad::Empty(Box::new(view)));
         };
         let Some(index) = ledger.last_frozen() else {
             let mut view = blank("store", false);
             view.empty_reason = Some("还没有开始的窗".to_string());
-            view.authenticity_grade = AuthenticityGrade::B.as_str().to_string();
-            view.authenticity_source = PROBES_OFF.to_string();
-            view.authenticity_undetermined = true;
-            view.log_integrity_source = PROBES_OFF.to_string();
+            mark_probes_off(&mut view);
             return Ok(StoreLoad::Empty(Box::new(view)));
         };
         let frozen = ledger.frozen(index).map_err(|err| err.to_string())?;
@@ -1381,10 +1402,7 @@ fn score_store_window(
             view.classification_rules_version =
                 frozen.inputs().classification_rules_version.clone();
             view.cell_weights_version = frozen.inputs().cell_weights_version.clone();
-            view.authenticity_grade = AuthenticityGrade::B.as_str().to_string();
-            view.authenticity_source = PROBES_OFF.to_string();
-            view.authenticity_undetermined = true;
-            view.log_integrity_source = PROBES_OFF.to_string();
+            mark_probes_off(&mut view);
             return Ok(StoreLoad::Empty(Box::new(view)));
         }
         let previous = if index == WindowIndex::FIRST {
@@ -1738,6 +1756,12 @@ mod tests {
         assert_eq!(view.reference_version.as_deref(), Some("ref-v1"));
         assert_eq!(view.authenticity_source, "probes-off");
         assert!(view.authenticity_undetermined);
+        let note = format!(
+            "{} · {}",
+            agent_value_core::authenticity::AuthLabel::UnverifiedProbesOff.zh(),
+            agent_value_core::authenticity::GRADE_REFERENCE_ONLY_LABEL
+        );
+        assert_eq!(view.authenticity_note.as_deref(), Some(note.as_str()));
         assert_eq!(view.weight_source.as_deref(), Some("default"));
         let row = view
             .arms

@@ -8,21 +8,21 @@ The scoring rules follow a written specification (v22) plus a decision record fo
 
 ## Status
 
-There is no usable app yet. The formulas below exist as a tested Rust library, and the local database exists as a separate crate. The desktop window reads the core version and example 6's diagnostic anchor from the shell, and it can list and add arms in the local database, show that file's path, export, and delete all rows. The main area is a resizable frontier beside a weight panel. In a first window that panel shows the core's first-window label and does not show V. Nothing of yours is scored end to end.
+A Tauri desktop app can be built and run locally from source. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display previously recorded or replayed probe results. This implementation does not make real HTTP probe requests. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only. The desktop app stores its data locally. You can list and add arms, see the database path, export, and delete all rows; the window-results view shows a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
 
 | Spec step | What it covers | Status |
 |---|---|---|
 | 1 | Constants, scoring scopes, arms, time windows, weight versions | Implemented |
-| 2 | Local SQLite data model and privacy rules | Implemented (not yet connected to the desktop shell) |
+| 2 | Local SQLite data model and privacy rules | Implemented (store is connected for arms list/add, path, export and delete all rows) |
 | 3 | Task outcome rules and quality signals | Implemented |
 | 4-5 | Cell states and cell weights $\omega_u$; prior, posterior and retry model | Implemented |
 | 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented |
 | 8 | Eligibility gates $\mathcal E_d$ | Implemented |
-| 9 | Frontier and diagnostic table | Implemented (per layer and overall; the display is planned) |
-| 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Implemented (no display layer yet) |
-| 11 | Weight elicitation from your answers and behaviour | Implemented (library only; no question screen or suggestion display yet) |
-| 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Implemented (library only) |
-| 13 | Probes and relay checks | Implemented (library and a local run script; not yet connected to the data layer or the app) |
+| 9 | Frontier and diagnostic table | Core implemented; desktop shows coding-scope window results (frontier, eligibility, recommendation, authenticity / weight sources). Shell reads store + asks core; webview does not recompute. |
+| 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Core implemented; official picks flow through the same window-results path where applicable. |
+| 11 | Weight elicitation from your answers and behaviour | Core + desktop five-level self-report wizard. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version). |
+| 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Core + desktop sensitivity panel (winner map, weight-robust label, flip sentences from core). First window / no-anchor layer: chart withheld. |
+| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show previously recorded or replayed probe results, including the checked-in replay fixture; does not send probe HTTP. |
 
 Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -32,7 +32,7 @@ Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 - **Arm.** The unit being compared: a model plus a route. A route is the API host, the protocol (for example Anthropic Messages or OpenAI Chat Completions) and the agent or client. If any of the three differs, it is a different arm. Changing the API key on the same route does not make a new arm.
 - **Cell and layer.** Tasks are grouped into cells $u$ by subtype (for coding by default: fix, add, refactor, explain and review, other). By default there is one layer; optionally, tasks can be split into layers $d$ by size (small, medium, large), measured only on your own input, and a cell is then a subtype within a layer. Each cell has a weight $\omega_u$ equal to its share of the layer's tasks in the previous window.
 - **Task.** One stretch from your submission to delivery, abandonment or cancellation.
-- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are in the next item). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated. The library computes the frontier, but showing it with that label is planned.
+- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are in the next item). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated. The desktop shows that first-window frontier with the not-yet-calibrated label; $V$ stays withheld.
 - **Reference arm $R_k$ and fallback arm $F_k$.** $R_k$ is the arm every other arm is compared against. $F_k$ is the arm a task is handed to after an arm fails $K$ times. The reference and fallback arms do not themselves hand off to anyone. $R_k$ is the first available arm in this order: the arm you chose, the scope's official direct arm, and the arm with the most tasks in the previous window. An arm is available if in the previous window it passed the authenticity gate and had no $F_{\rm bad}$ cell; equal task counts go to the arm whose id sorts first. If several official direct arms exist they are tried in order of previous-window tasks; when the one with the most tasks is unavailable, the next official direct arm is used, and the most-tasks arm overall is used only when no official direct arm is available. By default $F_k=R_k$. You can choose a different $F_k$. It is kept only if in the previous window it passed the authenticity gate, had no $F_{\rm bad}$ cell, was tier I or tier II (section 5) in every positive-weight layer, and had at least 3 ratings ($n_q\ge3$) in every positive-weight cell. Otherwise, including when it has no positive-weight layer at all, $F_k$ reverts to $R_k$ and the version record notes this with the reasons.
 
 ## How scoring works
@@ -374,7 +374,7 @@ There is no way to sort by diagnostic $V$.
 
 ### 8. Frontier
 
-*Spec §6. Implemented as library functions; the display is planned.*
+*Spec §6. Core implemented; desktop shows coding-scope window results (frontier, eligibility, recommendation, authenticity / weight sources). Shell reads store + asks core; webview does not recompute.*
 
 Among the eligible arms of a layer, arm $j$ dominates arm $i$ when it is at least as good in every dimension (cost and time no higher, quality no lower) and strictly better in at least one. The weights $a$, $b$, $g$ play no part here.
 
@@ -422,7 +422,7 @@ If any positive-weight layer is tier III, the overall reference is $\mathrm{NA}$
 
 ### 9. Weights from your answers and behaviour
 
-*Spec §10. Implemented as library functions; the question screen and the suggestion display are planned.*
+*Spec §10. Core + desktop five-level self-report wizard. The wizard still uses pairwise A/B tradeoff questions. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version).*
 
 **Self-report.** You answer pairwise questions. Each question offers two options, A and B, that differ in two of cost, time and quality, pulling in opposite directions; the third dimension is equal. With the noise floors $c_0$, $t_0$, $\epsilon$, the ratios between A and B are $\rho_C=(C_A+c_0)/(C_B+c_0)$, $\rho_T=(T_A+t_0)/(T_B+t_0)$ and $\rho_D=(1-Q_A+\epsilon)/(1-Q_B+\epsilon)$; the equal dimension has ratio 1.
 
@@ -491,7 +491,7 @@ $$
 
 ### 10. Weight sensitivity
 
-*Spec §12. Implemented as library functions; the winner map display is planned.*
+*Spec §12. Core + desktop sensitivity panel (winner map, weight-robust label, flip sentences from core). First window / no-anchor layer: chart withheld.*
 
 This shows how the result would change with other weights. Everything here is computed at fixed values: one layer (or the scope's overall result), its eligible arms $\mathcal E_d$, each arm's cost, time and quality, and the fallback arm's cell values. $W_k$ below is the weights in effect from section 9.
 
@@ -560,7 +560,7 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 ### 11. Probes and relay checks
 
-*Spec §11. Implemented as library functions plus a local script. The core only judges exchanges that were already recorded; it sends no requests itself. Not yet connected to the data layer, the app or scheduled re-runs.*
+*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture; it does not send probe HTTP. Writing new probe results into the data layer (hard-failure days, budget spending) and in-app / scheduled live HTTP probes are still planned.*
 
 This checks whether a route really serves the model it claims. The probe results feed only the authenticity part of gate 4 in section 6, and never enter any score; the log-integrity check below works on the requests recorded in the window.
 
@@ -622,8 +622,8 @@ A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-2
 
 These parts of the specification are not implemented:
 
-- **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6). Showing the first window's frontier labelled as not yet calibrated is also planned.
-- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); connecting probes to the data layer (storing probe results, hard-failure days from passive logs, recording budget spending); the switch in the app (asked at first launch, with a cost estimate) and scheduled re-runs; generating thinking-signature and long-context requests.
+- **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6).
+- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); connecting probes to the data layer (writing new probe results into the data layer, hard-failure days from passive logs, recording budget spending); in-app / scheduled live HTTP probes; generating thinking-signature and long-context requests. Probe grade thresholds remain provisional until the observation period is complete.
 
 ### Constants
 
@@ -670,7 +670,7 @@ These parts of the specification are not implemented:
 
 ### For users
 
-Planned. There is no app to install or run yet. The plan is a desktop app that stays in the system tray.
+The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results without making real HTTP probe requests. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
 
 ### For developers
 
@@ -703,7 +703,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` uses only the Python standard library. It reads the key only from the named environment variable or the local git-ignored `.env`, and never writes it to any output: before writing it checks the raw text, the escaped text and the JSON-escaped form. If it finds the key in what it is about to write, it refuses to write and exits. It does not record request headers. `--base` must be https, except for a local mock server.
 
-Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell has only been compile-checked so far; it has not been run or packaged.
+Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. To launch it locally, run `cargo tauri dev`, or run the built binary. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell includes the window-results, self-report, sensitivity and probe consent/results UI described above. It is not packaged for distribution.
 
 ## Layout
 
@@ -711,9 +711,9 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 |---|---|
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
-| `src-tauri/` | Minimal Tauri 2 desktop shell that links the core crate. Not a member of the default Cargo workspace. |
+| `src-tauri/` | Tauri 2 desktop shell that links the core crate and includes the window-results, self-report, sensitivity, and probe consent/results UI. Not a member of the default Cargo workspace. |
 | `tools/` | Scripts run by hand on your own machine; only their tests run in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. `test_probe_live.py` (standard-library unittest) checks it against a mock server on 127.0.0.1. |
-| `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. The About area shows the core version returned by the shell. |
+| `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity and probe consent/results. The About area shows the core version returned by the shell. |
 
 ## Secrets and privacy
 

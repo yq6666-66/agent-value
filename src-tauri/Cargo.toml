@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 agent-value-core = { path = "../crates/agent-value-core" }
 agent-value-store = { path = "../crates/agent-value-store" }
+# In-process probe sender. Panel commands do not call it yet.
+agent-value-probe-http = { path = "../crates/agent-value-probe-http" }
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

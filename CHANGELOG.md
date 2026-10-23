@@ -15,6 +15,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A body cannot include both a function tool and `response_format`:
   `OpenAiChatBody::try_new` and `to_json` reject that pair. The core
   still sends no request.
+- Shell: `agent-value-probe-http` is an in-process probe HTTP sender.
+  It reads a bearer token by variable name from the environment or a
+  gitignored `.env`, requires https except for a local mock, and maps
+  timeout / 429 / 4xx / 5xx / unparseable bodies to the same replay kinds
+  as `tools/probe_live.py`. It refuses to write replay output when the
+  key would appear. The probe panel still does not send. The Python
+  runner remains the command-line tool.
 
 ### Changed
 

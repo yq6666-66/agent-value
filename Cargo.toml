@@ -1,9 +1,15 @@
 [workspace]
 resolver = "2"
-# The pure-Rust core and the SQLite store are the workspace members, so
-# `cargo test --workspace` never needs WebKitGTK or other system GUI libs.
-# The Tauri shell in src-tauri/ is a separate package; see README "Building".
-members = ["crates/agent-value-core", "crates/agent-value-store"]
+# The pure-Rust core, the SQLite store, and the probe HTTP sender are the
+# workspace members, so `cargo test --workspace` never needs WebKitGTK or
+# other system GUI libs. The Tauri shell in src-tauri/ is a separate package
+# and is the only crate that depends on the probe HTTP sender; see README
+# "Building".
+members = [
+    "crates/agent-value-core",
+    "crates/agent-value-store",
+    "crates/agent-value-probe-http",
+]
 exclude = ["src-tauri"]
 
 [workspace.package]

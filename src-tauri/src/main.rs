@@ -4,6 +4,9 @@
 
 mod demo_example6;
 mod elicit_cmd;
+// Linked so the shell has the sender. Commands do not call it yet.
+#[allow(dead_code)]
+mod probe_http;
 mod probe_panel;
 mod sensitivity_panel;
 mod store_cmd;

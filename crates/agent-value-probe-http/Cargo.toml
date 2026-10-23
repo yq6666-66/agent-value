@@ -1,0 +1,19 @@
+[package]
+name = "agent-value-probe-http"
+description = "In-process HTTPS sender for desktop probe runs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pinned to the 3.2 API this crate is written against. rustls only: no
+# system OpenSSL.
+ureq = { version = "=3.2.1", default-features = false, features = ["rustls"] }
+url = "2.5"
+
+[dev-dependencies]
+agent-value-core = { path = "../agent-value-core" }

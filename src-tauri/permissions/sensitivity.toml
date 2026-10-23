@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-sensitivity"
+description = "Allows the webview to read a sensitivity panel. The winner map, Ω copy, and flip sentences come from the core."
+commands.allow = ["sensitivity"]

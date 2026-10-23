@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChartNoAxesCombined } from "lucide-react";
 
+import { SensitivityPanel } from "@/components/sensitivity-panel";
 import { Button } from "@/components/ui/button";
 import {
   fetchWindowResult,
@@ -157,12 +158,14 @@ export function FrontierPane({ refreshToken = 0 }: { refreshToken?: number }) {
                   <th className="px-3 py-2 text-left font-normal">质量</th>
                   <th className="px-3 py-2 text-left font-normal">V</th>
                   <th className="px-3 py-2 text-left font-normal">前沿</th>
+                  <th className="px-3 py-2 text-left font-normal">稳健</th>
+                  <th className="px-3 py-2 text-left font-normal">推荐</th>
                 </tr>
               </thead>
               <tbody>
                 {result.arms.length === 0 ? (
                   <tr>
-                    <td className="px-3 py-6 text-muted-foreground" colSpan={6}>
+                    <td className="px-3 py-6 text-muted-foreground" colSpan={8}>
                       空
                     </td>
                   </tr>
@@ -175,6 +178,8 @@ export function FrontierPane({ refreshToken = 0 }: { refreshToken?: number }) {
                       <td className="px-3 py-2 font-mono">{shown(arm.quality_text)}</td>
                       <td className="px-3 py-2 font-mono">{shown(arm.v_text)}</td>
                       <td className="px-3 py-2">{arm.on_off ? "是" : "—"}</td>
+                      <td className="px-3 py-2">{arm.on_rob ? "是" : "—"}</td>
+                      <td className="px-3 py-2">{arm.on_rec ? "是" : "—"}</td>
                     </tr>
                   ))
                 )}
@@ -183,6 +188,7 @@ export function FrontierPane({ refreshToken = 0 }: { refreshToken?: number }) {
           </div>
         </>
       ) : null}
+      <SensitivityPanel windowSource={source} />
     </section>
   );
 }

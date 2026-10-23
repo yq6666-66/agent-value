@@ -12,8 +12,10 @@ import {
   STORE_DATA_PATH_COMMAND,
   UPSERT_ARM_COMMAND,
 } from "@/lib/store";
+import { SENSITIVITY_COMMAND } from "@/lib/sensitivity";
 import { WINDOW_CHROME_COMMAND } from "@/lib/window-chrome";
 import { WINDOW_RESULT_COMMAND } from "@/lib/window-result";
+import { sensitivityView } from "@/test-sensitivity";
 import { windowResultFixture } from "@/test-window-result";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -39,6 +41,9 @@ function storeFallback(cmd: string): unknown {
   }
   if (cmd === WINDOW_CHROME_COMMAND) {
     return { window_index: 0, is_first: true, first_window_label: "LABEL-FROM-CORE" };
+  }
+  if (cmd === SENSITIVITY_COMMAND) {
+    return sensitivityView();
   }
   if (cmd === WINDOW_RESULT_COMMAND) {
     return windowResultFixture({

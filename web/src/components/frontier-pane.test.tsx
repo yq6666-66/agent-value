@@ -3,7 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { FrontierPane } from "@/components/frontier-pane";
+import { SENSITIVITY_COMMAND } from "@/lib/sensitivity";
 import { WINDOW_RESULT_COMMAND, type WindowResult } from "@/lib/window-result";
+import { sensitivityView } from "@/test-sensitivity";
 import { armView, windowResultFixture } from "@/test-window-result";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -19,6 +21,15 @@ function sourceOf(args: unknown): unknown {
     return args.source;
   }
   return undefined;
+}
+
+function install(windowResultFor: (cmd: string, args: unknown) => unknown) {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+    if (cmd === SENSITIVITY_COMMAND) {
+      return sensitivityView();
+    }
+    return windowResultFor(cmd, args);
+  });
 }
 
 function resultFor(source: unknown): WindowResult {
@@ -67,7 +78,7 @@ function resultFor(source: unknown): WindowResult {
 }
 
 test("shows the shell anchor string and not a hardcoded example value", async () => {
-  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+  install(async (cmd: string, args) => {
     if (cmd === WINDOW_RESULT_COMMAND) {
       return resultFor(sourceOf(args));
     }
@@ -83,7 +94,7 @@ test("shows the shell anchor string and not a hardcoded example value", async ()
 });
 
 test("example 6 shows a different shell string and the fixture label", async () => {
-  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+  install(async (cmd: string, args) => {
     if (cmd === WINDOW_RESULT_COMMAND) {
       return resultFor(sourceOf(args));
     }
@@ -102,7 +113,7 @@ test("example 6 shows a different shell string and the fixture label", async () 
 });
 
 test("a tie lists every official top id", async () => {
-  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+  install(async (cmd: string, args) => {
     if (cmd === WINDOW_RESULT_COMMAND) {
       return resultFor(sourceOf(args));
     }
@@ -118,7 +129,7 @@ test("a tie lists every official top id", async () => {
 });
 
 test("matching V texts do not show a tie group unless the shell says tied", async () => {
-  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+  install(async (cmd: string) => {
     if (cmd === WINDOW_RESULT_COMMAND) {
       return resultFor("same-v");
     }
@@ -132,7 +143,7 @@ test("matching V texts do not show a tie group unless the shell says tied", asyn
 });
 
 test("source fields from the shell are visible", async () => {
-  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+  install(async (cmd: string, args) => {
     if (cmd === WINDOW_RESULT_COMMAND) {
       return resultFor(sourceOf(args));
     }
@@ -152,7 +163,7 @@ test("source fields from the shell are visible", async () => {
 });
 
 test("shows an empty reason from the shell", async () => {
-  vi.mocked(invoke).mockResolvedValue(
+  install(async () =>
     windowResultFixture({
       arms: [],
       official_top: [],
@@ -166,9 +177,27 @@ test("shows an empty reason from the shell", async () => {
   expect(await screen.findByText("EMPTY-REASON-FROM-SHELL")).toBeTruthy();
 });
 
+test("shows robust and recommended membership from the shell", async () => {
+  install(async (cmd: string) => {
+    if (cmd === WINDOW_RESULT_COMMAND) {
+      return windowResultFixture({
+        arms: [armView({ id: "own", on_off: true, on_rob: false, on_rec: true })],
+      });
+    }
+    throw new Error(cmd);
+  });
+
+  render(<FrontierPane />);
+
+  const row = (await screen.findByText("own")).closest("tr");
+  expect(row).toBeTruthy();
+  const cells = [...row!.querySelectorAll("td")].map((cell) => cell.textContent);
+  expect(cells.slice(5)).toEqual(["是", "—", "是"]);
+});
+
 test("retries a failed read", async () => {
   let calls = 0;
-  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+  install(async (cmd: string) => {
     if (cmd !== WINDOW_RESULT_COMMAND) {
       throw new Error(cmd);
     }

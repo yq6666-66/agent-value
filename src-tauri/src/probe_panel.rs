@@ -3,7 +3,9 @@
 //! Consent and charges come from the local store. Budget decisions,
 //! observation-period copy, and authenticity grades come from
 //! `agent_value_core`. The fixture source judges the checked-in replay.
-//! This module does not send HTTP.
+//! This view does not send HTTP. [`crate::probe_run::run_once`] can, when
+//! a caller asks; the webview is not wired to it, so `sends_http` stays
+//! false.
 
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +22,7 @@ use agent_value_core::probe::{
     CapabilityClaims, ClassRun, VendorTables, PROBE_SET_VERSION,
 };
 use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult};
+use agent_value_probe_run::{spent_in_month, typical_probe_estimate};
 use serde::Serialize;
 
 use crate::store_cmd::{self, AppState};
@@ -28,43 +31,6 @@ use crate::store_cmd::{self, AppState};
 const FIXTURE_SEED: u64 = 20_261_022;
 const FIXTURE_REPLAY: &str =
     include_str!("../../crates/agent-value-core/tests/fixtures/step13_replay_mixed.tsv");
-
-/// What a probe run would do. `NotSent` means the policy allows a run and
-/// this build still does not send one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProbeLaunch {
-    BlockedConsent,
-    BlockedBudget,
-    NotSent,
-}
-
-impl ProbeLaunch {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::BlockedConsent => "blocked-consent",
-            Self::BlockedBudget => "blocked-budget",
-            Self::NotSent => "not-sent",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::BlockedConsent => "尚未同意，不会自动探测。",
-            Self::BlockedBudget => "本月停止探测。",
-            Self::NotSent => "已同意，且未超预算。本版不发送探测请求。",
-        }
-    }
-}
-
-fn launch_of(accepted: bool, budget: BudgetDecision) -> ProbeLaunch {
-    if !accepted {
-        ProbeLaunch::BlockedConsent
-    } else if budget == BudgetDecision::Stop {
-        ProbeLaunch::BlockedBudget
-    } else {
-        ProbeLaunch::NotSent
-    }
-}
 
 /// JSON for the probe panel. Grades, verdicts, and the budget and
 /// observation sentences are the core's.
@@ -85,7 +51,8 @@ pub struct ProbePanel {
     pub grade_run_days_label: String,
     pub launch: String,
     pub launch_label: String,
-    /// Always false: this build does not send probe HTTP.
+    /// False until the webview is wired to a run. A shell `run_once` can
+    /// send; this panel does not.
     pub sends_http: bool,
     pub arms: Vec<ProbeArmView>,
     pub empty_reason: Option<String>,
@@ -134,16 +101,7 @@ fn budget_view(spent: MicroYuan, estimate: MicroYuan, at_ms: i64) -> Result<Budg
 }
 
 fn spent_this_month(charges: &[(i64, i64)], at_ms: i64) -> Result<MicroYuan, String> {
-    let month = budget_month(at_ms).map_err(|err| err.to_string())?;
-    let mut total = 0_i64;
-    for &(at, micros) in charges {
-        if budget_month(at).map_err(|err| err.to_string())? == month {
-            total = total
-                .checked_add(micros)
-                .ok_or("probe spend overflow".to_string())?;
-        }
-    }
-    MicroYuan::new(total).map_err(|err| err.to_string())
+    spent_in_month(charges, at_ms).map_err(|err| err.to_string())
 }
 
 /// No control runs are stored, so the observation period stays pending.
@@ -286,9 +244,9 @@ fn assemble(
         store.probe_charges().map_err(|err| err.to_string())
     })?;
     let spent = spent_this_month(&charges, at_ms)?;
-    let estimate = MicroYuan::new(0).map_err(|err| err.to_string())?;
+    let estimate = typical_probe_estimate().map_err(|err| err.to_string())?;
     let budget = budget_view(spent, estimate, at_ms)?;
-    let launch = launch_of(accepted, budget.decision);
+    let launch = app.flight.launch(accepted, budget.decision);
     let observation_state = current_observation();
     let (fixture, arms, empty_reason) = match source {
         "store" => {
@@ -316,10 +274,10 @@ fn assemble(
         fixture,
         decided,
         accepted,
-        consent_prompt: format!("{budget_label}。同意之前不会自动探测。本版不发送网络请求。"),
+        consent_prompt: format!("{budget_label}。同意之前不会自动探测。本版 UI 尚未接线。"),
         monthly_budget_label: budget_label,
         spent_label: format!("本月已花 {} 元", spent.format_yuan()),
-        estimate_label: format!("这次估价 {} 元", estimate.format_yuan()),
+        estimate_label: format!("典型计划估价 {} 元", estimate.format_yuan()),
         budget_decision: decision_text(budget.decision).to_string(),
         over_budget_prompt: budget.prompt,
         observation: observation_state.as_str().to_string(),
@@ -366,6 +324,7 @@ mod tests {
     use agent_value_core::constants::PROBE_MONTHLY_BUDGET_YUAN;
     use agent_value_core::probe::{judge_capability, judge_deterministic, parse_replay};
     use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult, ProbeVerdict};
+    use agent_value_probe_run::{typical_probe_estimate, Flight, ProbeLaunch};
 
     use super::*;
 
@@ -413,35 +372,45 @@ mod tests {
         assert_eq!(panel.monthly_budget_label, budget);
         assert_eq!(
             panel.consent_prompt,
-            format!("{budget}。同意之前不会自动探测。本版不发送网络请求。")
+            format!("{budget}。同意之前不会自动探测。本版 UI 尚未接线。")
+        );
+        let estimate = typical_probe_estimate().unwrap();
+        assert!(estimate.micros() > 0);
+        assert_eq!(
+            panel.estimate_label,
+            format!("典型计划估价 {} 元", estimate.format_yuan())
         );
         let empty = DaySummary::default();
         let state = observation(&empty, &empty, false, false);
         assert_eq!(panel.observation, state.as_str());
         assert_eq!(panel.observation_label, state.label());
         assert_eq!(panel.grade_run_days_label, grade_run_days_label());
+        let flight = Flight::new();
         assert_eq!(
-            launch_of(false, BudgetDecision::Allow),
+            flight.launch(false, BudgetDecision::Allow),
             ProbeLaunch::BlockedConsent
         );
         assert_eq!(
-            launch_of(true, BudgetDecision::Stop),
+            flight.launch(true, BudgetDecision::Stop),
             ProbeLaunch::BlockedBudget
         );
-        assert_eq!(launch_of(true, BudgetDecision::Allow), ProbeLaunch::NotSent);
+        assert_eq!(
+            flight.launch(true, BudgetDecision::Allow),
+            ProbeLaunch::Ready
+        );
     }
 
     #[test]
-    fn first_consent_sticks_and_still_sends_nothing() {
+    fn first_consent_sticks_and_the_panel_stays_unwired() {
         let app = app();
         let accepted = set_consent(&app, true, "store").unwrap();
         assert!(accepted.decided && accepted.accepted);
-        assert_eq!(accepted.launch, "not-sent");
+        assert_eq!(accepted.launch, ProbeLaunch::Ready.as_str());
+        assert_eq!(accepted.launch_label, ProbeLaunch::Ready.label());
         assert!(!accepted.sends_http);
-        assert!(accepted.launch_label.contains("不发送探测请求"));
         let declined = set_consent(&app, false, "store").unwrap();
         assert!(declined.accepted);
-        assert_eq!(declined.launch, "not-sent");
+        assert_eq!(declined.launch, ProbeLaunch::Ready.as_str());
     }
 
     #[test]
@@ -461,11 +430,40 @@ mod tests {
         assert_eq!(panel.launch, "blocked-budget");
         assert!(!panel.sends_http);
         let (year, month) = budget_month(at).unwrap();
+        let estimate = typical_probe_estimate().unwrap();
         assert_eq!(
             panel.over_budget_prompt.unwrap(),
-            over_budget_label(spent, MicroYuan::new(0).unwrap(), year, month).unwrap()
+            over_budget_label(spent, estimate, year, month).unwrap()
         );
         assert!(panel.spent_label.contains(&spent.format_yuan()));
+        assert!(panel.estimate_label.contains(&estimate.format_yuan()));
+    }
+
+    #[test]
+    fn a_near_full_budget_stops_on_the_nonzero_estimate() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let at = now_ms().unwrap();
+        let budget = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+        let estimate = typical_probe_estimate().unwrap();
+        assert!(estimate.micros() > 0);
+        // One micro under the cap. An estimate of 0 would still allow it.
+        let spent = MicroYuan::new(budget.micros() - 1).unwrap();
+        store_cmd::with_store(&app, |store| {
+            store
+                .record_probe_charge(at, spent)
+                .map_err(|err| err.to_string())
+        })
+        .unwrap();
+        let panel = view(&app, "store").unwrap();
+        assert_eq!(panel.budget_decision, "stop");
+        assert_eq!(panel.launch, ProbeLaunch::BlockedBudget.as_str());
+        assert!(!panel.sends_http);
+        let (year, month) = budget_month(at).unwrap();
+        assert_eq!(
+            panel.over_budget_prompt.unwrap(),
+            over_budget_label(spent, estimate, year, month).unwrap()
+        );
     }
 
     #[test]
@@ -474,7 +472,7 @@ mod tests {
         set_consent(&app, true, "store").unwrap();
         store_cmd::with_store(&app, |store| {
             store
-                .record_probe_charge(now_ms().unwrap(), MicroYuan::from_yuan(9.99).unwrap())
+                .record_probe_charge(now_ms().unwrap(), MicroYuan::from_yuan(1.0).unwrap())
                 .map_err(|err| err.to_string())?;
             store
                 .record_probe_charge(0, MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap())
@@ -484,7 +482,13 @@ mod tests {
         let panel = view(&app, "store").unwrap();
         assert_eq!(panel.budget_decision, "allow");
         assert!(panel.over_budget_prompt.is_none());
-        assert_eq!(panel.launch, "not-sent");
+        assert_eq!(panel.launch, ProbeLaunch::Ready.as_str());
+        let estimate = typical_probe_estimate().unwrap();
+        assert!(estimate.micros() > 0);
+        assert_eq!(
+            panel.estimate_label,
+            format!("典型计划估价 {} 元", estimate.format_yuan())
+        );
     }
 
     #[test]

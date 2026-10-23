@@ -273,6 +273,23 @@ pub fn send(
     Ok(result)
 }
 
+/// A [`run_accounted`] failure. `requests_attempted` counts [`send`] calls
+/// that returned, including a reply that echoed the key and was not written.
+/// Display text is the inner error and does not include the token.
+#[derive(Debug)]
+pub struct AccountedHttpError {
+    pub error: ProbeHttpError,
+    pub requests_attempted: u32,
+}
+
+impl std::fmt::Display for AccountedHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for AccountedHttpError {}
+
 /// Loads the token, sends every plan row, and writes the replay and log.
 ///
 /// This blocks the calling thread for every request, including timeouts and
@@ -282,21 +299,43 @@ pub fn send(
 /// The base and the token are checked before either file is created. Send
 /// order is shuffled. A key-echo refusal leaves any earlier rows in place
 /// and does not write the offending row. The returned error does not contain
-/// the token.
+/// the token. [`run_accounted`] reports how many rows were sent.
 pub fn run(opts: &RunOptions<'_>) -> Result<(), ProbeHttpError> {
+    run_accounted(opts).map(|_| ()).map_err(|err| err.error)
+}
+
+/// [`run`], plus how many plan rows [`send`] returned.
+///
+/// `requests_attempted` is 0 when the base or the token is rejected before
+/// a socket is opened. A key-echo refusal counts the row that was sent.
+pub fn run_accounted(opts: &RunOptions<'_>) -> Result<u32, AccountedHttpError> {
     if !base_url_allowed(opts.base) {
-        return Err(ProbeHttpError::BaseNotHttps);
+        return Err(accounted(ProbeHttpError::BaseNotHttps, 0));
     }
-    let key = load_key_from(opts.key_env, opts.dotenv)?;
+    let key = match load_key_from(opts.key_env, opts.dotenv) {
+        Ok(key) => key,
+        Err(error) => return Err(accounted(error, 0)),
+    };
     if !key_is_sendable(&key) {
-        return Err(ProbeHttpError::InvalidKey);
+        return Err(accounted(ProbeHttpError::InvalidKey, 0));
     }
 
-    let mut replay = File::create(opts.replay_path).map_err(write_err)?;
-    let mut log = File::create(opts.log_path).map_err(write_err)?;
-    writeln!(replay, "{REPLAY_HEADER}").map_err(write_err)?;
-    replay.flush().map_err(write_err)?;
+    let mut replay = match File::create(opts.replay_path) {
+        Ok(file) => file,
+        Err(err) => return Err(accounted(write_err(err), 0)),
+    };
+    let mut log = match File::create(opts.log_path) {
+        Ok(file) => file,
+        Err(err) => return Err(accounted(write_err(err), 0)),
+    };
+    if let Err(err) = writeln!(replay, "{REPLAY_HEADER}") {
+        return Err(accounted(write_err(err), 0));
+    }
+    if let Err(err) = replay.flush() {
+        return Err(accounted(write_err(err), 0));
+    }
 
+    let mut attempted = 0_u32;
     let mut order: Vec<usize> = (0..opts.plan.len()).collect();
     shuffle(&mut order);
     for (n, index) in order.into_iter().enumerate() {
@@ -304,20 +343,46 @@ pub fn run(opts: &RunOptions<'_>) -> Result<(), ProbeHttpError> {
             pause(opts.max_delay_secs);
         }
         let item = &opts.plan[index];
-        let result = send(opts.base, &key, &item.body, opts.timeout)?;
+        let result = match send(opts.base, &key, &item.body, opts.timeout) {
+            Ok(result) => result,
+            Err(error) => return Err(accounted(error, attempted)),
+        };
+        attempted = attempted.saturating_add(1);
         let line = format_replay_line(&item.id, &result);
-        let log_line = format_log_line(&item.id, &result)?;
+        let log_line = match format_log_line(&item.id, &result) {
+            Ok(line) => line,
+            Err(error) => return Err(accounted(error, attempted)),
+        };
         if output_contains_key(&key, &line, &log_line, &result) {
-            replay.flush().map_err(write_err)?;
-            log.flush().map_err(write_err)?;
-            return Err(ProbeHttpError::RefusingToWrite);
+            if let Err(err) = replay.flush() {
+                return Err(accounted(write_err(err), attempted));
+            }
+            if let Err(err) = log.flush() {
+                return Err(accounted(write_err(err), attempted));
+            }
+            return Err(accounted(ProbeHttpError::RefusingToWrite, attempted));
         }
-        writeln!(replay, "{line}").map_err(write_err)?;
-        writeln!(log, "{log_line}").map_err(write_err)?;
-        replay.flush().map_err(write_err)?;
-        log.flush().map_err(write_err)?;
+        if let Err(err) = writeln!(replay, "{line}") {
+            return Err(accounted(write_err(err), attempted));
+        }
+        if let Err(err) = writeln!(log, "{log_line}") {
+            return Err(accounted(write_err(err), attempted));
+        }
+        if let Err(err) = replay.flush() {
+            return Err(accounted(write_err(err), attempted));
+        }
+        if let Err(err) = log.flush() {
+            return Err(accounted(write_err(err), attempted));
+        }
     }
-    Ok(())
+    Ok(attempted)
+}
+
+fn accounted(error: ProbeHttpError, requests_attempted: u32) -> AccountedHttpError {
+    AccountedHttpError {
+        error,
+        requests_attempted,
+    }
 }
 
 /// `host_str` keeps the brackets around an IPv6 address. Python's
@@ -1388,7 +1453,10 @@ json.dump({
         assert_eq!(result.text.as_deref(), Some("42"));
     }
 
-    fn run_plan(plan: &[(&str, &str)], dotenv_value: &str) -> (Tmp, Result<(), ProbeHttpError>) {
+    fn run_plan(
+        plan: &[(&str, &str)],
+        dotenv_value: &str,
+    ) -> (Tmp, Result<u32, AccountedHttpError>) {
         require_unset(KEY_ENV);
         let tmp = Tmp::new();
         let dotenv = tmp.path().join(".env");
@@ -1402,7 +1470,7 @@ json.dump({
             .collect();
         let replay = tmp.path().join("replay.tsv");
         let log = tmp.path().join("run.jsonl");
-        let result = run(&RunOptions {
+        let result = run_accounted(&RunOptions {
             base: mock_base(),
             key_env: KEY_ENV,
             dotenv: &dotenv,
@@ -1508,7 +1576,8 @@ json.dump({
         let _env = lock_test_env();
         let (tmp, result) = run_plan(&[("det-01", "echo-key")], KEY);
         let err = result.unwrap_err();
-        let rendered = format!("{err} {err:?}");
+        assert_eq!(err.requests_attempted, 1);
+        let rendered = format!("{} {:?}", err.error, err.error);
         assert!(rendered.contains("refusing to write"));
         assert!(!rendered.contains(KEY));
         let (replay, log) = read_outputs(&tmp);
@@ -1528,7 +1597,7 @@ json.dump({
         let replay = tmp.path().join("replay.tsv");
         let log = tmp.path().join("run.jsonl");
         let started = Instant::now();
-        let err = run(&RunOptions {
+        let err = run_accounted(&RunOptions {
             base: "http://192.0.2.1",
             key_env: KEY_ENV,
             dotenv: &dotenv,
@@ -1542,7 +1611,9 @@ json.dump({
             max_delay_secs: 0.0,
         })
         .unwrap_err();
-        assert_eq!(err, ProbeHttpError::BaseNotHttps);
+        assert_eq!(err.requests_attempted, 0);
+        assert_eq!(err.error, ProbeHttpError::BaseNotHttps);
+        let err = err.error;
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(!replay.exists());
         assert!(!log.exists());

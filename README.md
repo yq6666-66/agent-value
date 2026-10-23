@@ -22,7 +22,7 @@ A Tauri desktop app can be built and run locally from source. It scores coding-s
 | 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Core implemented; official picks flow through the same window-results path where applicable. |
 | 11 | Weight elicitation from your answers and behaviour | Core + desktop five-level self-report wizard. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version). |
 | 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Core + desktop sensitivity panel (winner map, weight-robust label, flip sentences from core). First window / no-anchor layer: chart withheld. |
-| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show previously recorded or replayed probe results, including the checked-in replay fixture; does not send probe HTTP. |
+| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show previously recorded or replayed probe results, including the checked-in replay fixture. The page does not send probe HTTP. |
 
 Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -560,7 +560,7 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 ### 11. Probes and relay checks
 
-*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture; it does not send probe HTTP. Writing new probe results into the data layer (hard-failure days, budget spending) and in-app / scheduled live HTTP probes are still planned.*
+*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture; it does not send probe HTTP. A shell run can send one selected arm when consent and the monthly budget allow, and can store the judged results and a provisional charge. The window has no run button. Scheduled runs are still planned.*
 
 This checks whether a route really serves the model it claims. The probe results feed only the authenticity part of gate 4 in section 6, and never enter any score; the log-integrity check below works on the requests recorded in the window.
 
@@ -623,7 +623,7 @@ A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-2
 These parts of the specification are not implemented:
 
 - **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6).
-- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); connecting probes to the data layer (writing new probe results into the data layer, hard-failure days from passive logs, recording budget spending); in-app / scheduled live HTTP probes; generating thinking-signature and long-context requests. Probe grade thresholds remain provisional until the observation period is complete.
+- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); hard-failure days from passive logs; a window button and scheduled live HTTP probes; generating thinking-signature and long-context requests. A shell run can already send one selected arm when consent and the monthly budget allow, store the judged results, and record a provisional charge. The page does not call it. Probe grade thresholds remain provisional until the observation period is complete.
 
 ### Constants
 
@@ -703,6 +703,8 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` uses only the Python standard library. It reads the key only from the named environment variable or the local git-ignored `.env`, and never writes it to any output: before writing it checks the raw text, the escaped text and the JSON-escaped form. If it finds the key in what it is about to write, it refuses to write and exits. It does not record request headers. `--base` must be https, except for a local mock server.
 
+`agent-value-probe-run` can run one selected arm the same way when stored consent allows it and the monthly budget is not exceeded. The single-flight lock and the budget check are per process. The window has no run button, and the probe panel keeps `sends_http` false.
+
 Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. To launch it locally, run `cargo tauri dev`, or run the built binary. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell includes the window-results, self-report, sensitivity and probe consent/results UI described above. It is not packaged for distribution.
 
 ## Layout
@@ -711,6 +713,8 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 |---|---|
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
+| `crates/agent-value-probe-http/` | In-process probe HTTP sender used by the shell. Not called from the probe panel. |
+| `crates/agent-value-probe-run/` | One probe run: consent, monthly budget, the HTTP sender, then stored results and a provisional charge. The window is not wired to it. |
 | `src-tauri/` | Tauri 2 desktop shell that links the core crate and includes the window-results, self-report, sensitivity, and probe consent/results UI. Not a member of the default Cargo workspace. |
 | `tools/` | Scripts run by hand on your own machine; only their tests run in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. `test_probe_live.py` (standard-library unittest) checks it against a mock server on 127.0.0.1. |
 | `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity and probe consent/results. The About area shows the core version returned by the shell. |

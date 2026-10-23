@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
 use agent_value_core::scope::ScopeId;
 use agent_value_core::weights::WeightLedger;
+use agent_value_probe_run::Flight;
 use agent_value_store::{DigestKey, ExportDump, Store};
 use serde::Deserialize;
 use serde::Serialize;
@@ -51,6 +52,7 @@ pub struct ExportReport {
 pub struct AppState {
     store: Mutex<Store>,
     data_path: PathBuf,
+    pub(crate) flight: Flight,
 }
 
 impl AppState {
@@ -63,6 +65,7 @@ impl AppState {
         Ok(Self {
             store: Mutex::new(store),
             data_path,
+            flight: Flight::new(),
         })
     }
 
@@ -74,7 +77,15 @@ impl AppState {
         Ok(Self {
             store: Mutex::new(store),
             data_path: PathBuf::from(":memory:"),
+            flight: Flight::new(),
         })
+    }
+
+    /// Store mutex for [`crate::probe_run::run_once`]. The panel does not
+    /// send, so a build that never calls the run may not use this.
+    #[allow(dead_code)]
+    pub(crate) fn store(&self) -> &Mutex<Store> {
+        &self.store
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {

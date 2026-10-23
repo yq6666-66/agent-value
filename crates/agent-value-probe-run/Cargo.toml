@@ -1,0 +1,14 @@
+[package]
+name = "agent-value-probe-run"
+description = "One probe run: consent, monthly budget, HTTP, then the local store."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-value-core = { path = "../agent-value-core" }
+agent-value-store = { path = "../agent-value-store" }
+agent-value-probe-http = { path = "../agent-value-probe-http" }
+serde_json = "1"

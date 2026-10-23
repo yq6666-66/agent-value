@@ -1,7 +1,8 @@
 //! In-process probe HTTP sender.
 //!
-//! The desktop commands do not call this yet. Consent, the monthly budget,
-//! and `sends_http` stay as they are. `tools/probe_live.py` remains the
+//! Desktop commands do not call this module. `agent-value-probe-run` sends
+//! through the same crate when a caller asks. The probe panel still does
+//! not, and `sends_http` stays false. `tools/probe_live.py` remains the
 //! command-line runner.
 //!
 //! [`send`] and [`run`] block the calling thread. Call them off the Tauri

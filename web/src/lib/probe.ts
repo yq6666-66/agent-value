@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 export const PROBE_PANEL_COMMAND = "probe_panel";
 export const SET_PROBE_CONSENT_COMMAND = "set_probe_consent";
 export const RUN_PROBE_ONCE_COMMAND = "run_probe_once";
+export const SET_PROBE_SCHEDULE_COMMAND = "set_probe_schedule";
 
 /// Same sentence as the shell `ProbeLaunch::Running` label.
 export const PROBE_RUN_IN_PROGRESS = "正在探测。";
@@ -14,6 +15,10 @@ export const PROBE_RUN_IN_PROGRESS = "正在探测。";
 /// Shown when the command rejects. The rejection text is not rendered:
 /// it might repeat something the user typed.
 export const PROBE_RUN_FAILED = "这次探测没有完成。";
+
+/// Shown when enabling or stopping the schedule rejects. The rejection
+/// text is not rendered.
+export const PROBE_SCHEDULE_FAILED = "这次定时没有排上。";
 
 export const PROBE_SOURCES = ["store", "fixture"] as const;
 
@@ -31,6 +36,13 @@ export type ProbeRunTarget = {
 };
 
 export type ProbeRunOnceInput = {
+  arm_id: string;
+  key_env: string;
+  base_url: string;
+};
+
+export type ProbeScheduleInput = {
+  enabled: boolean;
   arm_id: string;
   key_env: string;
   base_url: string;
@@ -67,6 +79,10 @@ export type ProbePanel = {
   launch: string;
   launch_label: string;
   sends_http: boolean;
+  schedule_active: boolean;
+  next_planned_label: string | null;
+  schedule_status_label: string | null;
+  schedule_hint: string;
   arms: ProbeArmView[];
   run_targets: ProbeRunTarget[];
   empty_reason: string | null;
@@ -161,6 +177,10 @@ export function probePanel(value: unknown): ProbePanel {
     launch: text(row.launch, PROBE_PANEL_COMMAND),
     launch_label: text(row.launch_label, PROBE_PANEL_COMMAND),
     sends_http: flag(row.sends_http, PROBE_PANEL_COMMAND),
+    schedule_active: flag(row.schedule_active, PROBE_PANEL_COMMAND),
+    next_planned_label: optionalText(row.next_planned_label, PROBE_PANEL_COMMAND),
+    schedule_status_label: optionalText(row.schedule_status_label, PROBE_PANEL_COMMAND),
+    schedule_hint: text(row.schedule_hint, PROBE_PANEL_COMMAND),
     arms: arms.map(armView),
     run_targets: runTargets.map(runTarget),
     empty_reason: optionalText(row.empty_reason, PROBE_PANEL_COMMAND),
@@ -174,6 +194,13 @@ export async function fetchProbePanel(source: ProbeSource): Promise<ProbePanel> 
 
 export async function setProbeConsent(accepted: boolean, source: ProbeSource): Promise<ProbePanel> {
   const value: unknown = await invoke(SET_PROBE_CONSENT_COMMAND, { accepted, source });
+  return probePanel(value);
+}
+
+/// Enables or stops the in-app schedule. Does not send a token. Enabling
+/// does not run a probe; the shell waits one interval before the first tick.
+export async function setProbeSchedule(input: ProbeScheduleInput): Promise<ProbePanel> {
+  const value: unknown = await invoke(SET_PROBE_SCHEDULE_COMMAND, { input });
   return probePanel(value);
 }
 

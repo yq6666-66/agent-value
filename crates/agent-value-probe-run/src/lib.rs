@@ -20,8 +20,9 @@
 //! Thinking-signature and long-context rows are not in the plan. Fingerprint
 //! rows are not invented, and the observation period is not marked complete.
 //! The desktop command `run_probe_once` calls [`run_once`] on a blocking
-//! thread. This crate does not start a run by itself, and it does not
-//! mark the observation period complete.
+//! thread. An in-app schedule in the shell can call it the same way.
+//! This crate does not start a run by itself, and it does not mark the
+//! observation period complete.
 //!
 //! # Provisional estimate
 //!

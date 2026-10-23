@@ -11,16 +11,28 @@
 //! [`typical_claims`](agent_value_probe_run::typical_claims)). The token is
 //! read by `agent-value-probe-http` from that variable or gitignored `.env`
 //! and is not written to the store or returned to the page.
+//!
+//! [`scheduled_tick`] is the in-app schedule's due tick. It calls
+//! [`run_from_webview`] on the schedule thread, which is not the async
+//! runtime. The schedule lives in [`crate::probe_schedule`]. Enabling it
+//! does not send.
 
 use std::path::Path;
 use std::time::Duration;
 
 use agent_value_core::arm::Arm;
+use agent_value_core::authenticity::{probe_budget, BudgetDecision};
+use agent_value_core::constants::PROBE_MONTHLY_BUDGET_YUAN;
 use agent_value_core::privacy::KeyEnvVarName;
+use agent_value_core::records::MicroYuan;
 use agent_value_probe_http::base_url_allowed;
-use agent_value_probe_run::{typical_claims, ProbeLaunch, ProbeRunOutcome, ProbeRunRequest};
+use agent_value_probe_run::{
+    spent_in_month, typical_claims, typical_probe_estimate, ProbeLaunch, ProbeRunOutcome,
+    ProbeRunRequest,
+};
 use serde::{Deserialize, Serialize};
 
+use crate::probe_schedule::{ScheduleBinding, TickClass, TickReport};
 use crate::store_cmd::AppState;
 
 /// Seed for the in-app manual run.
@@ -79,6 +91,56 @@ pub fn run_once(app: &AppState, request: &ProbeRunRequest<'_>) -> Result<ProbeRu
         .map_err(|err| err.to_string())
 }
 
+/// Why a schedule binding or a webview run stopped before HTTP.
+pub(crate) enum BindFail {
+    Store(String),
+    Rejected(RunOnceView),
+}
+
+struct Resolved {
+    arm: Arm,
+    key_env: String,
+    base_url: String,
+}
+
+/// Same pre-HTTP checks as [`run_from_webview`]: variable name, base shape,
+/// known arm, and host bind. Does not open a socket.
+fn resolve(app: &AppState, input: &RunOnceInput) -> Result<Resolved, BindFail> {
+    let key_env = input.key_env.trim();
+    let base_url = input.base_url.trim().trim_end_matches('/');
+    let arm_id = input.arm_id.trim();
+    if key_env.is_empty() || base_url.is_empty() || arm_id.is_empty() {
+        return Err(BindFail::Rejected(RunOnceView::failed(
+            "要选择一条臂，并填写密钥变量名和基址。",
+        )));
+    }
+    if KeyEnvVarName::new(key_env).is_err() {
+        return Err(BindFail::Rejected(RunOnceView::failed(
+            "密钥只填写变量名，例如 RELAY_API_KEY。不要填写密钥本身。",
+        )));
+    }
+    if !base_is_allowed(base_url) {
+        return Err(BindFail::Rejected(RunOnceView::failed(
+            "基址必须是 https，或本机模拟用的 http。不能带用户信息、查询或片段。",
+        )));
+    }
+    let Some(arm) = find_arm(app, arm_id).map_err(BindFail::Store)? else {
+        return Err(BindFail::Rejected(RunOnceView::failed("没有这条臂。")));
+    };
+    // Do not send to a free-typed host. Path and a trailing slash are
+    // ignored; the host must be the arm route host.
+    if !base_host_matches(base_url, arm.route().host()) {
+        return Err(BindFail::Rejected(RunOnceView::failed(
+            "基址的主机必须和所选臂一致。",
+        )));
+    }
+    Ok(Resolved {
+        arm,
+        key_env: key_env.to_string(),
+        base_url: base_url.to_string(),
+    })
+}
+
 /// Resolves `input.arm_id` against stored arms and probe-result arms, then
 /// calls [`run_once`].
 ///
@@ -90,36 +152,15 @@ pub fn run_once(app: &AppState, request: &ProbeRunRequest<'_>) -> Result<ProbeRu
 /// `key_env` is still the caller's choice of variable name. The host check
 /// below is what binds the send to the selected arm.
 pub fn run_from_webview(app: &AppState, input: &RunOnceInput) -> Result<RunOnceView, String> {
-    let key_env = input.key_env.trim();
-    let base_url = input.base_url.trim().trim_end_matches('/');
-    let arm_id = input.arm_id.trim();
-    if key_env.is_empty() || base_url.is_empty() || arm_id.is_empty() {
-        return Ok(RunOnceView::failed(
-            "要选择一条臂，并填写密钥变量名和基址。",
-        ));
-    }
-    if KeyEnvVarName::new(key_env).is_err() {
-        return Ok(RunOnceView::failed(
-            "密钥只填写变量名，例如 RELAY_API_KEY。不要填写密钥本身。",
-        ));
-    }
-    if !base_is_allowed(base_url) {
-        return Ok(RunOnceView::failed(
-            "基址必须是 https，或本机模拟用的 http。不能带用户信息、查询或片段。",
-        ));
-    }
-    let Some(arm) = find_arm(app, arm_id)? else {
-        return Ok(RunOnceView::failed("没有这条臂。"));
+    let resolved = match resolve(app, input) {
+        Ok(resolved) => resolved,
+        Err(BindFail::Rejected(view)) => return Ok(finish_run(app, view)),
+        Err(BindFail::Store(err)) => return Err(err),
     };
-    // Do not send to a free-typed host. Path and a trailing slash are
-    // ignored; the host must be the arm route host.
-    if !base_host_matches(base_url, arm.route().host()) {
-        return Ok(RunOnceView::failed("基址的主机必须和所选臂一致。"));
-    }
     let request = ProbeRunRequest {
-        arm: &arm,
-        key_env,
-        base_url,
+        arm: &resolved.arm,
+        key_env: &resolved.key_env,
+        base_url: &resolved.base_url,
         seed: IN_APP_RUN_SEED,
         claims: typical_claims(),
         dotenv: Path::new(IN_APP_DOTENV),
@@ -129,9 +170,113 @@ pub fn run_from_webview(app: &AppState, input: &RunOnceInput) -> Result<RunOnceV
         Ok(outcome) => outcome,
         // The page does not render invoke errors. Keep this sentence free of
         // anything the caller typed.
-        Err(_) => return Ok(RunOnceView::failed("这次探测没有完成。")),
+        Err(_) => return Ok(finish_run(app, RunOnceView::failed("这次探测没有完成。"))),
     };
-    Ok(RunOnceView::from_outcome(outcome))
+    Ok(finish_run(app, RunOnceView::from_outcome(outcome)))
+}
+
+/// After a run that returned a view, a monthly budget stop disarms an
+/// armed schedule now. The worker does not wait for the next due time.
+/// A manual rejection that is not a budget stop stays the schedule's
+/// decision on the next tick.
+fn finish_run(app: &AppState, view: RunOnceView) -> RunOnceView {
+    let stopped = view.launch == ProbeLaunch::BlockedBudget.as_str() || budget_is_stop(app);
+    if app.schedule.is_active() && stopped {
+        app.schedule.stop_for_budget();
+    }
+    view
+}
+
+fn budget_is_stop(app: &AppState) -> bool {
+    let Some(at_ms) = crate::probe_schedule::system_now_ms() else {
+        return false;
+    };
+    let Ok(charges) = crate::store_cmd::with_store(app, |store| {
+        store.probe_charges().map_err(|err| err.to_string())
+    }) else {
+        return false;
+    };
+    let Ok(spent) = spent_in_month(&charges, at_ms) else {
+        return false;
+    };
+    let Ok(estimate) = typical_probe_estimate() else {
+        return false;
+    };
+    let Ok(budget) = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN) else {
+        return false;
+    };
+    probe_budget(spent, estimate, budget).ok() == Some(BudgetDecision::Stop)
+}
+
+/// Pre-HTTP failures that will not succeed on a later interval.
+/// Transient HTTP and store failures are not in this list.
+fn permanent_schedule_failure(detail: &str) -> bool {
+    matches!(
+        detail,
+        "要选择一条臂，并填写密钥变量名和基址。"
+            | "密钥只填写变量名，例如 RELAY_API_KEY。不要填写密钥本身。"
+            | "基址必须是 https，或本机模拟用的 http。不能带用户信息、查询或片段。"
+            | "没有这条臂。"
+            | "基址的主机必须和所选臂一致。"
+            | "这条路线的协议不是 OpenAI Chat Completions。"
+    )
+}
+
+/// Host-binds a schedule arm the same way as [`run_from_webview`]. Does not
+/// send. The returned id is the stored arm's display string.
+pub(crate) fn schedule_binding(
+    app: &AppState,
+    input: &RunOnceInput,
+) -> Result<ScheduleBinding, BindFail> {
+    let resolved = resolve(app, input)?;
+    Ok(ScheduleBinding {
+        arm_id: resolved.arm.to_string(),
+        key_env: resolved.key_env,
+        base_url: resolved.base_url,
+    })
+}
+
+/// One due scheduled tick. Call it on the schedule thread, not on the async
+/// runtime: it uses [`run_from_webview`], which blocks for HTTP.
+///
+/// No stored consent means the runner is not called. A budget stop, or a
+/// binding that can never send, clears the schedule inside
+/// [`ProbeSchedule::tick`](crate::probe_schedule::ProbeSchedule::tick) so a
+/// later tick does not send. A run that crosses the budget also disarms
+/// inside [`run_from_webview`] before this returns. Other launches,
+/// including same-day already-run and a transient failure, advance one
+/// interval and do not catch up.
+pub(crate) fn scheduled_tick(app: &AppState, now_ms: i64) -> TickReport {
+    let consent = crate::store_cmd::with_store(app, |store| {
+        store.probe_consent().map_err(|err| err.to_string())
+    })
+    .ok()
+    .flatten()
+    .is_some_and(|consent| consent.accepted);
+    app.schedule.tick(now_ms, consent, |binding| {
+        let input = RunOnceInput {
+            arm_id: binding.arm_id.clone(),
+            key_env: binding.key_env.clone(),
+            base_url: binding.base_url.clone(),
+        };
+        match run_from_webview(app, &input) {
+            Ok(view) => classify_tick(app, &view),
+            Err(_) => TickClass::Continue,
+        }
+    })
+}
+
+fn classify_tick(app: &AppState, view: &RunOnceView) -> TickClass {
+    if view.launch == ProbeLaunch::BlockedBudget.as_str() || budget_is_stop(app) {
+        return TickClass::Budget;
+    }
+    if view.launch == ProbeLaunch::BlockedConsent.as_str() {
+        return TickClass::Consent;
+    }
+    if view.launch == ProbeLaunch::Failed.as_str() && permanent_schedule_failure(&view.detail) {
+        return TickClass::Halt;
+    }
+    TickClass::Continue
 }
 
 /// Hostname only. A route host may include `:port` or `[ipv6]:port`.

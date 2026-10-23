@@ -9,12 +9,16 @@ mod elicit_cmd;
 mod probe_http;
 mod probe_panel;
 mod probe_run;
+mod probe_schedule;
 mod sensitivity_panel;
 mod store_cmd;
 mod window_chrome;
 mod window_result;
 
+use std::sync::Arc;
+
 use tauri::Manager;
+use tauri::RunEvent;
 
 #[tauri::command]
 fn core_version() -> String {
@@ -192,7 +196,8 @@ fn set_probe_consent(
 /// are the H3 typical plan (tool call and JSON). The page does not choose
 /// them, and it does not send a token. HTTP is blocking, so the call runs
 /// on `spawn_blocking` and does not hold the async runtime. Opening the
-/// page does not invoke this command.
+/// page does not invoke this command. A due in-app schedule tick calls the
+/// same path on the schedule thread.
 #[tauri::command]
 async fn run_probe_once(
     app: tauri::AppHandle,
@@ -206,13 +211,35 @@ async fn run_probe_once(
     .map_err(|_| "这次探测没有完成。".to_string())?
 }
 
+/// Enables or stops the in-app probe schedule.
+///
+/// Enabling does not send. The first tick is one provisional interval
+/// later. Stopping does not send. The schedule is not an operating-system
+/// cron; process exit stops it.
+#[tauri::command]
+fn set_probe_schedule(
+    state: tauri::State<store_cmd::AppState>,
+    input: probe_schedule::ScheduleInput,
+) -> Result<probe_panel::ProbePanel, String> {
+    probe_panel::set_schedule(&state, &input)
+}
+
 fn main() {
-    let result = tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let state = store_cmd::AppState::open(&dir).map_err(std::io::Error::other)?;
+            let schedule = Arc::clone(&state.schedule);
             app.manage(state);
             app.manage(elicit_cmd::ElicitState::new());
+            let handle = app.handle().clone();
+            let worker = probe_schedule::spawn_worker(schedule, move |now| {
+                let Some(state) = handle.try_state::<store_cmd::AppState>() else {
+                    return;
+                };
+                probe_run::scheduled_tick(state.inner(), now);
+            })?;
+            probe_schedule::retain_worker(worker);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -238,11 +265,22 @@ fn main() {
             sensitivity,
             probe_panel,
             set_probe_consent,
-            run_probe_once
+            run_probe_once,
+            set_probe_schedule
         ])
-        .run(tauri::generate_context!());
-    if let Err(err) = result {
-        eprintln!("agent-value failed to start: {err}");
-        std::process::exit(1);
-    }
+        .build(tauri::generate_context!());
+    let app = match app {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("agent-value failed to start: {err}");
+            std::process::exit(1);
+        }
+    };
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            if let Some(state) = handle.try_state::<store_cmd::AppState>() {
+                state.schedule.shutdown();
+            }
+        }
+    });
 }

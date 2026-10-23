@@ -9,6 +9,7 @@ import {
   PROBE_RUN_IN_PROGRESS,
   RUN_PROBE_ONCE_COMMAND,
   SET_PROBE_CONSENT_COMMAND,
+  SET_PROBE_SCHEDULE_COMMAND,
   type ProbePanel as ProbeView,
 } from "@/lib/probe";
 
@@ -38,6 +39,10 @@ function panel(overrides: Partial<ProbeView> = {}): ProbeView {
     launch: "blocked-consent",
     launch_label: "LAUNCH-FROM-SHELL",
     sends_http: false,
+    schedule_active: false,
+    next_planned_label: null,
+    schedule_status_label: null,
+    schedule_hint: "HINT-FROM-SHELL",
     arms: [],
     run_targets: [],
     empty_reason: "EMPTY-FROM-SHELL",
@@ -87,9 +92,11 @@ test("asks for consent from the shell and does not launch a probe", async () => 
   expect(screen.queryByText("10 元")).toBeNull();
   expect(screen.queryByText("2 个运行日")).toBeNull();
   expect(screen.queryByRole("button", { name: "跑一次" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "启用定时" })).toBeNull();
   expect(invoke).toHaveBeenCalledWith(PROBE_PANEL_COMMAND, { source: "store" });
   expect(invoke).not.toHaveBeenCalledWith(SET_PROBE_CONSENT_COMMAND, expect.anything());
   expect(invoke).not.toHaveBeenCalledWith(RUN_PROBE_ONCE_COMMAND, expect.anything());
+  expect(invoke).not.toHaveBeenCalledWith(SET_PROBE_SCHEDULE_COMMAND, expect.anything());
 });
 
 test("consent is stored and no run command is called", async () => {
@@ -428,4 +435,101 @@ test("a rejected run does not show the rejection text", async () => {
   expect(await screen.findByText(PROBE_RUN_FAILED)).toBeTruthy();
   expect(document.body.textContent).not.toContain(secret);
   expect(vi.mocked(invoke).mock.calls.filter((call) => call[0] === RUN_PROBE_ONCE_COMMAND)).toHaveLength(1);
+});
+
+test("shows a read-only next plan and does not run when enabling the schedule", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === PROBE_PANEL_COMMAND) {
+      return readyPanel({ schedule_hint: "HINT-FROM-SHELL" });
+    }
+    if (cmd === SET_PROBE_SCHEDULE_COMMAND) {
+      return readyPanel({
+        schedule_active: true,
+        next_planned_label: "NEXT-FROM-SHELL",
+        schedule_hint: "HINT-FROM-SHELL",
+        launch: "ready",
+      });
+    }
+    throw new Error(cmd);
+  });
+
+  render(<ProbePanel />);
+
+  expect(await screen.findByText("HINT-FROM-SHELL")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "启用定时" })).toBeTruthy();
+  expect(screen.queryByText("NEXT-FROM-SHELL")).toBeNull();
+  fireEvent.change(screen.getByLabelText("密钥变量名"), {
+    target: { value: "RELAY_API_KEY" },
+  });
+  fireEvent.change(screen.getByLabelText("基址"), {
+    target: { value: "https://relay.example" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "启用定时" }));
+
+  expect(await screen.findByText("NEXT-FROM-SHELL")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "下次计划" })).toBeNull();
+  expect(screen.getByRole("button", { name: "停止定时" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "启用定时" })).toBeNull();
+  expect(invoke).toHaveBeenCalledWith(SET_PROBE_SCHEDULE_COMMAND, {
+    input: {
+      enabled: true,
+      arm_id: "arm-from-shell",
+      key_env: "RELAY_API_KEY",
+      base_url: "https://relay.example",
+    },
+  });
+  expect(invoke).not.toHaveBeenCalledWith(RUN_PROBE_ONCE_COMMAND, expect.anything());
+});
+
+test("stopping the schedule does not run a probe", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === PROBE_PANEL_COMMAND) {
+      return readyPanel({
+        schedule_active: true,
+        next_planned_label: "NEXT-FROM-SHELL",
+      });
+    }
+    if (cmd === SET_PROBE_SCHEDULE_COMMAND) {
+      return readyPanel({ schedule_active: false, next_planned_label: null });
+    }
+    throw new Error(cmd);
+  });
+
+  render(<ProbePanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "停止定时" }));
+
+  expect(await screen.findByRole("button", { name: "启用定时" })).toBeTruthy();
+  expect(screen.queryByText("NEXT-FROM-SHELL")).toBeNull();
+  expect(invoke).toHaveBeenCalledWith(SET_PROBE_SCHEDULE_COMMAND, {
+    input: {
+      enabled: false,
+      arm_id: "",
+      key_env: "",
+      base_url: "",
+    },
+  });
+  expect(invoke).not.toHaveBeenCalledWith(RUN_PROBE_ONCE_COMMAND, expect.anything());
+});
+
+test("a budget stop hides the schedule enable and shows the shell sentence", async () => {
+  vi.mocked(invoke).mockResolvedValue(
+    readyPanel({
+      launch: "blocked-budget",
+      budget_decision: "stop",
+      schedule_active: false,
+      next_planned_label: null,
+      schedule_status_label: "SCHEDULE-STOP-FROM-SHELL",
+      over_budget_prompt: "STOP-FROM-SHELL",
+    }),
+  );
+
+  render(<ProbePanel />);
+
+  expect(await screen.findByText("SCHEDULE-STOP-FROM-SHELL")).toBeTruthy();
+  expect(screen.getByText("STOP-FROM-SHELL")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "启用定时" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "跑一次" })).toBeNull();
+  expect(screen.queryByText("已校准")).toBeNull();
+  expect(invoke).not.toHaveBeenCalledWith(SET_PROBE_SCHEDULE_COMMAND, expect.anything());
+  expect(invoke).not.toHaveBeenCalledWith(RUN_PROBE_ONCE_COMMAND, expect.anything());
 });

@@ -815,7 +815,8 @@ pub(crate) struct SensitivityParts {
     pub reference: Option<Point>,
     pub arms: Vec<SensitivityArm>,
     pub omega_s: Option<Vec<Weights>>,
-    /// Tier III header when there is no numerator anchor. Display only.
+    /// Anchor header from `headers_for` when the numerator anchor is missing.
+    /// Display only; not a sensitivity sentence.
     pub no_reference_text: Option<String>,
 }
 

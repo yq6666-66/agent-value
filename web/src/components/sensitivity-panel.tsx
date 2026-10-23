@@ -132,7 +132,13 @@ function WinnerChart({ chart }: { chart: SensitivityChart }) {
   );
 }
 
-export function SensitivityPanel({ windowSource }: { windowSource: WindowSource }) {
+export function SensitivityPanel({
+  windowSource,
+  refreshToken = 0,
+}: {
+  windowSource: WindowSource;
+  refreshToken?: number;
+}) {
   const [extra, setExtra] = useState<Extract<SensitivitySource, "first" | "grid"> | null>(null);
   const [state, setState] = useState<PanelState>({ status: "loading" });
   const [requestId, setRequestId] = useState(0);
@@ -140,6 +146,7 @@ export function SensitivityPanel({ windowSource }: { windowSource: WindowSource 
 
   useEffect(() => {
     let cancelled = false;
+    setState({ status: "loading" });
     fetchSensitivity(source).then(
       (view) => {
         if (!cancelled) {
@@ -155,14 +162,17 @@ export function SensitivityPanel({ windowSource }: { windowSource: WindowSource 
     return () => {
       cancelled = true;
     };
-  }, [source, requestId]);
+  }, [source, requestId, refreshToken]);
 
   function choose(next: Extract<SensitivitySource, "first" | "grid">) {
     setExtra((current) => (current === next ? null : next));
     setState({ status: "loading" });
   }
 
-  const view = state.status === "ready" ? state.view : null;
+  const view =
+    state.status === "ready" && state.view.source === source ? state.view : null;
+  const showLoading =
+    state.status === "loading" || (state.status === "ready" && view === null);
 
   return (
     <section className="flex flex-col gap-3 border-t pt-4" aria-label="敏感度">
@@ -185,7 +195,7 @@ export function SensitivityPanel({ windowSource }: { windowSource: WindowSource 
           </Button>
         ))}
       </div>
-      {state.status === "loading" ? <p className="text-sm text-muted-foreground">读取中</p> : null}
+      {showLoading ? <p className="text-sm text-muted-foreground">读取中</p> : null}
       {state.status === "error" ? (
         <div className="flex flex-col items-start gap-3">
           <p className="text-sm text-destructive">未能读取敏感度</p>

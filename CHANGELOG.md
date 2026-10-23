@@ -11,8 +11,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `agent_value_core::sensitivity` for the winner map, the weight-robust
   label, and the flip sentences. The page colours that map and chooses
   which sentence to show. It does not recompute them. The first window and
-  a layer with no anchor do not show the chart. Copy is the core's. The
-  frontier table also shows robust and recommended membership.
+  a layer with no anchor do not show the chart. Flip sentences and Ω labels
+  are the core's; short withheld and no-flip lines may be shell fallbacks.
+  The frontier table also shows robust and recommended membership.
 - Desktop window: five-level self-report wizard. Question wording stays in
   the webview. Elicit commands call `agent_value_core::elicit` for the next
   question, regions and centroid, and save into `WeightLedger`. A mid-window

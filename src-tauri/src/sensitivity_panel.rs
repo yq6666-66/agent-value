@@ -1,9 +1,11 @@
 //! Sensitivity panel for one coding layer.
 //!
 //! The shell asks `agent_value_core::sensitivity` for the winner map, the
-//! weight-robust label, and the flip sentences. Printed copy is the core's
-//! constants and `flip_sentence`. This module does not colour the map and
-//! does not keep a second formula.
+//! weight-robust label, and the flip sentences. Flip sentences and Ω labels
+//! are the core's (`flip_sentence`, `WEIGHT_ROBUST_EVERYWHERE`, `FLOOR_ROBUST`).
+//! Short withheld and no-flip lines may be shell fallbacks. A missing anchor
+//! shows the tier III anchor header, not a sensitivity sentence. This module
+//! does not colour the map and does not keep a second formula.
 
 use agent_value_core::sensitivity::{
     flip_sentence, sensitivity, BehaviourRegion, NoFlipLine, RobustRegion, SensitivityArm,

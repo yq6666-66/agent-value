@@ -188,7 +188,7 @@ export function FrontierPane({ refreshToken = 0 }: { refreshToken?: number }) {
           </div>
         </>
       ) : null}
-      <SensitivityPanel windowSource={source} />
+      <SensitivityPanel windowSource={source} refreshToken={refreshToken} />
     </section>
   );
 }

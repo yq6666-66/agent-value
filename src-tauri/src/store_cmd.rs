@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
+use agent_value_core::scope::ScopeId;
+use agent_value_core::weights::WeightLedger;
 use agent_value_store::{DigestKey, ExportDump, Store};
 use serde::Deserialize;
 use serde::Serialize;
@@ -116,6 +118,42 @@ pub fn export_store(state: &AppState) -> Result<ExportReport, String> {
 pub fn delete_all(state: &AppState) -> Result<(), String> {
     let mut store = state.lock()?;
     store.delete_all().map_err(|err| err.to_string())
+}
+
+/// The stored ledger for `scope`, or a new default ledger when none was saved.
+pub fn read_weight_ledger(state: &AppState, scope: &ScopeId) -> Result<WeightLedger, String> {
+    let store = state.lock()?;
+    match store
+        .load_weight_ledger(scope)
+        .map_err(|err| err.to_string())?
+    {
+        Some(ledger) => Ok(ledger),
+        None => Ok(WeightLedger::new(scope.clone())),
+    }
+}
+
+/// Loads the scope's ledger, applies `update`, and saves it.
+///
+/// A new scope has no rows yet; the default version is written with the update.
+/// If `update` returns an error, nothing is written.
+pub fn update_weight_ledger<T>(
+    state: &AppState,
+    scope: &ScopeId,
+    update: impl FnOnce(&mut WeightLedger) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut store = state.lock()?;
+    let mut ledger = match store
+        .load_weight_ledger(scope)
+        .map_err(|err| err.to_string())?
+    {
+        Some(ledger) => ledger,
+        None => WeightLedger::new(scope.clone()),
+    };
+    let value = update(&mut ledger)?;
+    store
+        .save_weight_ledger(&ledger)
+        .map_err(|err| err.to_string())?;
+    Ok(value)
 }
 
 fn report_for(dump: &ExportDump, path: Option<String>) -> ExportReport {

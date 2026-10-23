@@ -7,6 +7,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Desktop: manual “跑一次” on the probe panel. The button is shown only
+  after consent is accepted, for the store source, when launch is `ready`.
+  It stays hidden for `blocked-*`, `running`, `completed`, and `failed`,
+  and when this build cannot send. Opening the page does not start a
+  probe. The button calls `run_probe_once`, which runs the shell
+  `probe_run::run_once` inside `spawn_blocking` so the blocking HTTP
+  client stays off the async runtime. The command takes an arm already
+  stored or already shown, the key's environment-variable name, and the
+  base URL. It does not take a token. The seed is 20261022 and the
+  claims are the typical plan (tool call and JSON); the page does not
+  choose them. Each request times out after 60 seconds, the same default
+  as `probe_live.py`. The token is read from that variable or a
+  gitignored `.env`. While the call is in flight the panel says the probe
+  is running. A failure shows the returned detail and does not render a
+  rejected error string. Success reloads the panel from the store
+  source. `sends_http` is true because this command can send.
+  Observation copy stays reference-only. Thresholds are unchanged.
+  There is no scheduler.
 - Shell: one probe run for a selected arm (`agent-value-probe-run`).
   The caller passes the arm, the key's environment-variable name, and
   the base URL. Gates, in order: no stored consent (`blocked-consent`);
@@ -24,10 +42,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   measured price. The panel label is the typical plan (tool call and
   JSON), not this arm's claims. A second overlapping call does not send.
   The single-flight lock and the budget snapshot are per process. Keys
-  stay out of the store and out of evidence summaries. The panel shows
-  `ready` when a run is allowed. `sends_http` stays false: the page has
-  no run button. Observation thresholds are unchanged, and this run does
-  not mark the observation period done.
+  stay out of the store and out of evidence summaries.   The panel shows
+  `ready` when a run is allowed. Observation thresholds are unchanged,
+  and this run does not mark the observation period done.
 - Core: `probe::build_openai_chat_plan` returns the OpenAI Chat Completions
   request bodies for one minimal probe (`det-01`…`det-10`, plus `cap-tool`
   and `cap-json` when those capabilities are claimed). The `probe_plan`

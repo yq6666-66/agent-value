@@ -81,9 +81,7 @@ impl AppState {
         })
     }
 
-    /// Store mutex for [`crate::probe_run::run_once`]. The panel does not
-    /// send, so a build that never calls the run may not use this.
-    #[allow(dead_code)]
+    /// Store mutex for [`crate::probe_run::run_once`].
     pub(crate) fn store(&self) -> &Mutex<Store> {
         &self.store
     }

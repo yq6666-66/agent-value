@@ -3,11 +3,12 @@
 //! Consent and charges come from the local store. Budget decisions,
 //! observation-period copy, and authenticity grades come from
 //! `agent_value_core`. The fixture source judges the checked-in replay.
-//! This view does not send HTTP. [`crate::probe_run::run_once`] can, when
-//! a caller asks; the webview is not wired to it, so `sends_http` stays
-//! false.
+//! This view does not send HTTP. [`crate::probe_run::run_from_webview`] can,
+//! when the webview asks, and it runs on a blocking thread. `sends_http`
+//! is true because that command is registered. Opening the page does not
+//! run a probe. Observation thresholds are unchanged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
@@ -51,11 +52,21 @@ pub struct ProbePanel {
     pub grade_run_days_label: String,
     pub launch: String,
     pub launch_label: String,
-    /// False until the webview is wired to a run. A shell `run_once` can
-    /// send; this panel does not.
+    /// True in this build: `run_probe_once` can send when consent and the
+    /// monthly budget allow. This view command does not send.
     pub sends_http: bool,
     pub arms: Vec<ProbeArmView>,
+    /// Arms the webview may pass to `run_probe_once`. Stored arms, then any
+    /// probe-result arm not already listed. The id is `Arm`'s display
+    /// string. Empty for the fixture source. No key material.
+    pub run_targets: Vec<ProbeRunTarget>,
     pub empty_reason: Option<String>,
+}
+
+/// One arm the run command can resolve. `id` is not a secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProbeRunTarget {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -226,6 +237,27 @@ fn stored_groups(store: &agent_value_store::Store) -> Result<Vec<(Arm, Vec<Probe
     Ok(groups.into_iter().collect())
 }
 
+fn push_target(seen: &mut BTreeSet<String>, targets: &mut Vec<ProbeRunTarget>, arm: &Arm) {
+    let id = arm.to_string();
+    if seen.insert(id.clone()) {
+        targets.push(ProbeRunTarget { id });
+    }
+}
+
+/// Store arms first, so a route with no probe result yet can still be run.
+/// Probe-result arms are included when they are not already in that list.
+fn run_target_list(store: &agent_value_store::Store) -> Result<Vec<ProbeRunTarget>, String> {
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+    for (_, arm) in store.list_arms().map_err(|err| err.to_string())? {
+        push_target(&mut seen, &mut targets, &arm);
+    }
+    for result in store.list_probe_results().map_err(|err| err.to_string())? {
+        push_target(&mut seen, &mut targets, &result.arm);
+    }
+    Ok(targets)
+}
+
 fn decision_text(decision: BudgetDecision) -> &'static str {
     match decision {
         BudgetDecision::Allow => "allow",
@@ -248,7 +280,7 @@ fn assemble(
     let budget = budget_view(spent, estimate, at_ms)?;
     let launch = app.flight.launch(accepted, budget.decision);
     let observation_state = current_observation();
-    let (fixture, arms, empty_reason) = match source {
+    let (fixture, arms, run_targets, empty_reason) = match source {
         "store" => {
             let groups = store_cmd::with_store(app, stored_groups)?;
             let mut arms = Vec::with_capacity(groups.len());
@@ -260,11 +292,17 @@ fn assemble(
             } else {
                 None
             };
-            (false, arms, empty_reason)
+            let run_targets = store_cmd::with_store(app, run_target_list)?;
+            (false, arms, run_targets, empty_reason)
         }
         "fixture" => {
             let (arm, results) = fixture_results()?;
-            (true, vec![judge_arm(&arm, &results, accepted)?], None)
+            (
+                true,
+                vec![judge_arm(&arm, &results, accepted)?],
+                Vec::new(),
+                None,
+            )
         }
         _ => return Err(format!("unknown probe source: {source}")),
     };
@@ -274,7 +312,7 @@ fn assemble(
         fixture,
         decided,
         accepted,
-        consent_prompt: format!("{budget_label}。同意之前不会自动探测。本版 UI 尚未接线。"),
+        consent_prompt: format!("{budget_label}。同意之前不会自动探测。同意之后可以手动跑一次。"),
         monthly_budget_label: budget_label,
         spent_label: format!("本月已花 {} 元", spent.format_yuan()),
         estimate_label: format!("典型计划估价 {} 元", estimate.format_yuan()),
@@ -285,8 +323,9 @@ fn assemble(
         grade_run_days_label: grade_run_days_label(),
         launch: launch.as_str().to_string(),
         launch_label: launch.label().to_string(),
-        sends_http: false,
+        sends_http: true,
         arms,
+        run_targets,
         empty_reason,
     })
 }
@@ -362,7 +401,8 @@ mod tests {
         let panel = view(&app(), "store").unwrap();
         assert!(!panel.decided);
         assert!(!panel.accepted);
-        assert!(!panel.sends_http);
+        assert!(panel.sends_http);
+        assert!(panel.run_targets.is_empty());
         assert_eq!(panel.launch, "blocked-consent");
         assert_eq!(panel.launch_label, ProbeLaunch::BlockedConsent.label());
         assert!(panel.arms.is_empty());
@@ -372,7 +412,7 @@ mod tests {
         assert_eq!(panel.monthly_budget_label, budget);
         assert_eq!(
             panel.consent_prompt,
-            format!("{budget}。同意之前不会自动探测。本版 UI 尚未接线。")
+            format!("{budget}。同意之前不会自动探测。同意之后可以手动跑一次。")
         );
         let estimate = typical_probe_estimate().unwrap();
         assert!(estimate.micros() > 0);
@@ -401,13 +441,15 @@ mod tests {
     }
 
     #[test]
-    fn first_consent_sticks_and_the_panel_stays_unwired() {
+    fn first_consent_sticks_and_a_manual_run_is_allowed() {
         let app = app();
         let accepted = set_consent(&app, true, "store").unwrap();
         assert!(accepted.decided && accepted.accepted);
         assert_eq!(accepted.launch, ProbeLaunch::Ready.as_str());
         assert_eq!(accepted.launch_label, ProbeLaunch::Ready.label());
-        assert!(!accepted.sends_http);
+        assert!(accepted.sends_http);
+        assert!(!accepted.launch_label.contains("已校准"));
+        assert!(!accepted.consent_prompt.contains("已校准"));
         let declined = set_consent(&app, false, "store").unwrap();
         assert!(declined.accepted);
         assert_eq!(declined.launch, ProbeLaunch::Ready.as_str());
@@ -428,7 +470,7 @@ mod tests {
         let panel = view(&app, "store").unwrap();
         assert_eq!(panel.budget_decision, "stop");
         assert_eq!(panel.launch, "blocked-budget");
-        assert!(!panel.sends_http);
+        assert!(panel.sends_http);
         let (year, month) = budget_month(at).unwrap();
         let estimate = typical_probe_estimate().unwrap();
         assert_eq!(
@@ -458,7 +500,7 @@ mod tests {
         let panel = view(&app, "store").unwrap();
         assert_eq!(panel.budget_decision, "stop");
         assert_eq!(panel.launch, ProbeLaunch::BlockedBudget.as_str());
-        assert!(!panel.sends_http);
+        assert!(panel.sends_http);
         let (year, month) = budget_month(at).unwrap();
         assert_eq!(
             panel.over_budget_prompt.unwrap(),
@@ -555,7 +597,45 @@ mod tests {
             .labels
             .iter()
             .any(|label| label == AuthLabel::ObservationOnly.zh()));
-        assert!(!panel.sends_http);
+        assert!(panel.sends_http);
+    }
+
+    #[test]
+    fn a_stored_arm_is_a_run_target_and_the_fixture_is_not() {
+        let app = app();
+        store_cmd::save_arm(
+            &app,
+            store_cmd::ArmInput {
+                model: "probe-model".into(),
+                provider_kind: "relay".into(),
+                host: "relay.example".into(),
+                protocol: "openai-chat-completions".into(),
+                client: "probe-run".into(),
+            },
+        )
+        .unwrap();
+        let panel = view(&app, "store").unwrap();
+        assert!(panel.sends_http);
+        assert!(panel.arms.is_empty());
+        let arm = Arm::new(
+            ModelId::new("probe-model").unwrap(),
+            Route::new(
+                ProviderKind::Relay,
+                "relay.example",
+                Protocol::OpenAiChatCompletions,
+                "probe-run",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            panel.run_targets,
+            vec![ProbeRunTarget {
+                id: arm.to_string(),
+            }]
+        );
+        let fixture = view(&app, "fixture").unwrap();
+        assert!(fixture.run_targets.is_empty());
+        assert!(fixture.sends_http);
     }
 
     #[test]
@@ -604,6 +684,10 @@ mod tests {
             .classes
             .iter()
             .any(|class| class.verdict == ProbeVerdict::Pass.as_str()));
+        assert!(panel
+            .run_targets
+            .iter()
+            .any(|target| target.id == arm.to_string()));
     }
 
     #[test]

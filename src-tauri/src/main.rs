@@ -185,6 +185,27 @@ fn set_probe_consent(
     probe_panel::set_consent(&state, accepted, &source)
 }
 
+/// Runs one probe for an arm already stored or already shown.
+///
+/// The webview sends the arm id, the key's environment-variable name, and
+/// the base URL. The seed is [`probe_run::IN_APP_RUN_SEED`] and the claims
+/// are the H3 typical plan (tool call and JSON). The page does not choose
+/// them, and it does not send a token. HTTP is blocking, so the call runs
+/// on `spawn_blocking` and does not hold the async runtime. Opening the
+/// page does not invoke this command.
+#[tauri::command]
+async fn run_probe_once(
+    app: tauri::AppHandle,
+    input: probe_run::RunOnceInput,
+) -> Result<probe_run::RunOnceView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<store_cmd::AppState>();
+        probe_run::run_from_webview(state.inner(), &input)
+    })
+    .await
+    .map_err(|_| "这次探测没有完成。".to_string())?
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .setup(|app| {
@@ -216,7 +237,8 @@ fn main() {
             window_result,
             sensitivity,
             probe_panel,
-            set_probe_consent
+            set_probe_consent,
+            run_probe_once
         ])
         .run(tauri::generate_context!());
     if let Err(err) = result {

@@ -747,6 +747,22 @@ fn baseline_of_another_key_counts_as_no_baseline() {
         let r = fingerprint_run(&same, &other, Some(&b), NOON0).unwrap();
         assert_eq!(r.verdict, Uncertain, "{other:?}");
     }
+    // Canonical form is lower-case key=value, but only trim is applied:
+    // a different spelling is another key (uncertain, not a false fail).
+    let cased = BaselineKey::new(
+        &t,
+        "claude-haiku-4-5",
+        Protocol::AnthropicMessages,
+        "Temperature=1",
+    );
+    assert_eq!(cased.sampling, "Temperature=1");
+    assert_ne!(cased, key());
+    assert_eq!(
+        fingerprint_run(&same, &cased, Some(&b), NOON0)
+            .unwrap()
+            .verdict,
+        Uncertain
+    );
 }
 
 #[test]
@@ -931,7 +947,7 @@ fn alias_values_with_upper_case_still_classify() {
         .insert("my-haiku".into(), " Claude-Haiku-4-5-20251001 ".into());
     assert_eq!(t.normalize("My-Haiku"), "claude-haiku-4-5");
     assert_eq!(t.family("my-haiku"), "claude-haiku");
-    assert_eq!(t.vendor("my-haiku"), Some("anthropic"));
+    assert_eq!(t.vendor("my-haiku").as_deref(), Some("anthropic"));
     let claimed = ModelId::new("claude-haiku-4-5").unwrap();
     assert!(!other_family(&t, &claimed, "my-haiku"));
     assert!(other_family(&t, &claimed, "gpt-5.4"));
@@ -941,6 +957,147 @@ fn alias_values_with_upper_case_still_classify() {
     // Keys are looked up after lower-casing the name: a lower-case key
     // matches any spelling of the name.
     assert_eq!(t.normalize(" MY-HAIKU "), "claude-haiku-4-5");
+}
+
+#[test]
+fn caller_vendor_tables_with_upper_case_still_classify() {
+    // A caller may write mixed-case or padded prefixes, hosts and vendor
+    // names. They are trimmed and lower-cased on use, so the family vendor,
+    // foreign-usage and official-direct checks still agree
+    // (DECISIONS 13.6, 13.7).
+    let mut t = VendorTables {
+        family_vendor: vec![
+            (" Claude ".into(), " Anthropic ".into()),
+            ("GPT".into(), "OpenAI".into()),
+            ("O".into(), "OpenAI".into()),
+        ],
+        official_hosts: [
+            (" API.Anthropic.com ".into(), "anthropic".into()),
+            ("API.OpenAI.com".into(), " OpenAI ".into()),
+        ]
+        .into(),
+        ..VendorTables::default()
+    };
+
+    assert_eq!(t.vendor("claude-haiku-4-5").as_deref(), Some("anthropic"));
+    assert_eq!(t.vendor(" GPT-5.4 ").as_deref(), Some("openai"));
+    // Version-attached prefix: "O" must match o3 after lower-casing.
+    assert_eq!(t.vendor("o3").as_deref(), Some("openai"));
+    assert_eq!(
+        t.official_vendor(" API.Anthropic.COM ").as_deref(),
+        Some("anthropic")
+    );
+    assert_eq!(
+        t.official_vendor("api.openai.com").as_deref(),
+        Some("openai")
+    );
+
+    let haiku = ModelId::new("claude-haiku-4-5").unwrap();
+    let gpt = ModelId::new("gpt-5.4").unwrap();
+    let oc = Protocol::OpenAiChatCompletions;
+    let none = CapabilityClaims::default();
+    let reply = |model: &str, usage: &[&str]| {
+        Exchange::Answered(Reply {
+            text: "1".into(),
+            returned_model: Some(model.into()),
+            usage_fields: usage.iter().map(|s| (*s).to_string()).collect(),
+            tool_call: None,
+        })
+    };
+    // Own vendor, despite the table saying " Anthropic ": not foreign.
+    assert!(hard_failures(
+        &t,
+        &haiku,
+        &oc,
+        &none,
+        None,
+        &reply("claude-haiku-4-5", &["cache_read_input_tokens"])
+    )
+    .is_empty());
+    // A different vendor's field is still foreign.
+    let h = hard_failures(
+        &t,
+        &gpt,
+        &oc,
+        &none,
+        None,
+        &reply("gpt-5.4", &["cache_read_input_tokens"]),
+    );
+    assert_eq!(
+        h,
+        vec![HardFailure::ForeignUsage {
+            field: "cache_read_input_tokens".into(),
+            vendor: "anthropic".into(),
+        }]
+    );
+
+    // Family value " Anthropic " and host value "anthropic" are the same
+    // vendor after normalisation, so the route is official direct.
+    assert!(is_official_direct(
+        &t,
+        &arm(
+            "claude-haiku-4-5",
+            "api.anthropic.com",
+            Protocol::AnthropicMessages
+        )
+    ));
+    assert!(is_official_direct(
+        &t,
+        &arm("gpt-5.4", "api.openai.com", Protocol::OpenAiResponses)
+    ));
+    assert!(!is_official_direct(
+        &t,
+        &arm(
+            "claude-haiku-4-5",
+            "api.openai.com",
+            Protocol::OpenAiChatCompletions
+        )
+    ));
+    // Blank after trimming matches nothing: not every model, not an empty host.
+    t.family_vendor.push(("  ".into(), " Anthropic ".into()));
+    t.official_hosts.insert("  ".into(), "anthropic".into());
+    assert_eq!(t.vendor("llama-3").as_deref(), None);
+    assert_eq!(t.official_vendor("   ").as_deref(), None);
+}
+
+#[test]
+fn mixed_case_insert_overrides_the_builtin_row() {
+    // Fields stay public, so a later insert is not rewritten in the map.
+    // A padded or mixed-case host that normalizes to a built-in key must
+    // override that row. BTreeMap order would keep the built-in key, which
+    // sorts after a leading space (DECISIONS 13.7).
+    let mut t = VendorTables::default();
+    t.official_hosts
+        .insert(" API.Anthropic.com ".into(), " Custom ".into());
+    assert_eq!(
+        t.official_vendor("api.anthropic.com").as_deref(),
+        Some("custom")
+    );
+    assert!(!is_official_direct(
+        &t,
+        &arm(
+            "claude-haiku-4-5",
+            "api.anthropic.com",
+            Protocol::AnthropicMessages
+        )
+    ));
+    // Same normalized prefix length: the later vec entry wins, so push
+    // overrides the built-in family row (DECISIONS 13.6).
+    t.family_vendor.push((" Claude ".into(), " Custom ".into()));
+    assert_eq!(t.vendor("claude-haiku-4-5").as_deref(), Some("custom"));
+    assert!(is_official_direct(
+        &t,
+        &arm(
+            "claude-haiku-4-5",
+            "api.anthropic.com",
+            Protocol::AnthropicMessages
+        )
+    ));
+    assert_eq!(
+        t.official_vendor("api.openai.com").as_deref(),
+        Some("openai")
+    );
+    assert_eq!(t.vendor("gpt-5.4").as_deref(), Some("openai"));
 }
 
 #[test]
@@ -971,10 +1128,10 @@ fn model_normalisation_family_and_vendor() {
         ("qwen3-coder-plus", "alibaba"),
         ("qwen-max", "alibaba"),
     ] {
-        assert_eq!(t.vendor(m), Some(v), "{m}");
+        assert_eq!(t.vendor(m).as_deref(), Some(v), "{m}");
     }
-    assert_eq!(t.vendor("openchat-3.5"), None);
-    assert_eq!(t.vendor("llama-3"), None);
+    assert_eq!(t.vendor("openchat-3.5").as_deref(), None);
+    assert_eq!(t.vendor("llama-3").as_deref(), None);
     let mut aliased = VendorTables::default();
     aliased
         .aliases
@@ -1155,8 +1312,11 @@ fn official_direct_by_host_and_vendor() {
         &t,
         &arm("llama-3", "api.openai.com", Protocol::OpenAiChatCompletions)
     ));
-    assert_eq!(t.official_vendor("api.deepseek.com"), Some("deepseek"));
-    assert_eq!(t.official_vendor("kapibala.asia"), None);
+    assert_eq!(
+        t.official_vendor("api.deepseek.com").as_deref(),
+        Some("deepseek")
+    );
+    assert_eq!(t.official_vendor("kapibala.asia").as_deref(), None);
 }
 
 // ------------------------------------------------------- 13.3 / grades

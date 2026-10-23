@@ -124,6 +124,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Tests compare the bank, every (question, grid point) level, the 528
   cut-point pairs and all 171 honest sessions with the reference script.
 
+### Fixed
+- Core: caller-supplied `family_vendor` prefixes and vendor names, and
+  `official_hosts` keys and vendor names, are trimmed and lower-cased on
+  lookup. A table written as `Anthropic` or ` API.Anthropic.com ` no
+  longer mis-fires foreign usage or misses official-direct. An entry
+  that is empty after trimming is ignored (DECISIONS 13.6, 13.7).
+  A host key that is not already canonical overrides the built-in row
+  for that host, so a mixed-case insert is not dropped because of
+  `BTreeMap` order. The same normalized family-prefix length keeps the
+  later entry, so `push` overrides a built-in prefix.
+- Docs: `BaselineKey` sampling is documented as trim-only. The canonical
+  form is lower-case `key=value` parameters joined in a stable order
+  (for example `temperature=1`). `Temperature=1` and `temperature=1`
+  stay different keys, so the fingerprint class is uncertain rather than
+  a false fail. Noted on `BaselineKey` / `BaselineKey::new` and in the
+  English and Chinese READMEs. Matching behaviour is unchanged.
+
 ### Changed
 - Core, authenticity `grade` (DECISIONS 13.13): the A− fingerprint condition
   is monotonic. Fingerprint qualifies unless it has 0 pass days and at
@@ -145,6 +162,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   each require their existing conditions and `cf ≤ 1`. If `cf ≥ 2` and
   the arm is not already C, the grade is at most B. Capability fails
   still do not count toward C.
+- Core: `VendorTables::vendor` and `VendorTables::official_vendor` now
+  return `Option<String>` instead of `Option<&str>`. The string is the
+  trimmed, lower-cased vendor, which may not be the text stored in the
+  public fields. `agent-value-core` is a workspace-internal crate
+  (`publish = false` on the workspace package), not a published crate.
 - README section 9 (English and Chinese): in a question's equal dimension
   both options show the base up to at most 1 ulp of (base + noise floor).
 - Core: `resolve_fallback` validates the candidate (finite, non-negative

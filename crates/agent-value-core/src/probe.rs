@@ -673,17 +673,31 @@ pub fn nearest_rank(values: &[f64], p: f64) -> Result<f64> {
 /// What a fingerprint baseline is kept for (§11.2): model version,
 /// protocol and sampling parameters. A route's samples are compared only
 /// with a baseline of the same key.
+///
+/// Sampling is not parsed. [`BaselineKey::new`] only trims `sampling` and
+/// then compares that text, so `"Temperature=1"` and `"temperature=1"` are
+/// different keys and the fingerprint class is uncertain, not a false fail.
+/// The canonical form is lower-case `key=value` parameters joined in a
+/// stable order chosen by the caller, for example `"temperature=1"`.
+/// Callers should lowercase and join before building the key; this type
+/// does not rewrite case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineKey {
     /// Normalized model name ([`VendorTables::normalize`]).
     pub model_version: String,
     pub protocol: Protocol,
-    /// Sampling parameters as a canonical string chosen by the caller,
-    /// e.g. `"temperature=1"`.
+    /// Sampling parameters in the canonical form described on [`BaselineKey`].
+    /// Only surrounding whitespace is removed; letter case is significant.
     pub sampling: String,
 }
 
 impl BaselineKey {
+    /// Builds a key. `model` goes through [`VendorTables::normalize`].
+    ///
+    /// `sampling` is trimmed and otherwise stored unchanged. Pass the
+    /// lower-case `key=value` form, pairs joined in a stable order
+    /// (for example `"temperature=1"`), so two runs of the same parameters
+    /// share a key. See [`BaselineKey`].
     pub fn new(tables: &VendorTables, model: &str, protocol: Protocol, sampling: &str) -> Self {
         Self {
             model_version: tables.normalize(model),
@@ -773,8 +787,19 @@ pub fn fingerprint_run(
 
 // ------------------------------------------------- model names and vendors
 
+/// Trim and lower-case one caller-supplied table token (DECISIONS 13.6, 13.7).
+fn table_token(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
 /// Model-family and vendor tables (DECISIONS 13.6, 13.7). `Default` holds
 /// the built-in tables; callers may replace or extend them.
+///
+/// Prefixes, host keys and vendor names are trimmed and lower-cased on
+/// lookup ([`VendorTables::vendor`], [`VendorTables::official_vendor`]),
+/// the same way alias values are. A caller cannot bypass that by writing
+/// `"Anthropic"` or `" API.Anthropic.com "` into the public fields
+/// (DECISIONS 13.6, 13.7). An entry that is empty after trimming is ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorTables {
     /// Exact alias → canonical name. The lookup key is the trimmed,
@@ -782,8 +807,14 @@ pub struct VendorTables {
     /// is trimmed and lower-cased again on use (DECISIONS 13.6).
     pub aliases: BTreeMap<String, String>,
     /// Family-name prefix → vendor; the longest matching prefix wins.
+    /// Both sides are trimmed and lower-cased on lookup. The same
+    /// normalized length keeps the later entry, so `push` overrides a
+    /// built-in prefix (DECISIONS 13.6).
     pub family_vendor: Vec<(String, String)>,
-    /// Official host → vendor.
+    /// Official host → vendor. The host key and the vendor are trimmed
+    /// and lower-cased on lookup. A key that is not already that
+    /// canonical host overrides the built-in row, so a mixed-case insert
+    /// is not lost to `BTreeMap` order (DECISIONS 13.7).
     pub official_hosts: BTreeMap<String, String>,
 }
 
@@ -867,28 +898,65 @@ impl VendorTables {
 
     /// Vendor by the longest family prefix (a whole `-` segment or a
     /// version-attached prefix such as `o3` or `qwen3`).
-    pub fn vendor(&self, name: &str) -> Option<&str> {
+    ///
+    /// The prefix and the vendor are trimmed and lower-cased before the
+    /// match, and the returned vendor is that lower-cased form, so a
+    /// caller-supplied table stays aligned with [`protocol_vendor`] and
+    /// [`usage_field_vendor`] (DECISIONS 13.6). Equal lengths keep the
+    /// later entry in [`VendorTables::family_vendor`].
+    pub fn vendor(&self, name: &str) -> Option<String> {
         let fam = self.family(name);
         let first = self.normalize(name);
         let head = first.split('-').next().unwrap_or("");
         self.family_vendor
             .iter()
-            .filter(|(p, _)| {
-                fam == *p
-                    || fam.starts_with(&format!("{p}-"))
+            .filter_map(|(prefix, vendor)| {
+                let prefix = table_token(prefix);
+                let vendor = table_token(vendor);
+                if prefix.is_empty() || vendor.is_empty() {
+                    return None;
+                }
+                let matches = fam == prefix
+                    || fam.starts_with(&format!("{prefix}-"))
                     || head
-                        .strip_prefix(p.as_str())
-                        .is_some_and(|rest| rest.is_empty() || is_version(rest))
+                        .strip_prefix(prefix.as_str())
+                        .is_some_and(|rest| rest.is_empty() || is_version(rest));
+                matches.then_some((prefix, vendor))
             })
-            .max_by_key(|(p, _)| p.len())
-            .map(|(_, v)| v.as_str())
+            .max_by_key(|(prefix, _)| prefix.len())
+            .map(|(_, vendor)| vendor)
     }
 
     /// Vendor of an official host, if the host is in the table.
-    pub fn official_vendor(&self, host: &str) -> Option<&str> {
-        self.official_hosts
-            .get(&host.trim().to_lowercase())
-            .map(String::as_str)
+    ///
+    /// The stored host and the query are both trimmed and lower-cased, and
+    /// the returned vendor is trimmed and lower-cased (DECISIONS 13.7).
+    /// The map is not rewritten: the fields are public, so a caller can
+    /// insert after [`VendorTables::default`]. A stored key that is not
+    /// already the canonical host overrides one that is, which is how
+    /// `" API.Anthropic.com "` replaces `"api.anthropic.com"` instead of
+    /// losing on `BTreeMap` order. If several such overrides match, the
+    /// last in `BTreeMap` order wins.
+    pub fn official_vendor(&self, host: &str) -> Option<String> {
+        let host = table_token(host);
+        if host.is_empty() {
+            return None;
+        }
+        let mut canonical = None;
+        let mut override_vendor = None;
+        for (key, vendor) in &self.official_hosts {
+            let key_norm = table_token(key);
+            let vendor = table_token(vendor);
+            if key_norm.is_empty() || vendor.is_empty() || key_norm != host {
+                continue;
+            }
+            if key.as_str() == key_norm {
+                canonical = Some(vendor);
+            } else {
+                override_vendor = Some(vendor);
+            }
+        }
+        override_vendor.or(canonical)
     }
 }
 
@@ -957,7 +1025,7 @@ pub fn hard_failures(
             let proto = protocol_vendor(protocol);
             for f in &r.usage_fields {
                 if let Some(vendor) = usage_field_vendor(f) {
-                    if Some(vendor) != own && Some(vendor) != proto {
+                    if own.as_deref() != Some(vendor) && Some(vendor) != proto {
                         v.push(HardFailure::ForeignUsage {
                             field: f.clone(),
                             vendor: vendor.to_string(),

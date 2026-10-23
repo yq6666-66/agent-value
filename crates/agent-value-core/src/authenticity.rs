@@ -166,7 +166,9 @@ pub fn grade(s: &DaySummary) -> AuthenticityGrade {
 }
 
 /// Official direct (DECISIONS 13.7): the route host is in the official
-/// table and its vendor is the claimed model's vendor.
+/// table and its vendor is the claimed model's vendor. Both sides are the
+/// trimmed, lower-cased table values, so a caller-supplied spelling such
+/// as `"Anthropic"` still matches.
 pub fn is_official_direct(tables: &VendorTables, arm: &Arm) -> bool {
     match (
         tables.official_vendor(arm.route().host()),

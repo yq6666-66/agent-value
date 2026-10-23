@@ -1132,6 +1132,31 @@ mod tests {
         assert!(charges_of(&app).is_empty());
     }
 
+    #[test]
+    fn the_webview_permission_allows_set_probe_schedule() {
+        let toml = include_str!("../permissions/probe-panel.toml");
+        let allow_at = toml.find("commands.allow").expect("commands.allow");
+        let allow = &toml[allow_at..];
+        let open = allow.find('[').expect("allow list");
+        let close = allow.find(']').expect("allow list end");
+        let listed = &allow[open..=close];
+        for command in [
+            "probe_panel",
+            "set_probe_consent",
+            "run_probe_once",
+            "set_probe_schedule",
+        ] {
+            assert!(
+                listed.contains(&format!("\"{command}\"")),
+                "{command} missing from {listed}"
+            );
+        }
+        let description = &toml[..allow_at];
+        assert!(description.contains("set_probe_schedule"));
+        assert!(description.contains("enabling does not send"));
+        assert!(description.contains("not an operating-system cron"));
+    }
+
     fn charges_of(app: &AppState) -> Vec<(i64, i64)> {
         store_cmd::with_store(app, |store| {
             store.probe_charges().map_err(|err| err.to_string())

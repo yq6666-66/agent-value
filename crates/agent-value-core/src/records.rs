@@ -51,6 +51,22 @@ impl MicroYuan {
     pub fn yuan(&self) -> f64 {
         self.0 as f64 / 1e6
     }
+
+    /// Decimal yuan for display. The fractional part drops trailing zeros.
+    /// Whole yuan amounts have no decimal point.
+    pub fn format_yuan(self) -> String {
+        let micros = self.micros();
+        let whole = micros / 1_000_000;
+        let frac = (micros % 1_000_000) as u32;
+        if frac == 0 {
+            return whole.to_string();
+        }
+        let mut frac_text = format!("{frac:06}");
+        while frac_text.ends_with('0') {
+            frac_text.pop();
+        }
+        format!("{whole}.{frac_text}")
+    }
 }
 
 /// Token usage breakdown of one request (§8).
@@ -474,6 +490,11 @@ mod tests {
         assert!(MicroYuan::from_yuan(f64::NAN).is_err());
         assert!(MicroYuan::new(-1).is_err());
         assert!((MicroYuan::new(2_850_000).unwrap().yuan() - 2.85).abs() <= 1e-9);
+        assert_eq!(MicroYuan::from_yuan(10.0).unwrap().format_yuan(), "10");
+        assert_eq!(MicroYuan::new(9_990_000).unwrap().format_yuan(), "9.99");
+        assert_eq!(MicroYuan::new(10_000).unwrap().format_yuan(), "0.01");
+        assert_eq!(MicroYuan::new(100_000).unwrap().format_yuan(), "0.1");
+        assert_eq!(MicroYuan::new(0).unwrap().format_yuan(), "0");
     }
 
     #[test]

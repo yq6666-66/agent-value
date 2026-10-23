@@ -894,3 +894,51 @@ fn list_user_tasks_keeps_the_window_and_sums_charges() {
         None
     );
 }
+
+#[test]
+fn probe_consent_is_written_once_and_charges_round_trip() {
+    let s = mem();
+    assert!(s.probe_consent().unwrap().is_none());
+    let first = s.set_probe_consent(true, NOW).unwrap();
+    assert!(first.accepted);
+    assert_eq!(first.at_ms, NOW);
+    let again = s.set_probe_consent(false, NOW + 5).unwrap();
+    assert_eq!(again, first);
+    assert!(s.probe_consent().unwrap().unwrap().accepted);
+
+    let amount = MicroYuan::from_yuan(1.5).unwrap();
+    s.record_probe_charge(NOW, amount).unwrap();
+    s.record_probe_charge(NOW + 1, MicroYuan::new(20_000).unwrap())
+        .unwrap();
+    assert_eq!(
+        s.probe_charges().unwrap(),
+        vec![(NOW, amount.micros()), (NOW + 1, 20_000)]
+    );
+
+    let stored = ProbeResult {
+        probe_id: "deterministic-set".into(),
+        probe_version: "1".into(),
+        arm: relay(),
+        at_ms: NOW,
+        class: ProbeClass::Deterministic,
+        verdict: ProbeVerdict::Pass,
+        hard_failure: false,
+        evidence_summary: "pass: correct 10, wrong 0, unanswered 0".into(),
+    };
+    s.insert_probe_result(&stored).unwrap();
+    let listed = s.list_probe_results().unwrap();
+    assert_eq!(listed, vec![stored]);
+}
+
+#[test]
+fn delete_all_clears_probe_consent_and_charges() {
+    let s = mem();
+    s.set_probe_consent(false, NOW).unwrap();
+    s.record_probe_charge(NOW, MicroYuan::new(1).unwrap())
+        .unwrap();
+    let mut s = s;
+    s.delete_all().unwrap();
+    assert!(s.probe_consent().unwrap().is_none());
+    assert!(s.probe_charges().unwrap().is_empty());
+    assert!(s.list_probe_results().unwrap().is_empty());
+}

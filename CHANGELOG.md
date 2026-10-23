@@ -7,6 +7,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Desktop window: probe consent and recorded results. The first consent
+  decision is stored locally and is not asked again. Budget and
+  observation-period sentences come from the core constants. A grade band
+  is marked reference-only while the observation period is still pending.
+  The page can show stored probe rows or the checked-in replay fixture,
+  judged by the core. It does not send probe HTTP.
 - Desktop window: sensitivity panel. A Tauri command calls
   `agent_value_core::sensitivity` for the winner map, the weight-robust
   label, and the flip sentences. The page colours that map and chooses

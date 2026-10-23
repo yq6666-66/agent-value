@@ -11,6 +11,7 @@
     "allow-window-chrome",
     "allow-elicit",
     "allow-window-result",
-    "allow-sensitivity"
+    "allow-sensitivity",
+    "allow-probe-panel"
   ]
 }

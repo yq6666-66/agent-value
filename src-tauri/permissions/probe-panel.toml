@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-probe-panel"
+description = "Allows the webview to read probe consent, budget, and recorded results, and to store the first consent decision. The command does not send probe HTTP."
+commands.allow = ["probe_panel", "set_probe_consent"]

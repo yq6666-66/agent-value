@@ -4,6 +4,7 @@
 
 mod demo_example6;
 mod elicit_cmd;
+mod probe_panel;
 mod sensitivity_panel;
 mod store_cmd;
 mod window_chrome;
@@ -159,6 +160,27 @@ fn sensitivity(
     sensitivity_panel::view(&state, &source)
 }
 
+/// Probe consent, budget, and recorded or fixture results.
+///
+/// `source` is `store` or `fixture`. This command does not send HTTP.
+#[tauri::command]
+fn probe_panel(
+    state: tauri::State<store_cmd::AppState>,
+    source: String,
+) -> Result<probe_panel::ProbePanel, String> {
+    probe_panel::view(&state, &source)
+}
+
+/// Stores the first probe-consent decision. A later call keeps that decision.
+#[tauri::command]
+fn set_probe_consent(
+    state: tauri::State<store_cmd::AppState>,
+    accepted: bool,
+    source: String,
+) -> Result<probe_panel::ProbePanel, String> {
+    probe_panel::set_consent(&state, accepted, &source)
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .setup(|app| {
@@ -188,7 +210,9 @@ fn main() {
             begin_window,
             edit_weights,
             window_result,
-            sensitivity
+            sensitivity,
+            probe_panel,
+            set_probe_consent
         ])
         .run(tauri::generate_context!());
     if let Err(err) = result {

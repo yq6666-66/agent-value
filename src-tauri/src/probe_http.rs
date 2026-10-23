@@ -4,8 +4,18 @@
 //! and `sends_http` stay as they are. `tools/probe_live.py` remains the
 //! command-line runner.
 //!
-//! Load the bearer token by variable name. Do not log that value, request
-//! headers, or reply text.
+//! [`send`] and [`run`] block the calling thread. Call them off the Tauri
+//! async runtime. Redirects are not followed, unlike the Python runner's
+//! urllib client, so a 3xx reply is `http_error` and can differ from
+//! `tools/probe_live.py`.
+//!
+//! Load the bearer token by variable name. Do not log that value or request
+//! headers. [`SendResult`]'s `Debug` redacts reply text and the other
+//! response fields that can echo the token.
+//!
+//! [`send`]: agent_value_probe_http::send
+//! [`run`]: agent_value_probe_http::run
+//! [`SendResult`]: agent_value_probe_http::SendResult
 
 #![allow(unused_imports)]
 

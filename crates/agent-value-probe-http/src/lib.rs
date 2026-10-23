@@ -13,13 +13,21 @@
 //! refuses the write.
 //!
 //! Plain `http` is accepted only for `127.0.0.1`, `localhost`, and `::1`.
-//! Every other base must be `https`. Redirects are not followed, so the
-//! bearer token is not sent to another host. `HTTP_PROXY`, `HTTPS_PROXY`, and
-//! `ALL_PROXY` are ignored for the same reason.
+//! Every other base must be `https`. Redirects are intentionally not followed.
+//! That is safer than `tools/probe_live.py`, whose urllib client follows them
+//! by default, so a 3xx reply is `http_error` here and can differ from the
+//! Python runner. The bearer token is not sent to another host.
+//! `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` are ignored for the same
+//! reason.
 //!
-//! Do not log [`SendResult`] or the string returned by [`load_key`]: the reply
-//! text and the token are in those values. A debug logger attached to `ureq`
-//! can also print request headers; leave that target off.
+//! [`send`] and [`run`] block the calling thread until the exchange or the
+//! run finishes. Call them off the Tauri async runtime.
+//!
+//! [`SendResult`]'s `Debug` redacts the model, usage field names, reply text,
+//! tool name, and tool arguments, because a response can echo the bearer
+//! token. The `String` from [`load_key`] is the token itself; do not log it.
+//! A debug logger attached to `ureq` can also print request headers; leave
+//! that target off.
 
 #![forbid(unsafe_code)]
 
@@ -140,7 +148,11 @@ pub struct RunOptions<'a> {
 ///
 /// On `ok`, `text` is present (possibly empty). Other kinds leave the reply
 /// fields empty and do not keep the response body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` redacts `model`, `usage_fields`, `text`, `tool_name`, and
+/// `tool_args`. Those strings come from the response and can echo the bearer
+/// token. Do not log the struct with a format that prints the fields raw.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SendResult {
     pub at_ms: i64,
     pub latency_ms: i64,
@@ -151,6 +163,45 @@ pub struct SendResult {
     pub text: Option<String>,
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
+}
+
+/// `Debug` stand-in for one response string.
+struct RedactedOpt(bool);
+
+impl std::fmt::Debug for RedactedOpt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0 { "<redacted>" } else { "None" })
+    }
+}
+
+/// `Debug` stand-in for usage field names. An empty list cannot contain the
+/// token, so it stays visible.
+struct RedactedList(usize);
+
+impl std::fmt::Debug for RedactedList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            f.write_str("[]")
+        } else {
+            write!(f, "<redacted len={}>", self.0)
+        }
+    }
+}
+
+impl std::fmt::Debug for SendResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendResult")
+            .field("at_ms", &self.at_ms)
+            .field("latency_ms", &self.latency_ms)
+            .field("kind", &self.kind)
+            .field("status", &self.status)
+            .field("model", &RedactedOpt(self.model.is_some()))
+            .field("usage_fields", &RedactedList(self.usage_fields.len()))
+            .field("text", &RedactedOpt(self.text.is_some()))
+            .field("tool_name", &RedactedOpt(self.tool_name.is_some()))
+            .field("tool_args", &RedactedOpt(self.tool_args.is_some()))
+            .finish()
+    }
 }
 
 /// `true` when `base` may be used. `https` is always allowed. `http` is
@@ -190,6 +241,12 @@ pub fn load_key_from(var: &str, dotenv: &Path) -> Result<String, ProbeHttpError>
 
 /// Sends `body` to `{base}/v1/chat/completions` and classifies the outcome.
 ///
+/// This blocks the calling thread until the response is classified or
+/// `timeout` elapses. Do not call it on the Tauri async runtime.
+///
+/// Redirects are not followed. A 3xx response is [`KIND_HTTP_ERROR`] with
+/// that status, which can differ from `tools/probe_live.py`.
+///
 /// Transport failures become a [`SendResult`]. The token and the base are
 /// rejected before a socket is opened.
 pub fn send(
@@ -217,6 +274,10 @@ pub fn send(
 }
 
 /// Loads the token, sends every plan row, and writes the replay and log.
+///
+/// This blocks the calling thread for every request, including timeouts and
+/// the pause between rows. Do not call it on the Tauri async runtime.
+/// Redirects are not followed; see [`send`].
 ///
 /// The base and the token are checked before either file is created. Send
 /// order is shuffled. A key-echo refusal leaves any earlier rows in place
@@ -736,6 +797,16 @@ mod tests {
         }
     }
 
+    /// Serializes tests that read or write the process environment.
+    /// `set_var` races with `getenv` on other threads. ureq reads proxy
+    /// variables while building an agent, and key loading reads the token
+    /// name. Hold the guard for the whole test, and create it before any
+    /// `EnvSet` so the variables are restored before the lock is released.
+    fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
     fn mock_base() -> &'static str {
         static BASE: OnceLock<String> = OnceLock::new();
         BASE.get_or_init(|| {
@@ -1041,6 +1112,12 @@ mod tests {
 
     #[test]
     fn needles_match_python_json_and_tsv_escaping() {
+        let _env = lock_test_env();
+        let key = "a\"b";
+        assert!(leaks_key(key, "a\"b"));
+        assert!(leaks_key(key, r#"a\"b"#));
+        assert!(!leaks_key(key, "ab"));
+
         let samples = [
             "plain",
             "a\"b",
@@ -1064,7 +1141,7 @@ json.dump({
     "tsv": [esc(s) for s in items],
 }, sys.stdout)
 "#;
-        let mut child = std::process::Command::new("python3")
+        let mut child = match std::process::Command::new("python3")
             .arg("-c")
             .arg(script)
             .stdin(std::process::Stdio::piped())
@@ -1072,7 +1149,14 @@ json.dump({
             .stderr(std::process::Stdio::piped())
             .env("PYTHONIOENCODING", "utf-8")
             .spawn()
-            .unwrap();
+        {
+            Ok(child) => child,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping python needle comparison: python3 is not available");
+                return;
+            }
+            Err(err) => panic!("python3 failed to start: {err}"),
+        };
         child
             .stdin
             .take()
@@ -1095,10 +1179,6 @@ json.dump({
             );
             assert_eq!(tsv_escape(sample), tsv_needles[index].as_str().unwrap());
         }
-        let key = "a\"b";
-        assert!(leaks_key(key, "a\"b"));
-        assert!(leaks_key(key, r#"a\"b"#));
-        assert!(!leaks_key(key, "ab"));
     }
 
     #[test]
@@ -1146,6 +1226,7 @@ json.dump({
 
     #[test]
     fn environment_is_used_without_opening_dotenv() {
+        let _env = lock_test_env();
         let tmp = Tmp::new();
         let missing = tmp.path().join("missing.env");
         let got = load_key_from("CARGO_MANIFEST_DIR", &missing).unwrap();
@@ -1155,6 +1236,7 @@ json.dump({
 
     #[test]
     fn dotenv_file_is_used_when_the_variable_is_unset() {
+        let _env = lock_test_env();
         require_unset(KEY_ENV);
         let tmp = Tmp::new();
         let dotenv = tmp.path().join(".env");
@@ -1168,6 +1250,7 @@ json.dump({
 
     #[test]
     fn send_kind_table_and_ok_fields() {
+        let _env = lock_test_env();
         let cases = [
             ("429", KIND_RATE_LIMITED, Some(429u16)),
             ("503", KIND_HTTP_ERROR, Some(503)),
@@ -1235,6 +1318,7 @@ json.dump({
 
     #[test]
     fn timeout_and_connection_refused_match_python_kinds() {
+        let _env = lock_test_env();
         let timed = send(
             mock_base(),
             KEY,
@@ -1265,6 +1349,7 @@ json.dump({
 
     #[test]
     fn disallowed_base_and_unsafe_token_do_not_become_replies() {
+        let _env = lock_test_env();
         let err = send(
             "http://192.0.2.1/v1",
             KEY,
@@ -1288,6 +1373,7 @@ json.dump({
 
     #[test]
     fn send_ignores_proxy_environment() {
+        let _env = lock_test_env();
         let _guards = [
             "HTTP_PROXY",
             "http_proxy",
@@ -1337,6 +1423,7 @@ json.dump({
 
     #[test]
     fn run_writes_an_ok_replay_the_core_can_parse() {
+        let _env = lock_test_env();
         let (tmp, result) = run_plan(
             &[("det-01", "ok"), ("cap-tool", "tool")],
             &format!("\"{KEY}\""),
@@ -1401,6 +1488,7 @@ json.dump({
 
     #[test]
     fn run_records_rate_limit_without_the_error_body() {
+        let _env = lock_test_env();
         let (tmp, result) = run_plan(&[("det-01", "429")], KEY);
         assert!(result.is_ok(), "{result:?}");
         let (replay, log) = read_outputs(&tmp);
@@ -1417,6 +1505,7 @@ json.dump({
 
     #[test]
     fn run_refuses_to_write_when_the_reply_echoes_the_key() {
+        let _env = lock_test_env();
         let (tmp, result) = run_plan(&[("det-01", "echo-key")], KEY);
         let err = result.unwrap_err();
         let rendered = format!("{err} {err:?}");
@@ -1431,6 +1520,7 @@ json.dump({
 
     #[test]
     fn plain_http_elsewhere_does_not_create_output_files() {
+        let _env = lock_test_env();
         require_unset(KEY_ENV);
         let tmp = Tmp::new();
         let dotenv = tmp.path().join(".env");
@@ -1461,6 +1551,7 @@ json.dump({
 
     #[test]
     fn escaped_reply_text_roundtrips_through_the_core() {
+        let _env = lock_test_env();
         let result = send_case("tab-text");
         let line = format_replay_line("det-01", &result);
         let records = parse_replay(&format!("{REPLAY_HEADER}\n{line}\n")).unwrap();
@@ -1472,6 +1563,7 @@ json.dump({
 
     #[test]
     fn quoted_dotenv_token_is_sent_without_the_quotes() {
+        let _env = lock_test_env();
         let (tmp, result) = run_plan(&[("det-01", "auth-check")], &format!("\"{KEY}\""));
         assert!(result.is_ok(), "{result:?}");
         let (replay, log) = read_outputs(&tmp);
@@ -1481,5 +1573,33 @@ json.dump({
             Exchange::Answered(reply) => assert_eq!(reply.text, "auth ok"),
             other => panic!("quotes were not stripped: {other:?}"),
         }
+    }
+
+    #[test]
+    fn debug_redacts_fields_that_can_echo_the_key() {
+        let secret = "echo-stand-in";
+        let result = SendResult {
+            at_ms: 1,
+            latency_ms: 2,
+            kind: KIND_OK,
+            status: Some(200),
+            model: Some(secret.to_string()),
+            usage_fields: vec![secret.to_string()],
+            text: Some(format!("prefix {secret} suffix")),
+            tool_name: Some(secret.to_string()),
+            tool_args: Some(format!(r#"{{"k":"{secret}"}}"#)),
+        };
+        let rendered = format!("{result:?}");
+        assert!(!rendered.contains(secret), "{rendered}");
+        assert!(rendered.contains("kind: \"ok\""), "{rendered}");
+        assert!(rendered.contains("status: Some(200)"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        assert!(rendered.contains("<redacted len=1>"), "{rendered}");
+
+        let empty = classified(KIND_HTTP_ERROR, Some(401));
+        let rendered = format!("{empty:?}");
+        assert!(rendered.contains("text: None"), "{rendered}");
+        assert!(rendered.contains("usage_fields: []"), "{rendered}");
+        assert!(!rendered.contains(secret));
     }
 }

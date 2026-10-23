@@ -20,8 +20,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   gitignored `.env`, requires https except for a local mock, and maps
   timeout / 429 / 4xx / 5xx / unparseable bodies to the same replay kinds
   as `tools/probe_live.py`. It refuses to write replay output when the
-  key would appear. The probe panel still does not send. The Python
-  runner remains the command-line tool.
+  key would appear. `send` and `run` block the calling thread. Debug
+  output redacts reply fields that can echo the key. Redirects are not
+  followed, so a 3xx kind can differ from the Python runner. The probe
+  panel still does not send. The Python runner remains the command-line
+  tool.
 
 ### Changed
 

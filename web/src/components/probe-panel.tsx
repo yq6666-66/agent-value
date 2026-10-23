@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Radar } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -11,11 +11,18 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  PROBE_RUN_FAILED,
+  PROBE_RUN_IN_PROGRESS,
   fetchProbePanel,
+  probeRunOffered,
+  runProbeOnce,
   setProbeConsent,
   type ProbePanel,
   type ProbeSource,
 } from "@/lib/probe";
+
+const fieldClass =
+  "h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
 type PanelState =
   | { status: "loading" }
@@ -33,6 +40,14 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [state, setState] = useState<PanelState>({ status: "loading" });
   const [requestId, setRequestId] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [keyEnv, setKeyEnv] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [armId, setArmId] = useState("");
+  const [runPhase, setRunPhase] = useState<"idle" | "running">("idle");
+  const [runDetail, setRunDetail] = useState<string | null>(null);
+  const runningRef = useRef(false);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
 
   useEffect(() => {
     let cancelled = false;
@@ -55,6 +70,10 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
   }, [source, requestId, refreshToken]);
 
   function choose(next: ProbeSource) {
+    if (runningRef.current) {
+      return;
+    }
+    setRunDetail(null);
     setSource(next);
     setState({ status: "loading" });
   }
@@ -82,6 +101,53 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
       ? state.view
       : null;
   const showLoading = state.status === "loading" || (state.status !== "error" && view === null);
+  const offerRun = view !== null && probeRunOffered(view) && runPhase !== "running";
+  const selectedArm =
+    view !== null && view.run_targets.some((item) => item.id === armId)
+      ? armId
+      : (view?.run_targets[0]?.id ?? "");
+  const canSubmit = selectedArm !== "" && keyEnv.trim() !== "" && baseUrl.trim() !== "";
+
+  async function onRun(event: FormEvent) {
+    event.preventDefault();
+    if (runningRef.current || view === null || !probeRunOffered(view)) {
+      return;
+    }
+    const key_env = keyEnv.trim();
+    const base_url = baseUrl.trim();
+    if (selectedArm === "" || key_env === "" || base_url === "") {
+      return;
+    }
+    runningRef.current = true;
+    setRunPhase("running");
+    setRunDetail(null);
+    try {
+      const outcome = await runProbeOnce({
+        arm_id: selectedArm,
+        key_env,
+        base_url,
+      });
+      setRunDetail(outcome.launch === "completed" ? null : outcome.detail);
+      if (sourceRef.current === "store") {
+        try {
+          const next = await fetchProbePanel("store");
+          if (sourceRef.current === "store") {
+            setSource("store");
+            setState({ status: "ready", view: next });
+          }
+        } catch {
+          if (sourceRef.current === "store") {
+            setState({ status: "error" });
+          }
+        }
+      }
+    } catch {
+      setRunDetail(PROBE_RUN_FAILED);
+    } finally {
+      runningRef.current = false;
+      setRunPhase("idle");
+    }
+  }
 
   return (
     <Card>
@@ -101,6 +167,7 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
               size="sm"
               variant={source === item.id ? "default" : "outline"}
               aria-pressed={source === item.id}
+              disabled={runPhase === "running"}
               onClick={() => choose(item.id)}
             >
               {item.label}
@@ -115,6 +182,16 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
               重试
             </Button>
           </div>
+        ) : null}
+        {runPhase === "running" ? (
+          <p className="text-sm leading-6" role="status">
+            {PROBE_RUN_IN_PROGRESS}
+          </p>
+        ) : null}
+        {runDetail !== null ? (
+          <p className="text-sm leading-6" role="status">
+            {runDetail}
+          </p>
         ) : null}
         {view !== null && view.fixture ? <p className="text-sm">演示夹具，非你的数据</p> : null}
         {view !== null ? (
@@ -138,6 +215,65 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
               </div>
             ) : null}
             <p className="text-sm leading-6">{view.launch_label}</p>
+            {offerRun ? (
+              <form className="flex flex-col gap-3" onSubmit={onRun}>
+                {view.run_targets.length === 0 ? (
+                  <p className="text-sm leading-6">还没有可选的臂。</p>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <label htmlFor="probe-run-arm" className="text-sm">
+                      臂
+                    </label>
+                    <select
+                      id="probe-run-arm"
+                      className={fieldClass}
+                      value={selectedArm}
+                      onChange={(event) => setArmId(event.target.value)}
+                    >
+                      {view.run_targets.map((target) => (
+                        <option key={target.id} value={target.id}>
+                          {target.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="probe-key-env" className="text-sm">
+                    密钥变量名
+                  </label>
+                  <input
+                    id="probe-key-env"
+                    className={fieldClass}
+                    value={keyEnv}
+                    onChange={(event) => setKeyEnv(event.target.value)}
+                    placeholder="RELAY_API_KEY"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <p className="text-sm text-muted-foreground">只填变量名，不填密钥。</p>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="probe-base-url" className="text-sm">
+                    基址
+                  </label>
+                  <input
+                    id="probe-base-url"
+                    className={fieldClass}
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder="https://example.test"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </div>
+                <div>
+                  <Button type="submit" disabled={!canSubmit}>
+                    跑一次
+                  </Button>
+                </div>
+              </form>
+            ) : null}
             <p className="text-sm leading-6">{view.observation_label}</p>
             <p className="text-sm leading-6">{view.grade_run_days_label}</p>
             <p className="text-sm leading-6">{view.monthly_budget_label}</p>

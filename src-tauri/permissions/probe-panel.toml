@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "allow-probe-panel"
-description = "Allows the webview to read probe consent, budget, and recorded results, and to store the first consent decision. These commands do not send probe HTTP. A shell run can send when consent and the monthly budget allow; this capability does not grant it, and the page has no run button."
-commands.allow = ["probe_panel", "set_probe_consent"]
+description = "Allows the webview to read probe consent, budget, and recorded results, to store the first consent decision, and to run one probe for an arm already stored or already shown. probe_panel and set_probe_consent do not send HTTP. run_probe_once can send when stored consent is accepted and the monthly budget allows. It receives an arm id, an environment-variable name, and a base URL, never a key value. The page does not run a probe when it opens."
+commands.allow = ["probe_panel", "set_probe_consent", "run_probe_once"]

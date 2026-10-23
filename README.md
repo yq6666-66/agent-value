@@ -560,7 +560,7 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 ### 11. Probes and relay checks
 
-*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture; it does not send probe HTTP. A shell run can send one selected arm when consent and the monthly budget allow, and can store the judged results and a provisional charge. The window has no run button. Scheduled runs are still planned.*
+*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture. After consent, when a run is ready, it can manually run one probe for a selected arm. It does not run when the window opens. A shell run can send when consent and the monthly budget allow, and can store the judged results and a provisional charge. Scheduled runs are still planned.*
 
 This checks whether a route really serves the model it claims. The probe results feed only the authenticity part of gate 4 in section 6, and never enter any score; the log-integrity check below works on the requests recorded in the window.
 
@@ -670,7 +670,7 @@ These parts of the specification are not implemented:
 
 ### For users
 
-The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results without making real HTTP probe requests. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
+The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent, when a run is ready, it can manually run one probe. It does not run a probe when the window opens. Grade bands stay reference-only while the observation period is pending. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
 
 ### For developers
 
@@ -703,7 +703,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` uses only the Python standard library. It reads the key only from the named environment variable or the local git-ignored `.env`, and never writes it to any output: before writing it checks the raw text, the escaped text and the JSON-escaped form. If it finds the key in what it is about to write, it refuses to write and exits. It does not record request headers. `--base` must be https, except for a local mock server.
 
-`agent-value-probe-run` can run one selected arm the same way when stored consent allows it and the monthly budget is not exceeded. The single-flight lock and the budget check are per process. The window has no run button, and the probe panel keeps `sends_http` false.
+`agent-value-probe-run` can run one selected arm the same way when stored consent allows it and the monthly budget is not exceeded. The single-flight lock and the budget check are per process. The probe panel sets `sends_http` because `run_probe_once` can send. The window shows a manual run only after consent, when launch is ready, and does not run on open.
 
 Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. To launch it locally, run `cargo tauri dev`, or run the built binary. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell includes the window-results, self-report, sensitivity and probe consent/results UI described above. It is not packaged for distribution.
 
@@ -713,11 +713,11 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 |---|---|
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
-| `crates/agent-value-probe-http/` | In-process probe HTTP sender used by the shell. Not called from the probe panel. |
-| `crates/agent-value-probe-run/` | One probe run: consent, monthly budget, the HTTP sender, then stored results and a provisional charge. The window is not wired to it. |
+| `crates/agent-value-probe-http/` | In-process probe HTTP sender used by the shell. The probe panel command does not call it. `run_probe_once` reaches it through `agent-value-probe-run`. |
+| `crates/agent-value-probe-run/` | One probe run: consent, monthly budget, the HTTP sender, then stored results and a provisional charge. The window can call it once, manually, on a blocking thread. |
 | `src-tauri/` | Tauri 2 desktop shell that links the core crate and includes the window-results, self-report, sensitivity, and probe consent/results UI. Not a member of the default Cargo workspace. |
 | `tools/` | Scripts run by hand on your own machine; only their tests run in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. `test_probe_live.py` (standard-library unittest) checks it against a mock server on 127.0.0.1. |
-| `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity and probe consent/results. The About area shows the core version returned by the shell. |
+| `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity, probe consent/results, and a manual probe run. The About area shows the core version returned by the shell. |
 
 ## Secrets and privacy
 

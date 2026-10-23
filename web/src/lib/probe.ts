@@ -6,6 +6,14 @@ import { invoke } from "@tauri-apps/api/core";
 
 export const PROBE_PANEL_COMMAND = "probe_panel";
 export const SET_PROBE_CONSENT_COMMAND = "set_probe_consent";
+export const RUN_PROBE_ONCE_COMMAND = "run_probe_once";
+
+/// Same sentence as the shell `ProbeLaunch::Running` label.
+export const PROBE_RUN_IN_PROGRESS = "正在探测。";
+
+/// Shown when the command rejects. The rejection text is not rendered:
+/// it might repeat something the user typed.
+export const PROBE_RUN_FAILED = "这次探测没有完成。";
 
 export const PROBE_SOURCES = ["store", "fixture"] as const;
 
@@ -16,6 +24,21 @@ export type ProbeClassView = {
   verdict: string;
   run_day: string;
   evidence: string;
+};
+
+export type ProbeRunTarget = {
+  id: string;
+};
+
+export type ProbeRunOnceInput = {
+  arm_id: string;
+  key_env: string;
+  base_url: string;
+};
+
+export type ProbeRunOnce = {
+  launch: string;
+  detail: string;
 };
 
 export type ProbeArmView = {
@@ -45,6 +68,7 @@ export type ProbePanel = {
   launch_label: string;
   sends_http: boolean;
   arms: ProbeArmView[];
+  run_targets: ProbeRunTarget[];
   empty_reason: string | null;
 };
 
@@ -93,6 +117,11 @@ function classView(value: unknown): ProbeClassView {
   };
 }
 
+function runTarget(value: unknown): ProbeRunTarget {
+  const row = objectOf(value, PROBE_PANEL_COMMAND);
+  return { id: text(row.id, PROBE_PANEL_COMMAND) };
+}
+
 function armView(value: unknown): ProbeArmView {
   const row = objectOf(value, PROBE_PANEL_COMMAND);
   if (!Array.isArray(row.classes) || !Array.isArray(row.labels)) {
@@ -110,7 +139,9 @@ function armView(value: unknown): ProbeArmView {
 
 export function probePanel(value: unknown): ProbePanel {
   const row = objectOf(value, PROBE_PANEL_COMMAND);
-  if (!Array.isArray(row.arms)) {
+  const arms = row.arms;
+  const runTargets = row.run_targets;
+  if (!Array.isArray(arms) || !Array.isArray(runTargets)) {
     throw new Error(`${PROBE_PANEL_COMMAND} returned an incomplete value`);
   }
   return {
@@ -130,7 +161,8 @@ export function probePanel(value: unknown): ProbePanel {
     launch: text(row.launch, PROBE_PANEL_COMMAND),
     launch_label: text(row.launch_label, PROBE_PANEL_COMMAND),
     sends_http: flag(row.sends_http, PROBE_PANEL_COMMAND),
-    arms: row.arms.map(armView),
+    arms: arms.map(armView),
+    run_targets: runTargets.map(runTarget),
     empty_reason: optionalText(row.empty_reason, PROBE_PANEL_COMMAND),
   };
 }
@@ -143,4 +175,23 @@ export async function fetchProbePanel(source: ProbeSource): Promise<ProbePanel> 
 export async function setProbeConsent(accepted: boolean, source: ProbeSource): Promise<ProbePanel> {
   const value: unknown = await invoke(SET_PROBE_CONSENT_COMMAND, { accepted, source });
   return probePanel(value);
+}
+
+/// One manual run. Does not send a token. `key_env` is the variable name.
+/// Seed and claims stay in the shell (H3 typical path).
+export async function runProbeOnce(input: ProbeRunOnceInput): Promise<ProbeRunOnce> {
+  const value: unknown = await invoke(RUN_PROBE_ONCE_COMMAND, { input });
+  const row = objectOf(value, RUN_PROBE_ONCE_COMMAND);
+  return {
+    launch: text(row.launch, RUN_PROBE_ONCE_COMMAND),
+    detail: text(row.detail, RUN_PROBE_ONCE_COMMAND),
+  };
+}
+
+/// The run control is offered only after consent, when this build can send
+/// and launch is `ready`. Fixture replay is not a run. Blocked, running,
+/// completed, and failed states hide it. The page does not call the run
+/// command while loading.
+export function probeRunOffered(view: ProbePanel): boolean {
+  return view.source === "store" && view.accepted && view.sends_http && view.launch === "ready";
 }

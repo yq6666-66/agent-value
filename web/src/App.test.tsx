@@ -63,8 +63,9 @@ function storeFallback(cmd: string): unknown {
       grade_run_days_label: "DAYS-STUB",
       launch: "blocked-consent",
       launch_label: "LAUNCH-STUB",
-      sends_http: false,
+      sends_http: true,
       arms: [],
+      run_targets: [],
       empty_reason: null,
     };
   }

@@ -19,7 +19,9 @@
 //!
 //! Thinking-signature and long-context rows are not in the plan. Fingerprint
 //! rows are not invented, and the observation period is not marked complete.
-//! The webview is not wired to [`run_once`].
+//! The desktop command `run_probe_once` calls [`run_once`] on a blocking
+//! thread. This crate does not start a run by itself, and it does not
+//! mark the observation period complete.
 //!
 //! # Provisional estimate
 //!
@@ -92,7 +94,7 @@ impl ProbeLaunch {
             Self::BlockedConsent => "尚未同意，不会自动探测。",
             Self::BlockedBudget => "本月停止探测。",
             Self::BlockedAlreadyRun => "今天已经探测过这条路线，不会再次发送。",
-            Self::Ready => "已同意，且未超预算。就绪时可运行；本版 UI 尚未接线。",
+            Self::Ready => "已同意，且未超预算。可以手动跑一次；打开页面不会自动探测。",
             Self::Running => "正在探测。",
             Self::Completed => "这次探测已写入本地记录。",
             Self::Failed => "这次探测没有完成，没有写入新的探针记录。",

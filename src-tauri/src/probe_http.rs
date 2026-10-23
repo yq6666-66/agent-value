@@ -1,9 +1,9 @@
 //! In-process probe HTTP sender.
 //!
-//! Desktop commands do not call this module. `agent-value-probe-run` sends
-//! through the same crate when a caller asks. The probe panel still does
-//! not, and `sends_http` stays false. `tools/probe_live.py` remains the
-//! command-line runner.
+//! The probe panel command does not call this module. `run_probe_once`
+//! calls `probe_run`, which sends through the same crate on a blocking
+//! thread. `sends_http` is true because that command can send.
+//! `tools/probe_live.py` remains the command-line runner.
 //!
 //! [`send`] and [`run`] block the calling thread. Call them off the Tauri
 //! async runtime. Redirects are not followed, unlike the Python runner's

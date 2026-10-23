@@ -2,8 +2,10 @@
 //!
 //! Pure functions only: this module builds the probe set, judges the
 //! replies an outside runner collected, and classifies one run of one probe
-//! class. Sending requests is the caller's job (CI never touches the
-//! network); see `tools/probe_live.py` and `examples/`.
+//! class. Sending requests is the caller's job (this crate never touches the
+//! network). The command-line runner is `tools/probe_live.py`. The desktop
+//! shell links `agent-value-probe-http` and does not call it from the probe
+//! panel yet.
 //! [`build_openai_chat_plan`] only builds the OpenAI Chat Completions
 //! bodies that `probe_plan` prints.
 //!

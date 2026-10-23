@@ -26,11 +26,12 @@ use agent_value_core::recommend::{layer_arm_from_cells, layer_pick, LayerArm};
 use agent_value_core::records::{MicroYuan, Outcome};
 use agent_value_core::retry::{PassStats, Prior, RetryModel};
 use agent_value_core::scope::{ScopeId, TaskKind};
+use agent_value_core::sensitivity::SensitivityArm;
 use agent_value_core::status::{
     derive_cell_weights, layer_status, CellCounts, CellInput, LayerStatus, OmegaSource,
 };
-use agent_value_core::value::{aggregate_layer, Floors};
-use agent_value_core::weights::{WeightLedger, Weights};
+use agent_value_core::value::{aggregate_layer, Floors, Point};
+use agent_value_core::weights::{Evidence, WeightLedger, Weights};
 use agent_value_core::window::{FrozenInputs, WindowIndex, FIRST_WINDOW_LABEL};
 use agent_value_store::{ConfigKind, UserTaskRow};
 use serde::Serialize;
@@ -378,7 +379,18 @@ fn headers_for(
     }
 }
 
-fn score(snapshot: &Snapshot) -> Result<WindowResult, String> {
+struct Certified {
+    anchor: agent_value_core::anchor::LayerAnchor,
+    reference_diag: DiagnosticRow,
+    measured: Triple,
+    scored: Vec<ScoredArm>,
+    frontiers: LayerFrontiers,
+    scores: Vec<(String, f64)>,
+    pick: agent_value_core::recommend::LayerPick,
+    sensitivity_arms: Vec<SensitivityArm>,
+}
+
+fn certify(snapshot: &Snapshot) -> Result<Certified, String> {
     let model = RetryModel::with_default_k(0.0).map_err(|err| err.to_string())?;
     let reference_inputs: Vec<CellInput> = snapshot.reference.iter().map(inputs_of).collect();
     let reference_status = layer_status(&snapshot.cell_weights, &reference_inputs, &model)
@@ -437,7 +449,7 @@ fn score(snapshot: &Snapshot) -> Result<WindowResult, String> {
     };
     let mut scores = Vec::new();
     for arm in &eligible_arms {
-        if let Some(point) = agent_value_core::value::Point::from_triple(&arm.arm.star) {
+        if let Some(point) = Point::from_triple(&arm.arm.star) {
             if let Some(value) = layer_value(&anchor, point, &snapshot.weights, &Floors::default())
                 .map_err(|err| err.to_string())?
             {
@@ -447,6 +459,38 @@ fn score(snapshot: &Snapshot) -> Result<WindowResult, String> {
     }
     let pick =
         layer_pick(&eligible_arms, &frontiers, &anchor, &scores).map_err(|err| err.to_string())?;
+    let mut sensitivity_arms = Vec::new();
+    for arm in &eligible_arms {
+        if let Some(point) = Point::from_triple(&arm.arm.star) {
+            sensitivity_arms.push(SensitivityArm {
+                id: arm.arm.id.clone(),
+                point,
+            });
+        }
+    }
+    Ok(Certified {
+        anchor,
+        reference_diag,
+        measured,
+        scored,
+        frontiers,
+        scores,
+        pick,
+        sensitivity_arms,
+    })
+}
+
+fn score(snapshot: &Snapshot) -> Result<WindowResult, String> {
+    let Certified {
+        anchor,
+        reference_diag,
+        measured,
+        scored,
+        frontiers,
+        scores,
+        pick,
+        sensitivity_arms: _,
+    } = certify(snapshot)?;
     let show_v = !snapshot.is_first && anchor.tier != AnchorTier::III;
     let v_of = |id: &str| {
         show_v
@@ -746,6 +790,11 @@ fn tie(first: bool) -> Snapshot {
     snapshot
 }
 
+enum StoreLoad {
+    Empty(Box<WindowResult>),
+    Ready(Box<Snapshot>),
+}
+
 /// `source` is `store`, `example6`, `example7`, `example8`, or `tie`.
 pub fn result(app: &AppState, source: &str) -> Result<WindowResult, String> {
     match source {
@@ -756,6 +805,116 @@ pub fn result(app: &AppState, source: &str) -> Result<WindowResult, String> {
         "tie" => score(&tie(false)),
         other => Err(format!("unknown window result source {other}")),
     }
+}
+
+/// One coding layer, ready for `sensitivity`. The chart decision stays in
+/// the core: this only gathers the inputs.
+pub(crate) struct SensitivityParts {
+    pub first_window: bool,
+    pub current: Weights,
+    pub reference: Option<Point>,
+    pub arms: Vec<SensitivityArm>,
+    pub omega_s: Option<Vec<Weights>>,
+    /// Anchor header from `headers_for` when the numerator anchor is missing.
+    /// Display only; not a sensitivity sentence.
+    pub no_reference_text: Option<String>,
+}
+
+pub(crate) enum LayerLoad {
+    /// Nothing to score. `show_chart` stays false.
+    Empty {
+        reason: String,
+        is_first: bool,
+        first_label: Option<String>,
+    },
+    Ready(SensitivityParts),
+}
+
+/// `source` is `store`, `example6`, `example7`, `example8`, `tie`, or `first`.
+pub(crate) fn load_sensitivity(app: &AppState, source: &str) -> Result<LayerLoad, String> {
+    let (snapshot, omega_s) = match source {
+        "store" => match load_store(app)? {
+            StoreLoad::Empty(view) => {
+                return Ok(LayerLoad::Empty {
+                    reason: view.empty_reason.clone().unwrap_or_default(),
+                    is_first: view.is_first,
+                    first_label: view.first_window_label.clone(),
+                });
+            }
+            StoreLoad::Ready(snapshot) => (*snapshot, omega_s_from_store(app)?),
+        },
+        "example6" => (example6(), None),
+        "example7" => (example7(), None),
+        "example8" => (example8(), None),
+        "tie" => (tie(false), None),
+        "first" => (tie(true), None),
+        other => return Err(format!("unknown sensitivity source {other}")),
+    };
+    parts_of(&snapshot, omega_s).map(LayerLoad::Ready)
+}
+
+fn parts_of(
+    snapshot: &Snapshot,
+    omega_s: Option<Vec<Weights>>,
+) -> Result<SensitivityParts, String> {
+    let certified = certify(snapshot)?;
+    let no_reference_text = (certified.anchor.anchor.is_none()).then(|| {
+        headers_for(
+            certified.anchor.tier,
+            &certified.anchor.tier_iii_reasons,
+            &certified.anchor,
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "tier-iii".to_string())
+    });
+    Ok(SensitivityParts {
+        first_window: snapshot.is_first,
+        current: snapshot.weights,
+        reference: certified.anchor.anchor,
+        arms: certified.sensitivity_arms,
+        omega_s,
+        no_reference_text,
+    })
+}
+
+fn omega_s_from_store(app: &AppState) -> Result<Option<Vec<Weights>>, String> {
+    store_cmd::with_store(app, |store| {
+        let Some(ledger) = store
+            .load_weight_ledger(&coding_scope())
+            .map_err(|err| err.to_string())?
+        else {
+            return Ok(None);
+        };
+        let Some(index) = ledger.last_frozen() else {
+            return Ok(None);
+        };
+        let frozen = ledger.frozen(index).map_err(|err| err.to_string())?;
+        omega_s_from_evidence(frozen.weight_version().evidence())
+    })
+}
+
+fn omega_s_from_evidence(evidence: &Evidence) -> Result<Option<Vec<Weights>>, String> {
+    let Evidence::SelfReportAnswers(answers) = evidence else {
+        return Ok(None);
+    };
+    let mut parsed = Vec::with_capacity(answers.len());
+    for item in answers {
+        let question = item
+            .question_id
+            .parse::<usize>()
+            .map_err(|_| "self-report question id is not a bank index".to_string())?;
+        parsed.push(agent_value_core::elicit::Answer {
+            question,
+            answer: item.answer,
+        });
+    }
+    let found = agent_value_core::elicit::regions(&parsed).map_err(|err| err.to_string())?;
+    let mut weights = Vec::with_capacity(found.wide.len());
+    for point in found.wide {
+        weights.push(point.weights().map_err(|err| err.to_string())?);
+    }
+    Ok(Some(weights))
 }
 
 fn payload(
@@ -1127,6 +1286,13 @@ fn cell_from_bucket(
 }
 
 fn store_result(app: &AppState) -> Result<WindowResult, String> {
+    match load_store(app)? {
+        StoreLoad::Empty(view) => Ok(*view),
+        StoreLoad::Ready(snapshot) => score(&snapshot),
+    }
+}
+
+fn load_store(app: &AppState) -> Result<StoreLoad, String> {
     store_cmd::with_store(app, |store| {
         let scope = coding_scope();
         let Some(ledger) = store
@@ -1139,7 +1305,7 @@ fn store_result(app: &AppState) -> Result<WindowResult, String> {
             view.authenticity_source = PROBES_OFF.to_string();
             view.authenticity_undetermined = true;
             view.log_integrity_source = PROBES_OFF.to_string();
-            return Ok(view);
+            return Ok(StoreLoad::Empty(Box::new(view)));
         };
         let Some(index) = ledger.last_frozen() else {
             let mut view = blank("store", false);
@@ -1148,7 +1314,7 @@ fn store_result(app: &AppState) -> Result<WindowResult, String> {
             view.authenticity_source = PROBES_OFF.to_string();
             view.authenticity_undetermined = true;
             view.log_integrity_source = PROBES_OFF.to_string();
-            return Ok(view);
+            return Ok(StoreLoad::Empty(Box::new(view)));
         };
         let frozen = ledger.frozen(index).map_err(|err| err.to_string())?;
         let Some(start) = open_ms(store, &scope, index)? else {
@@ -1157,7 +1323,7 @@ fn store_result(app: &AppState) -> Result<WindowResult, String> {
             view.is_first = frozen.is_first_window();
             view.first_window_label = frozen.first_window_label().map(str::to_owned);
             view.empty_reason = Some("这个窗没有记下起点，不能把任务归到窗里。".to_string());
-            return Ok(view);
+            return Ok(StoreLoad::Empty(Box::new(view)));
         };
         let end = open_ms(store, &scope, index.next().map_err(|err| err.to_string())?)?
             .unwrap_or(i64::MAX);
@@ -1171,7 +1337,7 @@ fn score_store_window(
     index: WindowIndex,
     start: i64,
     end: i64,
-) -> Result<WindowResult, String> {
+) -> Result<StoreLoad, String> {
     let scope = coding_scope();
     let frozen = ledger.frozen(index).map_err(|err| err.to_string())?;
     let tasks = store
@@ -1219,7 +1385,7 @@ fn score_store_window(
             view.authenticity_source = PROBES_OFF.to_string();
             view.authenticity_undetermined = true;
             view.log_integrity_source = PROBES_OFF.to_string();
-            return Ok(view);
+            return Ok(StoreLoad::Empty(Box::new(view)));
         }
         let previous = if index == WindowIndex::FIRST {
             Vec::new()
@@ -1369,7 +1535,7 @@ fn score_store_window(
     if snapshot.reference_id.is_none() {
         snapshot.reference = Vec::new();
     }
-    score(&snapshot)
+    Ok(StoreLoad::Ready(Box::new(snapshot)))
 }
 
 #[cfg(test)]

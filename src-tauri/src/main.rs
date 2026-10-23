@@ -4,6 +4,7 @@
 
 mod demo_example6;
 mod elicit_cmd;
+mod sensitivity_panel;
 mod store_cmd;
 mod window_chrome;
 mod window_result;
@@ -146,6 +147,18 @@ fn window_result(
     window_result::result(&state, &source)
 }
 
+/// Winner map, Ω copy, and flip sentences for one coding layer.
+///
+/// `source` is `store`, `example6`, `example7`, `example8`, `tie`, `first`, or `grid`.
+/// The chart is omitted when the core withholds it.
+#[tauri::command]
+fn sensitivity(
+    state: tauri::State<store_cmd::AppState>,
+    source: String,
+) -> Result<sensitivity_panel::SensitivityView, String> {
+    sensitivity_panel::view(&state, &source)
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .setup(|app| {
@@ -174,7 +187,8 @@ fn main() {
             weight_context,
             begin_window,
             edit_weights,
-            window_result
+            window_result,
+            sensitivity
         ])
         .run(tauri::generate_context!());
     if let Err(err) = result {

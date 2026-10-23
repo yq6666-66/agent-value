@@ -15,14 +15,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `probe_run::run_once` inside `spawn_blocking` so the blocking HTTP
   client stays off the async runtime. The command takes an arm already
   stored or already shown, the key's environment-variable name, and the
-  base URL. It does not take a token. The seed is 20261022 and the
+  base URL. The base is sent only when its host is the selected arm's
+  route host; a mismatch fails before any socket, and the sentence does
+  not repeat the submitted URL or host. It does not take a token. The
+  seed is 20261022 and the
   claims are the typical plan (tool call and JSON); the page does not
   choose them. Each request times out after 60 seconds, the same default
   as `probe_live.py`. The token is read from that variable or a
   gitignored `.env`. While the call is in flight the panel says the probe
-  is running. A failure shows the returned detail and does not render a
-  rejected error string. Success reloads the panel from the store
-  source. `sends_http` is true because this command can send.
+  is running and the source toggles stay disabled. A failure shows the
+  returned detail and does not render a rejected error string. When the
+  call returns, the panel reloads from the store source if that source
+  is still selected. `sends_http` is true because this command can send.
   Observation copy stays reference-only. Thresholds are unchanged.
   There is no scheduler.
 - Shell: one probe run for a selected arm (`agent-value-probe-run`).

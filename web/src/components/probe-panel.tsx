@@ -46,6 +46,8 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [runPhase, setRunPhase] = useState<"idle" | "running">("idle");
   const [runDetail, setRunDetail] = useState<string | null>(null);
   const runningRef = useRef(false);
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
 
   useEffect(() => {
     let cancelled = false;
@@ -68,6 +70,9 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
   }, [source, requestId, refreshToken]);
 
   function choose(next: ProbeSource) {
+    if (runningRef.current) {
+      return;
+    }
     setRunDetail(null);
     setSource(next);
     setState({ status: "loading" });
@@ -123,12 +128,18 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
         base_url,
       });
       setRunDetail(outcome.launch === "completed" ? null : outcome.detail);
-      try {
-        const next = await fetchProbePanel("store");
-        setSource("store");
-        setState({ status: "ready", view: next });
-      } catch {
-        setState({ status: "error" });
+      if (sourceRef.current === "store") {
+        try {
+          const next = await fetchProbePanel("store");
+          if (sourceRef.current === "store") {
+            setSource("store");
+            setState({ status: "ready", view: next });
+          }
+        } catch {
+          if (sourceRef.current === "store") {
+            setState({ status: "error" });
+          }
+        }
       }
     } catch {
       setRunDetail(PROBE_RUN_FAILED);
@@ -156,6 +167,7 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
               size="sm"
               variant={source === item.id ? "default" : "outline"}
               aria-pressed={source === item.id}
+              disabled={runPhase === "running"}
               onClick={() => choose(item.id)}
             >
               {item.label}

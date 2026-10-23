@@ -335,6 +335,13 @@ test("跑一次 invokes the run command once and refreshes the store panel", asy
   expect(await screen.findByText(PROBE_RUN_IN_PROGRESS)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "跑一次" })).toBeNull();
   expect(screen.queryByText("已校准")).toBeNull();
+  const storeToggle = screen.getByRole("button", { name: "本机记录" });
+  const fixtureToggle = screen.getByRole("button", { name: "夹具回放" });
+  expect(storeToggle).toHaveProperty("disabled", true);
+  expect(fixtureToggle).toHaveProperty("disabled", true);
+  fireEvent.click(fixtureToggle);
+  expect(screen.getByText("OBS-FROM-SHELL")).toBeTruthy();
+  expect(screen.queryByText("演示夹具，非你的数据")).toBeNull();
   const runCalls = vi.mocked(invoke).mock.calls.filter((call) => call[0] === RUN_PROBE_ONCE_COMMAND);
   expect(runCalls).toEqual([
     [
@@ -359,6 +366,8 @@ test("跑一次 invokes the run command once and refreshes the store panel", asy
   expect(screen.queryByRole("button", { name: "跑一次" })).toBeNull();
   expect(screen.queryByText("已校准")).toBeNull();
   expect(panelCalls).toBe(2);
+  expect(screen.getByRole("button", { name: "本机记录" })).toHaveProperty("disabled", false);
+  expect(screen.getByRole("button", { name: "夹具回放" })).toHaveProperty("disabled", false);
   expect(vi.mocked(invoke).mock.calls.filter((call) => call[0] === RUN_PROBE_ONCE_COMMAND)).toHaveLength(1);
 });
 

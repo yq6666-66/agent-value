@@ -18,7 +18,7 @@ use agent_value_core::weights::{
     Evidence, FiveLevel, SelfReportAnswer, TrialPreview, TrialResolution, VersionStatus,
     WeightLedger, WeightSource, WeightVersion, Weights,
 };
-use agent_value_core::window::{FrozenInputs, WindowIndex};
+use agent_value_core::window::WindowIndex;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -509,17 +509,10 @@ pub fn context(app: &AppState) -> Result<WeightContext, String> {
 
 /// Freezes the next window so later weight edits take the trial path.
 ///
-/// Window 0 is a first window. A later window is marked as not first; the
-/// real prior-task count arrives with window results.
+/// The prior task count and the frozen input versions come from the store.
+/// A missing version stays missing. Zero prior user tasks makes a first window.
 pub fn begin_window(app: &AppState) -> Result<WeightContext, String> {
-    store_cmd::update_weight_ledger(app, &coding_scope(), |ledger| {
-        let window = ledger.next_unfrozen().map_err(|err| err.to_string())?;
-        let prior = u64::from(window != WindowIndex::FIRST);
-        ledger
-            .freeze_window(window, prior, FrozenInputs::default())
-            .map_err(|err| err.to_string())?;
-        Ok(())
-    })?;
+    crate::window_result::freeze_coding_window(app)?;
     context(app)
 }
 

@@ -5,6 +5,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { App } from "@/App";
 import { WeightPanel } from "@/components/weight-panel";
 import { WINDOW_CHROME_COMMAND } from "@/lib/window-chrome";
+import { WINDOW_RESULT_COMMAND } from "@/lib/window-result";
+import { armView, windowResultFixture } from "@/test-window-result";
 import {
   DELETE_ALL_COMMAND,
   EXPORT_STORE_COMMAND,
@@ -51,10 +53,19 @@ test("first window shows the shell label and does not show V", async () => {
   expect(invoke).toHaveBeenCalledWith(WINDOW_CHROME_COMMAND, { sample: "first" });
 });
 
-test("a later window shows an empty V slot", async () => {
+test("a later window shows the store V text from the shell", async () => {
   vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
     if (cmd === WINDOW_CHROME_COMMAND) {
       return chromeFor(sampleOf(args));
+    }
+    if (cmd === WINDOW_RESULT_COMMAND) {
+      return windowResultFixture({
+        official_top: ["own"],
+        tied: false,
+        arms: [armView({ id: "own", v_text: "88.00-from-shell" })],
+        v_withheld: null,
+        empty_reason: null,
+      });
     }
     throw new Error(cmd);
   });
@@ -63,9 +74,34 @@ test("a later window shows an empty V slot", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "下一窗" }));
 
   expect(await screen.findByText("V")).toBeTruthy();
-  expect(screen.getByText("尚未接入")).toBeTruthy();
+  expect(screen.getByText("own 88.00-from-shell")).toBeTruthy();
+  expect(screen.queryByText("尚未接入")).toBeNull();
   expect(screen.queryByText("LABEL-FROM-CORE")).toBeNull();
   expect(invoke).toHaveBeenCalledWith(WINDOW_CHROME_COMMAND, { sample: "later" });
+  expect(invoke).toHaveBeenCalledWith(WINDOW_RESULT_COMMAND, { source: "store" });
+});
+
+test("a later window shows a withheld V from the shell", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+    if (cmd === WINDOW_CHROME_COMMAND) {
+      return chromeFor(sampleOf(args));
+    }
+    if (cmd === WINDOW_RESULT_COMMAND) {
+      return windowResultFixture({
+        official_top: [],
+        arms: [],
+        v_withheld: "WITHHELD-FROM-SHELL",
+        empty_reason: null,
+      });
+    }
+    throw new Error(cmd);
+  });
+
+  render(<WeightPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "下一窗" }));
+
+  expect(await screen.findByText("WITHHELD-FROM-SHELL")).toBeTruthy();
+  expect(screen.queryByText("尚未接入")).toBeNull();
 });
 
 test("the shell layout has a frontier pane and resize separators", async () => {
@@ -90,6 +126,16 @@ test("the shell layout has a frontier pane and resize separators", async () => {
     }
     if (cmd === "demo_example6_layer") {
       return "4.321-from-core";
+    }
+    if (cmd === WINDOW_RESULT_COMMAND) {
+      return windowResultFixture({
+        arms: [],
+        official_top: [],
+        empty_reason: null,
+        diagnostic_anchor_c_text: null,
+        anchor_headers: [],
+        tier_ii_legend: null,
+      });
     }
     throw new Error(cmd);
   });

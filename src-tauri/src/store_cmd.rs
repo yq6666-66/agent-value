@@ -120,6 +120,22 @@ pub fn delete_all(state: &AppState) -> Result<(), String> {
     store.delete_all().map_err(|err| err.to_string())
 }
 
+pub(crate) fn with_store<T>(
+    state: &AppState,
+    body: impl FnOnce(&agent_value_store::Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let store = state.lock()?;
+    body(&store)
+}
+
+pub(crate) fn with_store_mut<T>(
+    state: &AppState,
+    body: impl FnOnce(&mut agent_value_store::Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut store = state.lock()?;
+    body(&mut store)
+}
+
 /// The stored ledger for `scope`, or a new default ledger when none was saved.
 pub fn read_weight_ledger(state: &AppState, scope: &ScopeId) -> Result<WeightLedger, String> {
     let store = state.lock()?;

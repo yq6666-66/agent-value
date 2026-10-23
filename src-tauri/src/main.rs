@@ -6,6 +6,7 @@ mod demo_example6;
 mod elicit_cmd;
 mod store_cmd;
 mod window_chrome;
+mod window_result;
 
 use tauri::Manager;
 
@@ -134,6 +135,17 @@ fn window_chrome(sample: String) -> Result<window_chrome::WindowChrome, String> 
     window_chrome::sample_window_chrome(&sample)
 }
 
+/// Coding-scope window result, or one named example fixture.
+///
+/// `source` is `store`, `example6`, `example7`, `example8`, or `tie`.
+#[tauri::command]
+fn window_result(
+    state: tauri::State<store_cmd::AppState>,
+    source: String,
+) -> Result<window_result::WindowResult, String> {
+    window_result::result(&state, &source)
+}
+
 fn main() {
     let result = tauri::Builder::default()
         .setup(|app| {
@@ -161,7 +173,8 @@ fn main() {
             elicit_save,
             weight_context,
             begin_window,
-            edit_weights
+            edit_weights,
+            window_result
         ])
         .run(tauri::generate_context!());
     if let Err(err) = result {

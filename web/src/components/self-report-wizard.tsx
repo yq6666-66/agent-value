@@ -32,6 +32,8 @@ const LEVELS: { level: number; label: string }[] = [
 type Phase =
   | { status: "idle" }
   | { status: "question"; step: StepView }
+  | { status: "finishing"; step: StepView }
+  | { status: "resultError"; step: StepView }
   | {
       status: "result";
       step: StepView;
@@ -129,12 +131,18 @@ export function SelfReportWizard() {
   const [error, setError] = useState(false);
 
   async function showResult(step: StepView) {
-    const [regions, report, context] = await Promise.all([
-      fetchRegions(),
-      fetchReport(),
-      fetchWeightContext(),
-    ]);
-    setPhase({ status: "result", step, regions, report, context });
+    setError(false);
+    setPhase({ status: "finishing", step });
+    try {
+      const [regions, report, context] = await Promise.all([
+        fetchRegions(),
+        fetchReport(),
+        fetchWeightContext(),
+      ]);
+      setPhase({ status: "result", step, regions, report, context });
+    } catch {
+      setPhase({ status: "resultError", step });
+    }
   }
 
   function applyStep(step: StepView) {
@@ -153,7 +161,7 @@ export function SelfReportWizard() {
     setPending(true);
     setError(false);
     try {
-      await applyStep(await startSession(null));
+      await applyStep(await startSession());
     } catch {
       setPhase({ status: "error" });
     } finally {
@@ -173,6 +181,20 @@ export function SelfReportWizard() {
       );
     } catch {
       setError(true);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function onRetryResult() {
+    if (phase.status !== "resultError") {
+      return;
+    }
+    const step = phase.step;
+    setPending(true);
+    setError(false);
+    try {
+      await showResult(step);
     } finally {
       setPending(false);
     }
@@ -213,6 +235,21 @@ export function SelfReportWizard() {
             error={error}
             onAnswer={onAnswer}
           />
+        ) : null}
+        {phase.status === "finishing" ? (
+          <div className="flex flex-col gap-2">
+            <p>已答 {phase.step.answered} 题</p>
+            <p>正在读取结果</p>
+          </div>
+        ) : null}
+        {phase.status === "resultError" ? (
+          <div className="flex flex-col items-start gap-3">
+            <p>已答 {phase.step.answered} 题</p>
+            <p className="text-sm text-destructive">未能读取结果</p>
+            <Button type="button" variant="outline" onClick={onRetryResult} disabled={pending}>
+              重试
+            </Button>
+          </div>
         ) : null}
         {phase.status === "result" ? (
           <div className="flex flex-col gap-3">

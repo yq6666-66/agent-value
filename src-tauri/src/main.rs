@@ -51,16 +51,14 @@ fn delete_all(
     state: tauri::State<store_cmd::AppState>,
     elicit: tauri::State<elicit_cmd::ElicitState>,
 ) -> Result<(), String> {
-    store_cmd::delete_all(&state)?;
-    elicit_cmd::reset(&elicit)
+    elicit_cmd::wipe_with(&state, &elicit)
 }
 
 #[tauri::command]
 fn elicit_start(
     elicit: tauri::State<elicit_cmd::ElicitState>,
-    base: Option<elicit_cmd::BaseInput>,
 ) -> Result<elicit_cmd::StepView, String> {
-    elicit_cmd::start(&elicit, base)
+    elicit_cmd::start(&elicit)
 }
 
 #[tauri::command]

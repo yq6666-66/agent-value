@@ -88,12 +88,6 @@ export type WeightContext = {
   trial: TrialView | null;
 };
 
-export type BaseInput = {
-  cost: number;
-  time: number;
-  defect: number;
-};
-
 export type AnswerInput = {
   question: number;
   level: number;
@@ -332,8 +326,8 @@ export function weightContext(value: unknown): WeightContext {
   };
 }
 
-export async function startSession(base: BaseInput | null): Promise<StepView> {
-  return stepView(await invoke(ELICIT_START_COMMAND, { base }));
+export async function startSession(): Promise<StepView> {
+  return stepView(await invoke(ELICIT_START_COMMAND));
 }
 
 export async function fetchNext(): Promise<StepView> {

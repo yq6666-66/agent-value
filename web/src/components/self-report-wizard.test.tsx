@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, expect, test, vi } from "vitest";
 
+import { SelfReportWizard } from "@/components/self-report-wizard";
 import { WeightPanel } from "@/components/weight-panel";
 import {
   BEGIN_WINDOW_COMMAND,
@@ -116,7 +117,7 @@ test("the wizard shows shell numbers and a mid-window save stays a trial", async
       return chrome;
     }
     if (cmd === ELICIT_START_COMMAND) {
-      expect(args).toEqual({ base: null });
+      expect(args).toBeUndefined();
       return openStep;
     }
     if (cmd === ELICIT_ANSWER_COMMAND) {
@@ -263,4 +264,60 @@ test("a mid-window weight edit creates a trial and leaves the official weights",
   expect(names).toContain(EDIT_WEIGHTS_COMMAND);
   expect(names).not.toContain(ELICIT_SAVE_COMMAND);
   expect(names.filter((name) => name === EDIT_WEIGHTS_COMMAND)).toHaveLength(1);
+});
+
+test("a failed result fetch after the last answer retries the result and does not restart", async () => {
+  let finishCalls = 0;
+  let releaseFirstFinish: (() => void) | undefined;
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === ELICIT_START_COMMAND) {
+      return openStep;
+    }
+    if (cmd === ELICIT_ANSWER_COMMAND) {
+      return doneStep;
+    }
+    if (cmd === ELICIT_REGIONS_COMMAND) {
+      return regions;
+    }
+    if (cmd === ELICIT_FINISH_COMMAND) {
+      finishCalls += 1;
+      if (finishCalls === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirstFinish = resolve;
+        });
+        throw new Error("finish failed");
+      }
+      return report;
+    }
+    if (cmd === WEIGHT_CONTEXT_COMMAND) {
+      return { ...inWindow, in_window: false, window_index: null };
+    }
+    throw new Error(cmd);
+  });
+
+  render(<SelfReportWizard />);
+  fireEvent.click(screen.getByRole("button", { name: "开始答题" }));
+  fireEvent.click(await screen.findByRole("button", { name: "稍偏甲" }));
+
+  expect(await screen.findByText("正在读取结果")).toBeTruthy();
+  expect(screen.getByText("已答 4 题")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "稍偏甲" })).toBeNull();
+
+  releaseFirstFinish?.();
+
+  expect(await screen.findByText("未能读取结果")).toBeTruthy();
+  expect(screen.getByText("已答 4 题")).toBeTruthy();
+  expect(screen.queryByText("未能记下这一档")).toBeNull();
+  expect(screen.queryByRole("button", { name: "重新开始" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "稍偏甲" })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "重试" }));
+
+  expect(await screen.findByText("重心 成本 0.2 · 时间 0.35 · 质量 0.45")).toBeTruthy();
+  expect(screen.queryByText("未能记下这一档")).toBeNull();
+
+  const names = vi.mocked(invoke).mock.calls.map((call) => call[0]);
+  expect(names.filter((name) => name === ELICIT_START_COMMAND)).toHaveLength(1);
+  expect(names.filter((name) => name === ELICIT_ANSWER_COMMAND)).toHaveLength(1);
+  expect(names.filter((name) => name === ELICIT_FINISH_COMMAND)).toHaveLength(2);
 });

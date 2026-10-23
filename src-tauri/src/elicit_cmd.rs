@@ -24,21 +24,11 @@ use serde::Serialize;
 
 use crate::store_cmd::{self, AppState};
 
-/// Defect rate used when the webview does not pass a base.
+/// Display defect paired with the core first-window cost and time.
 ///
-/// Cost and time for the first window come from the core. The defect base is
-/// caller-supplied; 0.1 is the shell default that keeps every bank question
+/// The webview cannot override these numbers. 0.1 keeps every bank question
 /// showable.
 const DEFAULT_DISPLAY_DEFECT: f64 = 0.1;
-
-/// Display base the webview may override. Omitted fields are not accepted;
-/// pass nothing to use the shell default.
-#[derive(Debug, Deserialize)]
-pub struct BaseInput {
-    pub cost: f64,
-    pub time: f64,
-    pub defect: f64,
-}
 
 /// The question index the session is asking, and the five-level answer.
 #[derive(Debug, Deserialize)]
@@ -181,18 +171,11 @@ fn coding_scope() -> ScopeId {
     ScopeId::new(TaskKind::Coding)
 }
 
-fn question_base(input: Option<BaseInput>) -> Result<QuestionBase, String> {
-    let base = match input {
-        None => QuestionBase {
-            cost: FIRST_WINDOW_COST,
-            time: FIRST_WINDOW_TIME,
-            defect: DEFAULT_DISPLAY_DEFECT,
-        },
-        Some(input) => QuestionBase {
-            cost: input.cost,
-            time: input.time,
-            defect: input.defect,
-        },
+fn question_base() -> Result<QuestionBase, String> {
+    let base = QuestionBase {
+        cost: FIRST_WINDOW_COST,
+        time: FIRST_WINDOW_TIME,
+        defect: DEFAULT_DISPLAY_DEFECT,
     };
     // `show` rejects a base the core cannot display. The question itself is unused.
     show(&bank()[0], base).map_err(|err| err.to_string())?;
@@ -314,9 +297,12 @@ fn require_active(
     Ok(guard)
 }
 
-/// Starts a session. Replaces one that was already running.
-pub fn start(state: &ElicitState, base: Option<BaseInput>) -> Result<StepView, String> {
-    let base = question_base(base)?;
+/// Starts a session on the shell display base. Replaces one already running.
+///
+/// Cost and time are the core first-window constants. The defect rate is the
+/// shell default. A webview-supplied base is not accepted.
+pub fn start(state: &ElicitState) -> Result<StepView, String> {
+    let base = question_base()?;
     let mut session = Session::new();
     let step = advance(&mut session, base)?;
     *lock(state)? = Some(ActiveSession {
@@ -327,10 +313,18 @@ pub fn start(state: &ElicitState, base: Option<BaseInput>) -> Result<StepView, S
     Ok(step)
 }
 
-/// Drops the in-memory session. Stored ledger rows are left to the store wipe.
-pub fn reset(state: &ElicitState) -> Result<(), String> {
-    *lock(state)? = None;
-    Ok(())
+/// Drops the active session, then deletes the store.
+///
+/// The elicit lock stays held across the store delete. [`save`] takes that
+/// same lock before it writes the ledger, so wipe and save stay in
+/// elicit-then-store order. A save cannot write the ledger after this session
+/// is gone.
+pub fn wipe_with(app: &AppState, elicit: &ElicitState) -> Result<(), String> {
+    let mut guard = lock(elicit)?;
+    // Clear the session before the store delete. Do not lock `elicit` again:
+    // this guard is already held.
+    *guard = None;
+    store_cmd::delete_all(app)
 }
 
 /// The current question, after skipping any that cannot be shown.
@@ -572,10 +566,10 @@ mod tests {
     use agent_value_core::window::WindowIndex;
 
     use super::{
-        answer, begin_window, coding_scope, context, edit_weights, finish, next_step,
-        question_base, regions_of, reset, save, skip, start, store_cmd, AnswerInput, AppState,
-        BaseInput, ElicitState, WeightInput, WeightTriple, DEFAULT_DISPLAY_DEFECT,
-        FIRST_WINDOW_COST, FIRST_WINDOW_TIME,
+        advance, answer, begin_window, coding_scope, context, edit_weights, finish, next_step,
+        question_base, regions_of, save, start, store_cmd, wipe_with, AnswerInput, AppState,
+        ElicitState, WeightInput, WeightTriple, DEFAULT_DISPLAY_DEFECT, FIRST_WINDOW_COST,
+        FIRST_WINDOW_TIME,
     };
 
     fn truth() -> GridPoint {
@@ -593,9 +587,9 @@ mod tests {
 
     fn drive_honest(elicit: &ElicitState, truth: GridPoint) -> Session {
         let questions = bank();
-        let base = question_base(None).unwrap();
+        let base = question_base().unwrap();
         let mut oracle = Session::new();
-        let mut step = start(elicit, None).unwrap();
+        let mut step = start(elicit).unwrap();
         while !step.finished {
             let question = step
                 .question
@@ -641,11 +635,11 @@ mod tests {
     #[test]
     fn start_matches_the_bank_and_leaves_the_centroid_empty() {
         let elicit = ElicitState::new();
-        let step = start(&elicit, None).unwrap();
+        let step = start(&elicit).unwrap();
         let question = step.question.as_ref().expect("first question");
         let questions = bank();
         assert_eq!(question.rho, questions[question.index].rho());
-        let base = question_base(None).unwrap();
+        let base = question_base().unwrap();
         assert_eq!(base.cost, FIRST_WINDOW_COST);
         assert_eq!(base.time, FIRST_WINDOW_TIME);
         assert_eq!(base.defect, DEFAULT_DISPLAY_DEFECT);
@@ -693,7 +687,7 @@ mod tests {
     #[test]
     fn wrong_question_is_rejected_and_the_session_stays() {
         let elicit = ElicitState::new();
-        let step = start(&elicit, None).unwrap();
+        let step = start(&elicit).unwrap();
         let index = step.question.as_ref().unwrap().index;
         let err = answer(
             &elicit,
@@ -709,39 +703,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_base_does_not_start_a_session() {
-        let elicit = ElicitState::new();
-        let err = start(
-            &elicit,
-            Some(BaseInput {
-                cost: 0.0,
-                time: FIRST_WINDOW_TIME,
-                defect: DEFAULT_DISPLAY_DEFECT,
-            }),
-        )
-        .unwrap_err();
-        assert!(!err.is_empty());
-        assert!(regions_of(&elicit).is_err());
-    }
-
-    #[test]
     fn unshowable_questions_are_skipped_before_they_are_returned() {
-        let elicit = ElicitState::new();
+        // The command surface no longer accepts a base override. This drives
+        // `advance` with a defect that hides some bank questions.
         let base = QuestionBase {
-            cost: 0.5,
-            time: 120.0,
+            cost: FIRST_WINDOW_COST,
+            time: FIRST_WINDOW_TIME,
             defect: 0.4,
         };
         let questions = bank();
-        let mut step = start(
-            &elicit,
-            Some(BaseInput {
-                cost: base.cost,
-                time: base.time,
-                defect: base.defect,
-            }),
-        )
-        .unwrap();
+        let mut session = Session::new();
+        let mut step = advance(&mut session, base).unwrap();
         let mut saw_gap = false;
         for _ in 0..BANK_SIZE {
             let Some(question) = step.question.as_ref() else {
@@ -749,7 +721,8 @@ mod tests {
             };
             assert!(show(&questions[question.index], base).unwrap().is_some());
             let before = step.skipped.len();
-            step = skip(&elicit, question.index).unwrap();
+            session.skip(question.index).unwrap();
+            step = advance(&mut session, base).unwrap();
             if step.skipped.len() > before + 1 {
                 for index in &step.skipped[before + 1..] {
                     assert!(show(&questions[*index], base).unwrap().is_none());
@@ -765,12 +738,15 @@ mod tests {
     }
 
     #[test]
-    fn reset_drops_the_session() {
+    fn wipe_drops_an_unsaved_session() {
+        let app = AppState::open_in_memory().unwrap();
         let elicit = ElicitState::new();
-        start(&elicit, None).unwrap();
-        reset(&elicit).unwrap();
+        start(&elicit).unwrap();
+        wipe_with(&app, &elicit).unwrap();
         assert!(regions_of(&elicit).is_err());
         assert!(finish(&elicit).is_err());
+        let err = save(&app, &elicit).unwrap_err();
+        assert!(err.contains("no self-report"));
     }
 
     #[test]
@@ -946,7 +922,7 @@ mod tests {
     #[test]
     fn finish_before_the_stop_rule_is_rejected() {
         let elicit = ElicitState::new();
-        start(&elicit, None).unwrap();
+        start(&elicit).unwrap();
         let err = finish(&elicit).unwrap_err();
         assert!(err.contains("not finished"));
         let app = AppState::open_in_memory().unwrap();
@@ -955,5 +931,83 @@ mod tests {
         let ledger = store_cmd::read_weight_ledger(&app, &coding_scope()).unwrap();
         assert_eq!(ledger.versions().len(), 1);
         assert!(ledger.frozen_windows().is_empty());
+    }
+
+    /// `wipe_with` drops the session while it still holds the elicit lock, then
+    /// deletes the store before releasing that lock. `save` needs the same lock
+    /// before it can write, so this later save cannot put the ledger back.
+    #[test]
+    fn wipe_then_save_cannot_repopulate_the_ledger() {
+        let app = AppState::open_in_memory().unwrap();
+        let elicit = ElicitState::new();
+        drive_honest(&elicit, truth());
+        let saved = save(&app, &elicit).unwrap();
+        assert_eq!(saved.outcome, "official");
+        let before = store_cmd::read_weight_ledger(&app, &coding_scope()).unwrap();
+        assert_eq!(before.versions().len(), 2);
+        assert!(before
+            .versions()
+            .iter()
+            .any(|version| version.source() == WeightSource::SelfReport));
+
+        wipe_with(&app, &elicit).unwrap();
+
+        let gone = regions_of(&elicit).unwrap_err();
+        assert!(gone.contains("no self-report"));
+        let err = save(&app, &elicit).unwrap_err();
+        assert!(err.contains("no self-report"));
+        assert!(!err.contains("already saved"));
+
+        let after = store_cmd::read_weight_ledger(&app, &coding_scope()).unwrap();
+        assert_eq!(after.versions().len(), 1);
+        assert_eq!(after.versions()[0].source(), WeightSource::Default);
+        assert!(after.frozen_windows().is_empty());
+        assert!(after
+            .versions()
+            .iter()
+            .all(|version| version.source() != WeightSource::SelfReport));
+    }
+
+    #[test]
+    fn official_save_then_begin_window_then_save_stays_a_trial() {
+        let app = AppState::open_in_memory().unwrap();
+        let elicit = ElicitState::new();
+        drive_honest(&elicit, truth());
+        let official = save(&app, &elicit).unwrap();
+        assert_eq!(official.outcome, "official");
+        let official_id = official.applied.id;
+        let before = store_cmd::read_weight_ledger(&app, &coding_scope()).unwrap();
+        let official_count = before.versions().iter().filter(|v| !v.is_trial()).count();
+        assert_eq!(official_count, 2);
+        assert_eq!(before.versions().iter().filter(|v| v.is_trial()).count(), 0);
+
+        let opened = begin_window(&app).unwrap();
+        assert!(opened.in_window);
+        assert_eq!(opened.official.id, official_id);
+
+        drive_honest(&elicit, truth());
+        let trial = save(&app, &elicit).unwrap();
+        assert_eq!(trial.outcome, "trial");
+        assert_eq!(trial.label.as_deref(), Some(TRIAL_LABEL));
+        assert!(trial.applied.trial);
+        assert!(!trial.official.trial);
+        assert_eq!(trial.official.id, official_id);
+        assert_ne!(trial.applied.id, official_id);
+
+        let after = store_cmd::read_weight_ledger(&app, &coding_scope()).unwrap();
+        assert_eq!(
+            after.versions().iter().filter(|v| !v.is_trial()).count(),
+            official_count
+        );
+        assert_eq!(after.versions().iter().filter(|v| v.is_trial()).count(), 1);
+        assert_eq!(
+            after
+                .frozen(WindowIndex::FIRST)
+                .unwrap()
+                .weight_version()
+                .id()
+                .0,
+            official_id
+        );
     }
 }

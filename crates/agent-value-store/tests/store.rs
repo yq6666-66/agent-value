@@ -808,3 +808,13 @@ fn invalid_records_are_errors_not_panics() {
     assert!(s.insert_request(&r).is_ok());
     assert!(DigestKey::from_bytes(b"short").is_err());
 }
+
+#[test]
+fn list_arms_returns_stored_rows_in_id_order() {
+    let s = mem();
+    let first = s.upsert_arm(&relay()).unwrap();
+    let second = s.upsert_arm(&official()).unwrap();
+    let listed = s.list_arms().unwrap();
+    assert_eq!(listed, vec![(first, relay()), (second, official())]);
+    assert_eq!(s.list_arms().unwrap().len() as u64, s.arm_count().unwrap());
+}

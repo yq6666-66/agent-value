@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Default capability for the main window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "allow-core-version",
+    "allow-demo-example6-layer",
+    "allow-store",
+    "allow-window-chrome"
+  ]
 }

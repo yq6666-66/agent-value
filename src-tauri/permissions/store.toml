@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-store"
+description = "Allows the webview to list and add arms, and to read the data path, export, or delete all local rows."
+commands.allow = [
+  "list_arms",
+  "upsert_arm",
+  "store_data_path",
+  "export_store",
+  "delete_all",
+]

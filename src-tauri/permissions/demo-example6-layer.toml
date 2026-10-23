@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-demo-example6-layer"
+description = "Allows the webview to read the example-6 diagnostic anchor."
+commands.allow = ["demo_example6_layer"]

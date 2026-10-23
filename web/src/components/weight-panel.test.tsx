@@ -1,0 +1,102 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, expect, test, vi } from "vitest";
+
+import { App } from "@/App";
+import { WeightPanel } from "@/components/weight-panel";
+import { WINDOW_CHROME_COMMAND } from "@/lib/window-chrome";
+import {
+  DELETE_ALL_COMMAND,
+  EXPORT_STORE_COMMAND,
+  LIST_ARMS_COMMAND,
+  STORE_DATA_PATH_COMMAND,
+  UPSERT_ARM_COMMAND,
+} from "@/lib/store";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(invoke).mockReset();
+});
+
+function chromeFor(sample: unknown) {
+  if (sample === "later") {
+    return { window_index: 1, is_first: false, first_window_label: null };
+  }
+  return { window_index: 0, is_first: true, first_window_label: "LABEL-FROM-CORE" };
+}
+
+function sampleOf(args: unknown): unknown {
+  if (args && typeof args === "object" && "sample" in args) {
+    return args.sample;
+  }
+  return undefined;
+}
+
+test("first window shows the shell label and does not show V", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+    if (cmd === WINDOW_CHROME_COMMAND) {
+      return chromeFor(sampleOf(args));
+    }
+    throw new Error(cmd);
+  });
+
+  render(<WeightPanel />);
+
+  expect(await screen.findByText("LABEL-FROM-CORE")).toBeTruthy();
+  expect(screen.queryByText("V")).toBeNull();
+  expect(screen.queryByText(/collecting data only/)).toBeNull();
+  expect(invoke).toHaveBeenCalledWith(WINDOW_CHROME_COMMAND, { sample: "first" });
+});
+
+test("a later window shows an empty V slot", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string, args) => {
+    if (cmd === WINDOW_CHROME_COMMAND) {
+      return chromeFor(sampleOf(args));
+    }
+    throw new Error(cmd);
+  });
+
+  render(<WeightPanel />);
+  fireEvent.click(await screen.findByRole("button", { name: "下一窗" }));
+
+  expect(await screen.findByText("V")).toBeTruthy();
+  expect(screen.getByText("尚未接入")).toBeTruthy();
+  expect(screen.queryByText("LABEL-FROM-CORE")).toBeNull();
+  expect(invoke).toHaveBeenCalledWith(WINDOW_CHROME_COMMAND, { sample: "later" });
+});
+
+test("the shell layout has a frontier pane and resize separators", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === WINDOW_CHROME_COMMAND) {
+      return chromeFor("first");
+    }
+    if (cmd === LIST_ARMS_COMMAND) {
+      return [];
+    }
+    if (cmd === STORE_DATA_PATH_COMMAND) {
+      return "/data/from-shell.sqlite";
+    }
+    if (cmd === EXPORT_STORE_COMMAND) {
+      return { schema_version: 2, table_count: 14, row_count: 0, path: null };
+    }
+    if (cmd === DELETE_ALL_COMMAND || cmd === UPSERT_ARM_COMMAND) {
+      return null;
+    }
+    if (cmd === "core_version") {
+      return "9.9.9-from-core";
+    }
+    if (cmd === "demo_example6_layer") {
+      return "4.321-from-core";
+    }
+    throw new Error(cmd);
+  });
+
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "前沿" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "按你的权重" })).toBeTruthy();
+  expect(screen.getAllByRole("separator").length).toBeGreaterThanOrEqual(2);
+});

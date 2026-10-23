@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-core-version"
+description = "Allows the webview to read the agent-value-core version string."
+commands.allow = ["core_version"]

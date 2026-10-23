@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-window-chrome"
+description = "Allows the webview to read sample window chrome, including the first-window label."
+commands.allow = ["window_chrome"]

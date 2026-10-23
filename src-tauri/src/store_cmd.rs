@@ -5,13 +5,15 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use agent_value_core::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
 use agent_value_core::scope::ScopeId;
 use agent_value_core::weights::WeightLedger;
 use agent_value_probe_run::Flight;
 use agent_value_store::{DigestKey, ExportDump, Store};
+
+use crate::probe_schedule::ProbeSchedule;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -53,6 +55,8 @@ pub struct AppState {
     store: Mutex<Store>,
     data_path: PathBuf,
     pub(crate) flight: Flight,
+    /// In-process probe re-run. Dropped when the process exits.
+    pub(crate) schedule: Arc<ProbeSchedule>,
 }
 
 impl AppState {
@@ -66,6 +70,7 @@ impl AppState {
             store: Mutex::new(store),
             data_path,
             flight: Flight::new(),
+            schedule: Arc::new(ProbeSchedule::new()),
         })
     }
 
@@ -78,6 +83,7 @@ impl AppState {
             store: Mutex::new(store),
             data_path: PathBuf::from(":memory:"),
             flight: Flight::new(),
+            schedule: Arc::new(ProbeSchedule::new()),
         })
     }
 

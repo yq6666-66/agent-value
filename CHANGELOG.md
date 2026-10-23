@@ -7,6 +7,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Desktop: optional in-app probe re-run. `PROBE_SCHEDULE_INTERVAL_MS` is
+  24 hours and is provisional (暂定). It is not an observation-period
+  threshold. The schedule is one thread in this process. It is not an
+  operating-system cron and not a background daemon. Quitting the app
+  stops it. Nothing is scheduled until the user enables it, and enabling
+  does not send. The first tick is one interval later. Opening the app
+  does not send a probe. Each due tick calls the same path as
+  `run_probe_once` (`probe_run::run_once` on that thread, off the async
+  runtime): consent, monthly budget, same-day already-run, host bind,
+  key variable name, provisional charge, and store writes. A clock jump
+  runs at most one tick and does not catch up missed intervals. A monthly
+  budget stop clears the schedule, does not send again, and the panel
+  says so. While the schedule is on, the panel shows a read-only
+  next-planned time (下次计划). `sends_http` stays true because a due
+  tick can send. Observation thresholds are unchanged.
 - Desktop: manual “跑一次” on the probe panel. The button is shown only
   after consent is accepted, for the store source, when launch is `ready`.
   It stays hidden for `blocked-*`, `running`, `completed`, and `failed`,
@@ -28,7 +43,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call returns, the panel reloads from the store source if that source
   is still selected. `sends_http` is true because this command can send.
   Observation copy stays reference-only. Thresholds are unchanged.
-  There is no scheduler.
 - Shell: one probe run for a selected arm (`agent-value-probe-run`).
   The caller passes the arm, the key's environment-variable name, and
   the base URL. Gates, in order: no stored consent (`blocked-consent`);

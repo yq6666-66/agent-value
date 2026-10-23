@@ -4,9 +4,10 @@
 //! observation-period copy, and authenticity grades come from
 //! `agent_value_core`. The fixture source judges the checked-in replay.
 //! This view does not send HTTP. [`crate::probe_run::run_from_webview`] can,
-//! when the webview asks, and it runs on a blocking thread. `sends_http`
-//! is true because that command is registered. Opening the page does not
-//! run a probe. Observation thresholds are unchanged.
+//! when the webview asks or when an in-app schedule tick is due, and that
+//! call runs on a blocking thread. `sends_http` is true because those paths
+//! can send. Opening the page does not run a probe and does not arm the
+//! schedule. Observation thresholds are unchanged.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,6 +27,8 @@ use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult};
 use agent_value_probe_run::{spent_in_month, typical_probe_estimate};
 use serde::Serialize;
 
+use crate::probe_run::{self, RunOnceInput};
+use crate::probe_schedule::{ScheduleInput, SCHEDULE_BUDGET_STOP_LABEL, SCHEDULE_NO_CONSENT_LABEL};
 use crate::store_cmd::{self, AppState};
 
 /// Seed named in the mixed replay fixture header.
@@ -52,9 +55,19 @@ pub struct ProbePanel {
     pub grade_run_days_label: String,
     pub launch: String,
     pub launch_label: String,
-    /// True in this build: `run_probe_once` can send when consent and the
-    /// monthly budget allow. This view command does not send.
+    /// True in this build: `run_probe_once` and a due in-app tick can send
+    /// when consent and the monthly budget allow. This view command does
+    /// not send. Opening the app does not arm a schedule.
     pub sends_http: bool,
+    /// True only after the user enables the in-app schedule. Process exit
+    /// clears it. This view command does not set it.
+    pub schedule_active: bool,
+    /// Read-only next fire time when [`Self::schedule_active`].
+    pub next_planned_label: Option<String>,
+    /// Budget stop, or a refusal to arm. None when there is nothing to say.
+    pub schedule_status_label: Option<String>,
+    /// Provisional interval sentence. The webview does not choose the hours.
+    pub schedule_hint: String,
     pub arms: Vec<ProbeArmView>,
     /// Arms the webview may pass to `run_probe_once`. Stored arms, then any
     /// probe-result arm not already listed. The id is `Arm`'s display
@@ -307,12 +320,20 @@ fn assemble(
         _ => return Err(format!("unknown probe source: {source}")),
     };
     let budget_label = monthly_budget_label().map_err(|err| err.to_string())?;
+    let schedule = app.schedule.snapshot();
+    let schedule_status_label = if budget.decision == BudgetDecision::Stop {
+        Some(SCHEDULE_BUDGET_STOP_LABEL.to_string())
+    } else {
+        schedule.status_label.clone()
+    };
     Ok(ProbePanel {
         source: source.to_string(),
         fixture,
         decided,
         accepted,
-        consent_prompt: format!("{budget_label}。同意之前不会自动探测。同意之后可以手动跑一次。"),
+        consent_prompt: format!(
+            "{budget_label}。同意之前不会自动探测。同意之后可以手动跑一次。定时重跑要另外启用，启用时不会马上发送。"
+        ),
         monthly_budget_label: budget_label,
         spent_label: format!("本月已花 {} 元", spent.format_yuan()),
         estimate_label: format!("典型计划估价 {} 元", estimate.format_yuan()),
@@ -324,6 +345,10 @@ fn assemble(
         launch: launch.as_str().to_string(),
         launch_label: launch.label().to_string(),
         sends_http: true,
+        schedule_active: schedule.active,
+        next_planned_label: schedule.next_planned_label,
+        schedule_status_label,
+        schedule_hint: schedule.hint,
         arms,
         run_targets,
         empty_reason,
@@ -340,6 +365,55 @@ pub fn view(app: &AppState, source: &str) -> Result<ProbePanel, String> {
         None => (false, false),
     };
     assemble(app, source, accepted, decided)
+}
+
+/// Enables or stops the in-app schedule, then returns the store panel.
+///
+/// Enabling does not send. The first tick is one provisional interval
+/// later. No stored consent, a budget stop, or a host mismatch leaves the
+/// schedule inactive and does not send. Stopping does not send.
+pub fn set_schedule(app: &AppState, input: &ScheduleInput) -> Result<ProbePanel, String> {
+    set_schedule_at(app, input, now_ms()?)
+}
+
+pub(crate) fn set_schedule_at(
+    app: &AppState,
+    input: &ScheduleInput,
+    now_ms: i64,
+) -> Result<ProbePanel, String> {
+    if !input.enabled {
+        app.schedule.disable();
+        return view(app, "store");
+    }
+    let consent = store_cmd::with_store(app, |store| {
+        store.probe_consent().map_err(|err| err.to_string())
+    })?;
+    let accepted = consent.is_some_and(|consent| consent.accepted);
+    if !accepted {
+        app.schedule.note(SCHEDULE_NO_CONSENT_LABEL);
+        return view(app, "store");
+    }
+    let charges = store_cmd::with_store(app, |store| {
+        store.probe_charges().map_err(|err| err.to_string())
+    })?;
+    let spent = spent_this_month(&charges, now_ms)?;
+    let estimate = typical_probe_estimate().map_err(|err| err.to_string())?;
+    let budget = budget_view(spent, estimate, now_ms)?;
+    if budget.decision == BudgetDecision::Stop {
+        app.schedule.stop_for_budget();
+        return view(app, "store");
+    }
+    let run_input = RunOnceInput {
+        arm_id: input.arm_id.clone(),
+        key_env: input.key_env.clone(),
+        base_url: input.base_url.clone(),
+    };
+    match probe_run::schedule_binding(app, &run_input) {
+        Ok(binding) => app.schedule.enable(now_ms, binding),
+        Err(probe_run::BindFail::Rejected(rejected)) => app.schedule.note(&rejected.detail),
+        Err(probe_run::BindFail::Store(err)) => return Err(err),
+    }
+    view(app, "store")
 }
 
 /// Stores the first consent decision, then returns the panel for `source`.
@@ -364,6 +438,9 @@ mod tests {
     use agent_value_core::probe::{judge_capability, judge_deterministic, parse_replay};
     use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult, ProbeVerdict};
     use agent_value_probe_run::{typical_probe_estimate, Flight, ProbeLaunch};
+
+    use crate::probe_run::scheduled_tick;
+    use crate::probe_schedule::{ScheduleBinding, TickClass, PROBE_SCHEDULE_INTERVAL_MS};
 
     use super::*;
 
@@ -408,11 +485,20 @@ mod tests {
         assert!(panel.arms.is_empty());
         assert_eq!(panel.empty_reason.as_deref(), Some("尚无探针记录。"));
         assert!(panel.over_budget_prompt.is_none());
+        assert!(!panel.schedule_active);
+        assert!(panel.next_planned_label.is_none());
+        assert!(panel.schedule_status_label.is_none());
+        assert!(panel.schedule_hint.contains("暂定"));
+        assert!(panel.schedule_hint.contains("不是系统定时任务"));
+        assert!(!panel.schedule_hint.contains("已校准"));
+        assert!(!panel.consent_prompt.contains("已校准"));
         let budget = monthly_budget_label().unwrap();
         assert_eq!(panel.monthly_budget_label, budget);
         assert_eq!(
             panel.consent_prompt,
-            format!("{budget}。同意之前不会自动探测。同意之后可以手动跑一次。")
+            format!(
+                "{budget}。同意之前不会自动探测。同意之后可以手动跑一次。定时重跑要另外启用，启用时不会马上发送。"
+            )
         );
         let estimate = typical_probe_estimate().unwrap();
         assert!(estimate.micros() > 0);
@@ -479,6 +565,12 @@ mod tests {
         );
         assert!(panel.spent_label.contains(&spent.format_yuan()));
         assert!(panel.estimate_label.contains(&estimate.format_yuan()));
+        assert!(!panel.schedule_active);
+        assert_eq!(
+            panel.schedule_status_label.as_deref(),
+            Some(SCHEDULE_BUDGET_STOP_LABEL)
+        );
+        assert!(panel.sends_http);
     }
 
     #[test]
@@ -694,5 +786,215 @@ mod tests {
     fn unknown_source_is_rejected() {
         let err = view(&app(), "live").unwrap_err();
         assert!(err.contains("unknown probe source"));
+    }
+
+    fn relay_id() -> String {
+        Arm::new(
+            ModelId::new("probe-model").unwrap(),
+            Route::new(
+                ProviderKind::Relay,
+                "127.0.0.1",
+                Protocol::OpenAiChatCompletions,
+                "probe-run",
+            )
+            .unwrap(),
+        )
+        .to_string()
+    }
+
+    fn save_local(app: &AppState) -> String {
+        store_cmd::save_arm(
+            app,
+            store_cmd::ArmInput {
+                model: "probe-model".into(),
+                provider_kind: "relay".into(),
+                host: "127.0.0.1".into(),
+                protocol: "openai-chat-completions".into(),
+                client: "probe-run".into(),
+            },
+        )
+        .unwrap();
+        relay_id()
+    }
+
+    fn enable_input(arm_id: &str, key_env: &str, base_url: &str) -> ScheduleInput {
+        ScheduleInput {
+            enabled: true,
+            arm_id: arm_id.to_string(),
+            key_env: key_env.to_string(),
+            base_url: base_url.to_string(),
+        }
+    }
+
+    #[test]
+    fn enabling_without_consent_does_not_arm_or_send() {
+        let app = app();
+        let arm_id = save_local(&app);
+        let panel = set_schedule_at(
+            &app,
+            &enable_input(&arm_id, "RELAY_API_KEY", "http://127.0.0.1:9"),
+            OCTOBER,
+        )
+        .unwrap();
+        assert!(!panel.schedule_active);
+        assert!(panel.next_planned_label.is_none());
+        assert_eq!(
+            panel.schedule_status_label.as_deref(),
+            Some(SCHEDULE_NO_CONSENT_LABEL)
+        );
+        assert!(panel.sends_http);
+        assert_eq!(panel.launch, ProbeLaunch::BlockedConsent.as_str());
+        let report = scheduled_tick(&app, OCTOBER + PROBE_SCHEDULE_INTERVAL_MS * 4);
+        assert!(!report.ran);
+        assert!(charges_of(&app).is_empty());
+        assert!(results_of(&app).is_empty());
+    }
+
+    #[test]
+    fn an_armed_schedule_still_does_not_tick_without_consent() {
+        let app = app();
+        app.schedule.enable(
+            0,
+            ScheduleBinding {
+                arm_id: relay_id(),
+                key_env: "RELAY_API_KEY".into(),
+                base_url: "http://127.0.0.1:9".into(),
+            },
+        );
+        let report = scheduled_tick(&app, PROBE_SCHEDULE_INTERVAL_MS);
+        assert!(!report.ran);
+        assert_eq!(report.class, Some(TickClass::Consent));
+        assert!(!app.schedule.snapshot().active);
+        assert!(charges_of(&app).is_empty());
+        assert!(results_of(&app).is_empty());
+    }
+
+    #[test]
+    fn enabling_with_consent_shows_the_next_plan_and_does_not_send() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let arm_id = save_local(&app);
+        let now = now_ms().unwrap();
+        let panel = set_schedule_at(
+            &app,
+            &enable_input(&arm_id, "RELAY_API_KEY", "http://127.0.0.1:9"),
+            now,
+        )
+        .unwrap();
+        assert!(panel.schedule_active);
+        assert!(panel.sends_http);
+        let label = panel.next_planned_label.unwrap();
+        assert!(label.starts_with("下次计划："));
+        assert!(label.contains("暂定"));
+        assert!(label.contains("错过不补跑"));
+        assert!(!label.contains("已校准"));
+        assert!(panel.schedule_status_label.is_none());
+        assert_eq!(
+            app.flight.launch(true, BudgetDecision::Allow),
+            ProbeLaunch::Ready
+        );
+        assert!(charges_of(&app).is_empty());
+        assert!(results_of(&app).is_empty());
+        let early = scheduled_tick(&app, now);
+        assert!(!early.ran);
+        assert!(charges_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_scheduled_tick_stops_after_the_budget_gate_and_does_not_send_again() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let arm_id = save_local(&app);
+        let now = now_ms().unwrap();
+        set_schedule_at(
+            &app,
+            &enable_input(&arm_id, "RELAY_API_KEY", "http://127.0.0.1:9"),
+            now,
+        )
+        .unwrap();
+        let spent = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+        store_cmd::with_store(&app, |store| {
+            store
+                .record_probe_charge(now, spent)
+                .map_err(|err| err.to_string())
+        })
+        .unwrap();
+        let due = scheduled_tick(&app, now + PROBE_SCHEDULE_INTERVAL_MS);
+        assert!(due.ran);
+        assert_eq!(due.class, Some(TickClass::Budget));
+        assert_eq!(charges_of(&app).len(), 1);
+        assert!(results_of(&app).is_empty());
+        let panel = view(&app, "store").unwrap();
+        assert!(!panel.schedule_active);
+        assert!(panel.next_planned_label.is_none());
+        assert_eq!(
+            panel.schedule_status_label.as_deref(),
+            Some(SCHEDULE_BUDGET_STOP_LABEL)
+        );
+        assert!(panel.sends_http);
+        assert_eq!(panel.launch, ProbeLaunch::BlockedBudget.as_str());
+        let again = scheduled_tick(&app, now + PROBE_SCHEDULE_INTERVAL_MS * 5);
+        assert!(!again.ran);
+        assert_eq!(charges_of(&app).len(), 1);
+        assert!(results_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_mismatched_host_is_not_scheduled_and_the_detail_does_not_echo_it() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let arm_id = save_local(&app);
+        let submitted = "https://evil.example/probe-path";
+        let panel = set_schedule_at(
+            &app,
+            &enable_input(&arm_id, "RELAY_API_KEY", submitted),
+            OCTOBER,
+        )
+        .unwrap();
+        assert!(!panel.schedule_active);
+        assert_eq!(
+            panel.schedule_status_label.as_deref(),
+            Some("基址的主机必须和所选臂一致。")
+        );
+        let detail = panel.schedule_status_label.unwrap();
+        assert!(!detail.contains(submitted));
+        assert!(!detail.contains("evil.example"));
+        assert!(!detail.contains("RELAY_API_KEY"));
+        assert!(charges_of(&app).is_empty());
+        let report = scheduled_tick(&app, OCTOBER + PROBE_SCHEDULE_INTERVAL_MS * 3);
+        assert!(!report.ran);
+    }
+
+    #[test]
+    fn a_secret_typed_as_the_variable_name_is_not_scheduled_or_echoed() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let arm_id = save_local(&app);
+        let secret = "sk-test-Ab1cdEf2Gh3ijKl4Mn5";
+        let panel = set_schedule_at(
+            &app,
+            &enable_input(&arm_id, secret, "http://127.0.0.1:9"),
+            OCTOBER,
+        )
+        .unwrap();
+        assert!(!panel.schedule_active);
+        let detail = panel.schedule_status_label.unwrap();
+        assert!(!detail.contains(secret));
+        assert!(!detail.to_lowercase().contains("sk-"));
+        assert!(charges_of(&app).is_empty());
+    }
+
+    fn charges_of(app: &AppState) -> Vec<(i64, i64)> {
+        store_cmd::with_store(app, |store| {
+            store.probe_charges().map_err(|err| err.to_string())
+        })
+        .unwrap()
+    }
+
+    fn results_of(app: &AppState) -> Vec<ProbeResult> {
+        store_cmd::with_store(app, |store| {
+            store.list_probe_results().map_err(|err| err.to_string())
+        })
+        .unwrap()
     }
 }

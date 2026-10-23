@@ -8,7 +8,7 @@ The scoring rules follow a written specification (v22) plus a decision record fo
 
 ## Status
 
-A Tauri desktop app can be built and run locally from source. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display previously recorded or replayed probe results. This implementation does not make real HTTP probe requests. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only. The desktop app stores its data locally. You can list and add arms, see the database path, export, and delete all rows; the window-results view shows a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
+A Tauri desktop app can be built and run locally from source. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent it can run one probe by hand. You can also enable an in-app re-run; that schedule stays off until you enable it, waits one provisional interval before the first send, and stops when the app exits. Opening the app does not send a probe. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only. The desktop app stores its data locally. You can list and add arms, see the database path, export, and delete all rows; the window-results view shows a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
 
 | Spec step | What it covers | Status |
 |---|---|---|
@@ -22,7 +22,7 @@ A Tauri desktop app can be built and run locally from source. It scores coding-s
 | 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Core implemented; official picks flow through the same window-results path where applicable. |
 | 11 | Weight elicitation from your answers and behaviour | Core + desktop five-level self-report wizard. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version). |
 | 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Core + desktop sensitivity panel (winner map, weight-robust label, flip sentences from core). First window / no-anchor layer: chart withheld. |
-| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show previously recorded or replayed probe results, including the checked-in replay fixture. The page does not send probe HTTP. |
+| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show previously recorded or replayed probe results, including the checked-in replay fixture. After consent the page can run one probe by hand or enable an in-app re-run (24 hours, provisional; off until enabled; not an operating-system cron; app exit stops it). Opening the app does not send. |
 
 Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -560,7 +560,7 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 ### 11. Probes and relay checks
 
-*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture. After consent, when a run is ready, it can manually run one probe for a selected arm. It does not run when the window opens. A shell run can send when consent and the monthly budget allow, and can store the judged results and a provisional charge. Scheduled runs are still planned.*
+*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture. After consent, when a run is ready, it can manually run one probe for a selected arm. It does not run when the window opens. A shell run can send when consent and the monthly budget allow, and can store the judged results and a provisional charge. You can enable an in-app re-run at a provisional 24-hour interval (`PROBE_SCHEDULE_INTERVAL_MS`). Enabling does not send; the first tick is one interval later. Missed intervals are not caught up. A monthly budget stop cancels further scheduled sends. Quitting the app stops the schedule. It is not an operating-system cron or a background daemon.*
 
 This checks whether a route really serves the model it claims. The probe results feed only the authenticity part of gate 4 in section 6, and never enter any score; the log-integrity check below works on the requests recorded in the window.
 
@@ -623,7 +623,7 @@ A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-2
 These parts of the specification are not implemented:
 
 - **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6).
-- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); hard-failure days from passive logs; a window button and scheduled live HTTP probes; generating thinking-signature and long-context requests. A shell run can already send one selected arm when consent and the monthly budget allow, store the judged results, and record a provisional charge. The page does not call it. Probe grade thresholds remain provisional until the observation period is complete.
+- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); hard-failure days from passive logs; an operating-system cron or background daemon for probes; generating thinking-signature and long-context requests. A shell run can already send one selected arm when consent and the monthly budget allow, store the judged results, and record a provisional charge. The page can run that once by hand. It can also enable an in-app re-run every 24 hours (`PROBE_SCHEDULE_INTERVAL_MS`, provisional): the schedule starts only when you enable it, the first send is one interval later, missed intervals are not caught up, a monthly budget stop cancels further scheduled sends, and quitting the app stops it. Probe grade thresholds remain provisional until the observation period is complete.
 
 ### Constants
 
@@ -655,6 +655,7 @@ These parts of the specification are not implemented:
 | Grade run days | at least 2 for A and C; observation period 2 run days | Section 11 |
 | Log integrity | parse rate $\ge0.95$, version mismatches $\le0.05$, flag when more than 0.2 have no model | Section 11 |
 | Probe budget | 10 RMB per calendar month (Beijing time) | Section 11 |
+| In-app probe re-run | 24 hours (`PROBE_SCHEDULE_INTERVAL_MS`, provisional) | Section 11. Not an operating-system cron. Stops when the app exits. |
 | Overhead pairing window | $\pm1$ hour (inclusive) | Route overhead diagnostic |
 | Time window | 30 days | Weights and references are fixed from the previous window |
 | Redo window | 30 minutes | A redo request in this period marks the task failed |
@@ -670,7 +671,7 @@ These parts of the specification are not implemented:
 
 ### For users
 
-The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent, when a run is ready, it can manually run one probe. It does not run a probe when the window opens. Grade bands stay reference-only while the observation period is pending. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
+The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent, when a run is ready, it can manually run one probe. You can enable an in-app re-run (provisional 24-hour interval); enabling does not send, and the schedule stops when the app exits. It does not run a probe when the window opens. Grade bands stay reference-only while the observation period is pending. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
 
 ### For developers
 
@@ -703,7 +704,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` uses only the Python standard library. It reads the key only from the named environment variable or the local git-ignored `.env`, and never writes it to any output: before writing it checks the raw text, the escaped text and the JSON-escaped form. If it finds the key in what it is about to write, it refuses to write and exits. It does not record request headers. `--base` must be https, except for a local mock server.
 
-`agent-value-probe-run` can run one selected arm the same way when stored consent allows it and the monthly budget is not exceeded. The single-flight lock and the budget check are per process. The probe panel sets `sends_http` because `run_probe_once` can send. The window shows a manual run only after consent, when launch is ready, and does not run on open.
+`agent-value-probe-run` can run one selected arm the same way when stored consent allows it and the monthly budget is not exceeded. The single-flight lock and the budget check are per process. The probe panel sets `sends_http` because `run_probe_once` can send. The window shows a manual run only after consent, when launch is ready, and does not run on open. An in-app schedule can call the same run later: it is off until you enable it, the first send is one provisional 24-hour interval later, a budget stop cancels further sends, and quitting the app stops it. It is not an operating-system cron.
 
 Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. To launch it locally, run `cargo tauri dev`, or run the built binary. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell includes the window-results, self-report, sensitivity and probe consent/results UI described above. It is not packaged for distribution.
 
@@ -713,11 +714,11 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 |---|---|
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
-| `crates/agent-value-probe-http/` | In-process probe HTTP sender used by the shell. The probe panel command does not call it. `run_probe_once` reaches it through `agent-value-probe-run`. |
-| `crates/agent-value-probe-run/` | One probe run: consent, monthly budget, the HTTP sender, then stored results and a provisional charge. The window can call it once, manually, on a blocking thread. |
+| `crates/agent-value-probe-http/` | In-process probe HTTP sender used by the shell. The probe panel command does not call it. `run_probe_once` and a due in-app tick reach it through `agent-value-probe-run`. |
+| `crates/agent-value-probe-run/` | One probe run: consent, monthly budget, the HTTP sender, then stored results and a provisional charge. The window can call it once, manually, on a blocking thread, and an in-app schedule can call it the same way. |
 | `src-tauri/` | Tauri 2 desktop shell that links the core crate and includes the window-results, self-report, sensitivity, and probe consent/results UI. Not a member of the default Cargo workspace. |
 | `tools/` | Scripts run by hand on your own machine; only their tests run in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. `test_probe_live.py` (standard-library unittest) checks it against a mock server on 127.0.0.1. |
-| `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity, probe consent/results, and a manual probe run. The About area shows the core version returned by the shell. |
+| `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity, probe consent/results, a manual probe run, and an optional in-app re-run. The About area shows the core version returned by the shell. |
 
 ## Secrets and privacy
 

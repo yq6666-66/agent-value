@@ -703,7 +703,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` 只用 Python 标准库。key 只从指定的环境变量或本地被 git 忽略的 `.env` 读取，从不写进任何输出：写之前会检查原文、转义后的文本和 JSON 转义形式。如果在要写的内容里发现 key，脚本会拒绝写入并退出。脚本不记录请求头。`--base` 必须是 https，本机的模拟服务器除外。
 
-`agent-value-probe-run` 可以在已保存同意且未超过月预算时，对选定的一条臂做同样的一次探测。窗口没有运行按钮，探针面板的 `sends_http` 仍为 false。
+`agent-value-probe-run` 可以在已保存同意且未超过月预算时，对选定的一条臂做同样的一次探测。单飞锁和预算检查都是本进程内的。窗口没有运行按钮，探针面板的 `sends_http` 仍为 false。
 
 桌面外壳：`src-tauri/` 是单独的 Cargo 包，这样测试核心库时不需要 GUI 库。构建它需要 Tauri 2 的系统依赖（Linux 上是 WebKitGTK 4.1 及相关开发包）。先构建网页前端，再进入 `src-tauri/` 运行 `cargo build`。本地启动可运行 `cargo tauri dev`，或运行构建出的二进制。CI 会安装这些依赖，并对外壳运行 `cargo check` 和 `cargo clippy`。外壳已包含上文所述的时间窗结果、自报、敏感性和探针同意/结果界面。当前不提供分发用安装包。
 

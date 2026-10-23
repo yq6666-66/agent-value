@@ -2,7 +2,8 @@
 //!
 //! The webview does not invoke this. Panel commands stay read-only, and
 //! `sends_http` stays false. [`run_once`] blocks for the HTTP exchanges;
-//! do not call it on the Tauri async runtime.
+//! do not call it on the Tauri async runtime. The single-flight lock and
+//! the budget snapshot are per process.
 //!
 //! `request.key_env` is the variable name. The token is read by
 //! `agent-value-probe-http` and is not written to the store.
@@ -11,8 +12,10 @@ use agent_value_probe_run::{ProbeRunOutcome, ProbeRunRequest};
 
 use crate::store_cmd::AppState;
 
-/// Consent not accepted or a budget stop returns that launch and writes
-/// nothing. A second overlapping call returns `running` and does not send.
+/// Consent not accepted, a budget stop, or a result already stored for
+/// today's run day returns that launch and does not send. A second
+/// overlapping call returns `running` and does not send. A send that later
+/// fails still records the provisional charge.
 ///
 /// The webview does not call this yet, so the binary may not reference it.
 #[allow(dead_code)]

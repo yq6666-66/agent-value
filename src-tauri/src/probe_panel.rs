@@ -277,7 +277,7 @@ fn assemble(
         consent_prompt: format!("{budget_label}。同意之前不会自动探测。本版 UI 尚未接线。"),
         monthly_budget_label: budget_label,
         spent_label: format!("本月已花 {} 元", spent.format_yuan()),
-        estimate_label: format!("这次估价 {} 元", estimate.format_yuan()),
+        estimate_label: format!("典型计划估价 {} 元", estimate.format_yuan()),
         budget_decision: decision_text(budget.decision).to_string(),
         over_budget_prompt: budget.prompt,
         observation: observation_state.as_str().to_string(),
@@ -378,7 +378,7 @@ mod tests {
         assert!(estimate.micros() > 0);
         assert_eq!(
             panel.estimate_label,
-            format!("这次估价 {} 元", estimate.format_yuan())
+            format!("典型计划估价 {} 元", estimate.format_yuan())
         );
         let empty = DaySummary::default();
         let state = observation(&empty, &empty, false, false);
@@ -487,7 +487,7 @@ mod tests {
         assert!(estimate.micros() > 0);
         assert_eq!(
             panel.estimate_label,
-            format!("这次估价 {} 元", estimate.format_yuan())
+            format!("典型计划估价 {} 元", estimate.format_yuan())
         );
     }
 

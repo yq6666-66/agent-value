@@ -5,10 +5,17 @@
 //! `agent-value-probe-http` and is not stored. Consent must already be
 //! accepted. The monthly budget gate uses a provisional estimate:
 //! plan rows times [`PROBE_ESTIMATE_PER_ITEM_MICROS`]. A stop writes
-//! nothing and does not open a socket. Otherwise this builds an OpenAI
-//! Chat Completions plan, sends it on a blocking client (off the Tauri
-//! async runtime), judges the replay, and stores the class results plus
-//! that estimate as the charge.
+//! nothing and does not open a socket. A result already stored for this
+//! arm, probe id, version, and Beijing run day also does not open a socket
+//! and does not add a charge. Otherwise this builds an OpenAI Chat
+//! Completions plan, sends it on a blocking client (off the Tauri async
+//! runtime), judges the replay, and stores the class results plus that
+//! estimate as the charge. A capability result is stored only when the plan
+//! has capability rows. If at least one request was sent and the run then
+//! fails, the same estimate is still recorded and no new probe result is
+//! stored.
+//!
+//! The single-flight lock and the budget snapshot are per process.
 //!
 //! Thinking-signature and long-context rows are not in the plan. Fingerprint
 //! rows are not invented, and the observation period is not marked complete.
@@ -39,7 +46,8 @@ use agent_value_core::probe::{
     PROBE_SET_VERSION,
 };
 use agent_value_core::records::{MicroYuan, ProbeClass, ProbeResult};
-use agent_value_probe_http::{run, PlanItem, RunOptions};
+use agent_value_core::runday::RunDay;
+use agent_value_probe_http::{run_accounted, PlanItem, RunOptions};
 use agent_value_store::Store;
 
 /// Provisional price of one OpenAI chat probe request, in micro-yuan.
@@ -57,6 +65,9 @@ const TYPICAL_PLAN_MODEL: &str = "probe-model";
 pub enum ProbeLaunch {
     BlockedConsent,
     BlockedBudget,
+    /// This arm already has a result for today's run day on a probe id this
+    /// run would insert. No request is sent.
+    BlockedAlreadyRun,
     Ready,
     Running,
     Completed,
@@ -68,6 +79,7 @@ impl ProbeLaunch {
         match self {
             Self::BlockedConsent => "blocked-consent",
             Self::BlockedBudget => "blocked-budget",
+            Self::BlockedAlreadyRun => "blocked-already-run",
             Self::Ready => "ready",
             Self::Running => "running",
             Self::Completed => "completed",
@@ -79,6 +91,7 @@ impl ProbeLaunch {
         match self {
             Self::BlockedConsent => "尚未同意，不会自动探测。",
             Self::BlockedBudget => "本月停止探测。",
+            Self::BlockedAlreadyRun => "今天已经探测过这条路线，不会再次发送。",
             Self::Ready => "已同意，且未超预算。就绪时可运行；本版 UI 尚未接线。",
             Self::Running => "正在探测。",
             Self::Completed => "这次探测已写入本地记录。",
@@ -120,8 +133,9 @@ enum RunTerminal {
     Failed,
 }
 
-/// Single-flight state for probe runs. One process-wide value is not
-/// assumed: the shell keeps one of these next to the store.
+/// Single-flight state for probe runs in this process. Another process
+/// can pass the lock and the budget snapshot at the same time. The shell
+/// keeps one of these next to the store.
 pub struct Flight {
     in_flight: AtomicBool,
     last: Mutex<Option<RunTerminal>>,
@@ -267,7 +281,13 @@ pub fn spent_in_month(charges: &[(i64, i64)], at_ms: i64) -> Result<MicroYuan, R
 ///
 /// Blocks the calling thread for every HTTP exchange. Do not call it on
 /// the Tauri async runtime. A second call while one is in flight returns
-/// [`ProbeLaunch::Running`] and does not send.
+/// [`ProbeLaunch::Running`] and does not send. The flight lock and the
+/// budget snapshot are per process.
+///
+/// Order when the lock is held: consent, then the monthly budget, then
+/// the protocol, then a result already stored for today's run day. Each
+/// of those returns before HTTP. A send that later fails still records
+/// the provisional estimate.
 pub fn run_once(
     flight: &Flight,
     store: &Mutex<Store>,
@@ -306,11 +326,6 @@ fn execute(
     if !accepted {
         return Ok(ProbeRunOutcome::of(ProbeLaunch::BlockedConsent));
     }
-    if request.arm.route().protocol() != &Protocol::OpenAiChatCompletions {
-        return Ok(ProbeRunOutcome::failed(
-            "这条路线的协议不是 OpenAI Chat Completions。",
-        ));
-    }
 
     let rows = build_openai_chat_plan(request.seed, request.arm.model().as_str(), &request.claims)
         .map_err(RunError::core)?;
@@ -319,12 +334,21 @@ fn execute(
     if probe_budget(spent, estimate, budget).map_err(RunError::core)? == BudgetDecision::Stop {
         return Ok(ProbeRunOutcome::of(ProbeLaunch::BlockedBudget));
     }
+    if request.arm.route().protocol() != &Protocol::OpenAiChatCompletions {
+        return Ok(ProbeRunOutcome::failed(
+            "这条路线的协议不是 OpenAI Chat Completions。",
+        ));
+    }
+    let probe_ids = probe_ids_for(&rows);
+    if already_ran(store, request.arm, at_ms, &probe_ids)? {
+        return Ok(ProbeRunOutcome::of(ProbeLaunch::BlockedAlreadyRun));
+    }
 
     let items = plan_items(&rows)?;
     let dir = TempRun::new()?;
     let replay_path = dir.path.join("replay.tsv");
     let log_path = dir.path.join("run.jsonl");
-    let sent = run(&RunOptions {
+    let sent = run_accounted(&RunOptions {
         base: request.base_url,
         key_env: request.key_env,
         dotenv: request.dotenv,
@@ -334,25 +358,56 @@ fn execute(
         timeout: request.timeout,
         max_delay_secs: 0.0,
     });
-    let replay = match &sent {
-        Ok(()) => std::fs::read_to_string(&replay_path)
-            .map_err(|err| RunError::new(format!("failed to read probe replay: {err}")))?,
-        Err(_) => String::new(),
+    let (attempted, replay, failure) = match sent {
+        Ok(attempted) => match std::fs::read_to_string(&replay_path) {
+            Ok(replay) => (attempted, Some(replay), None),
+            Err(err) => (
+                attempted,
+                None,
+                Some(format!("failed to read probe replay: {err}")),
+            ),
+        },
+        Err(err) => (err.requests_attempted, None, Some(err.error.to_string())),
     };
     drop(dir);
-    if let Err(err) = sent {
-        return Ok(ProbeRunOutcome::failed(err.to_string()));
-    }
+    let Some(replay) = replay else {
+        return fail_spent(
+            store,
+            at_ms,
+            estimate,
+            attempted,
+            failure.unwrap_or_default(),
+        );
+    };
 
-    let records = agent_value_core::probe::parse_replay(&replay)
-        .map_err(|_| RunError::new("回放无法判定。"))?;
-    let deterministic = judge_deterministic(request.seed, &records).map_err(RunError::core)?;
-    let items = applicable_items(&request.claims, request.arm.route().protocol())
-        .into_iter()
-        .filter(|item| matches!(item, CapabilityItem::ToolCall | CapabilityItem::JsonSchema))
-        .collect::<Vec<_>>();
-    let capability =
-        judge_capability(request.seed, &items, None, &records).map_err(RunError::core)?;
+    let records = match agent_value_core::probe::parse_replay(&replay) {
+        Ok(records) => records,
+        Err(_) => {
+            return fail_spent(
+                store,
+                at_ms,
+                estimate,
+                attempted,
+                "回放无法判定。".to_string(),
+            );
+        }
+    };
+    let deterministic = match judge_deterministic(request.seed, &records) {
+        Ok(run) => run,
+        Err(err) => return fail_spent(store, at_ms, estimate, attempted, err.to_string()),
+    };
+    let capability = if probe_ids.contains(&class_probe_id(ProbeClass::Capability)) {
+        let items = applicable_items(&request.claims, request.arm.route().protocol())
+            .into_iter()
+            .filter(|item| matches!(item, CapabilityItem::ToolCall | CapabilityItem::JsonSchema))
+            .collect::<Vec<_>>();
+        match judge_capability(request.seed, &items, None, &records) {
+            Ok(run) => Some(run),
+            Err(err) => return fail_spent(store, at_ms, estimate, attempted, err.to_string()),
+        }
+    } else {
+        None
+    };
     let hard = !run_hard_failures(
         &VendorTables::default(),
         request.arm.model(),
@@ -361,20 +416,80 @@ fn execute(
         &records,
     )
     .is_empty();
-    let results = [
-        class_result(
+    let mut results = vec![class_result(
+        request.arm,
+        at_ms,
+        ProbeClass::Deterministic,
+        deterministic,
+        hard,
+    )];
+    if let Some(capability) = capability {
+        results.push(class_result(
             request.arm,
             at_ms,
-            ProbeClass::Deterministic,
-            deterministic,
+            ProbeClass::Capability,
+            capability,
             hard,
-        ),
-        class_result(request.arm, at_ms, ProbeClass::Capability, capability, hard),
-    ];
-    lock_store(store)?
-        .record_probe_run(&results, at_ms, estimate)
-        .map_err(RunError::core)?;
+        ));
+    }
+    let stored = {
+        let db = lock_store(store)?;
+        db.record_probe_run(&results, at_ms, estimate)
+    };
+    if let Err(err) = stored {
+        return fail_spent(store, at_ms, estimate, attempted, err.to_string());
+    }
     Ok(ProbeRunOutcome::of(ProbeLaunch::Completed))
+}
+
+/// Records the provisional estimate when a request was sent, then returns
+/// [`ProbeLaunch::Failed`]. No probe result is inserted here.
+fn fail_spent(
+    store: &Mutex<Store>,
+    at_ms: i64,
+    estimate: MicroYuan,
+    requests_attempted: u32,
+    detail: String,
+) -> Result<ProbeRunOutcome, RunError> {
+    if requests_attempted > 0 {
+        lock_store(store)?
+            .record_probe_charge(at_ms, estimate)
+            .map_err(RunError::core)?;
+    }
+    Ok(ProbeRunOutcome::failed(detail))
+}
+
+fn probe_ids_for(rows: &[OpenAiChatPlanRow]) -> Vec<&'static str> {
+    let mut ids = vec![class_probe_id(ProbeClass::Deterministic)];
+    if rows
+        .iter()
+        .any(|row| row.id == "cap-tool" || row.id == "cap-json")
+    {
+        ids.push(class_probe_id(ProbeClass::Capability));
+    }
+    ids
+}
+
+fn already_ran(
+    store: &Mutex<Store>,
+    arm: &Arm,
+    at_ms: i64,
+    probe_ids: &[&str],
+) -> Result<bool, RunError> {
+    let day = RunDay::from_unix_ms(at_ms).map_err(RunError::core)?;
+    let db = lock_store(store)?;
+    for result in db.list_probe_results().map_err(RunError::core)? {
+        if &result.arm != arm || result.probe_version != PROBE_SET_VERSION {
+            continue;
+        }
+        if !probe_ids.contains(&result.probe_id.as_str()) {
+            continue;
+        }
+        if result.run_day().map_err(RunError::core)? == day {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn estimate_for_rows(rows: usize) -> Result<MicroYuan, RunError> {
@@ -401,6 +516,14 @@ fn plan_items(rows: &[OpenAiChatPlanRow]) -> Result<Vec<PlanItem>, RunError> {
 
 /// The store's unique key does not include the class, so each class uses
 /// its own probe id. Version stays [`PROBE_SET_VERSION`].
+fn class_probe_id(class: ProbeClass) -> &'static str {
+    match class {
+        ProbeClass::Deterministic => "openai-chat-deterministic",
+        ProbeClass::Capability => "openai-chat-capability",
+        ProbeClass::Fingerprint => "openai-chat-fingerprint",
+    }
+}
+
 fn class_result(
     arm: &Arm,
     at_ms: i64,
@@ -408,13 +531,8 @@ fn class_result(
     run: ClassRun,
     hard: bool,
 ) -> ProbeResult {
-    let probe_id = match class {
-        ProbeClass::Deterministic => "openai-chat-deterministic",
-        ProbeClass::Capability => "openai-chat-capability",
-        ProbeClass::Fingerprint => "openai-chat-fingerprint",
-    };
     ProbeResult {
-        probe_id: probe_id.to_string(),
+        probe_id: class_probe_id(class).to_string(),
         probe_version: PROBE_SET_VERSION.to_string(),
         arm: arm.clone(),
         at_ms,

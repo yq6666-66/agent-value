@@ -297,13 +297,7 @@ fn over_budget_blocks_without_http_or_new_rows() {
     let mock = Mock::spawn(Duration::ZERO);
     let db = store();
     let flight = Flight::new();
-    let at = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap();
+    let at = now_ms();
     {
         let store = db.lock().unwrap();
         store.set_probe_consent(true, at).unwrap();
@@ -457,6 +451,16 @@ fn typical_plan_rows_for_default_claims() -> usize {
     .len()
 }
 
+fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn a_non_openai_arm_is_rejected_without_http() {
     let _guard = lock_tests();
@@ -489,7 +493,7 @@ fn a_non_openai_arm_is_rejected_without_http() {
 }
 
 #[test]
-fn echoed_key_refusal_writes_nothing() {
+fn echoed_key_refusal_charges_without_a_probe_result() {
     let _guard = lock_tests();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -532,10 +536,143 @@ fn echoed_key_refusal_writes_nothing() {
     )
     .unwrap();
     assert_eq!(outcome.launch, ProbeLaunch::Failed);
-    assert!(hits.load(Ordering::SeqCst) > 0);
+    let sent = hits.load(Ordering::SeqCst);
+    assert!(sent > 0);
     let store = db.lock().unwrap();
     assert!(store.list_probe_results().unwrap().is_empty());
-    assert!(store.probe_charges().unwrap().is_empty());
+    let charges = store.probe_charges().unwrap();
+    assert_eq!(charges.len(), 1);
+    assert_eq!(
+        charges[0].1,
+        i64::try_from(typical_plan_rows_for_default_claims()).unwrap()
+            * PROBE_ESTIMATE_PER_ITEM_MICROS
+    );
+    assert_no_secret(&format!("{outcome:?} {}", rendered_store(&store)));
+}
+
+#[test]
+fn a_second_run_the_same_day_does_not_send_or_charge() {
+    let _guard = lock_tests();
+    let mock = Mock::spawn(Duration::ZERO);
+    let db = store();
+    let flight = Flight::new();
+    db.lock()
+        .unwrap()
+        .set_probe_consent(true, now_ms())
+        .unwrap();
+    let selected = arm(Protocol::OpenAiChatCompletions);
+    let _env = EnvVar::set("PROBE_RUN_TEST_SAME_DAY", KEY);
+    let first = run_once(
+        &flight,
+        &db,
+        &request(
+            &selected,
+            "PROBE_RUN_TEST_SAME_DAY",
+            &mock.base,
+            typical_claims(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(first.launch, ProbeLaunch::Completed);
+    let hits_after_first = mock.hits.load(Ordering::SeqCst);
+    assert_eq!(hits_after_first, typical_plan_rows().unwrap());
+    let second = run_once(
+        &flight,
+        &db,
+        &request(
+            &selected,
+            "PROBE_RUN_TEST_SAME_DAY",
+            &mock.base,
+            typical_claims(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(second.launch, ProbeLaunch::BlockedAlreadyRun);
+    assert_eq!(mock.hits.load(Ordering::SeqCst), hits_after_first);
+    let store = db.lock().unwrap();
+    assert_eq!(store.list_probe_results().unwrap().len(), 2);
+    let charges = store.probe_charges().unwrap();
+    assert_eq!(charges.len(), 1);
+    assert_eq!(
+        charges[0].1,
+        i64::try_from(hits_after_first).unwrap() * PROBE_ESTIMATE_PER_ITEM_MICROS
+    );
+    assert_no_secret(&format!("{first:?} {second:?} {}", rendered_store(&store)));
+}
+
+#[test]
+fn default_claims_do_not_store_an_empty_capability_result() {
+    let _guard = lock_tests();
+    let mock = Mock::spawn(Duration::ZERO);
+    let db = store();
+    let flight = Flight::new();
+    db.lock()
+        .unwrap()
+        .set_probe_consent(true, now_ms())
+        .unwrap();
+    let selected = arm(Protocol::OpenAiChatCompletions);
+    let _env = EnvVar::set("PROBE_RUN_TEST_DEFAULT", KEY);
+    let outcome = run_once(
+        &flight,
+        &db,
+        &request(
+            &selected,
+            "PROBE_RUN_TEST_DEFAULT",
+            &mock.base,
+            CapabilityClaims::default(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(outcome.launch, ProbeLaunch::Completed);
+    let rows = typical_plan_rows_for_default_claims();
+    assert!(rows > 0);
+    assert_eq!(mock.hits.load(Ordering::SeqCst), rows);
+    let store = db.lock().unwrap();
+    let results = store.list_probe_results().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].class.as_str(), "deterministic");
+    let charges = store.probe_charges().unwrap();
+    assert_eq!(charges.len(), 1);
+    assert_eq!(
+        charges[0].1,
+        i64::try_from(rows).unwrap() * PROBE_ESTIMATE_PER_ITEM_MICROS
+    );
+    assert_no_secret(&format!("{outcome:?} {}", rendered_store(&store)));
+}
+
+#[test]
+fn over_budget_wins_over_a_non_openai_protocol() {
+    let _guard = lock_tests();
+    let mock = Mock::spawn(Duration::ZERO);
+    let db = store();
+    let flight = Flight::new();
+    let at = now_ms();
+    {
+        let store = db.lock().unwrap();
+        store.set_probe_consent(true, at).unwrap();
+        let budget = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+        store
+            .record_probe_charge(at, MicroYuan::new(budget.micros() - 1).unwrap())
+            .unwrap();
+    }
+    let selected = arm(Protocol::AnthropicMessages);
+    let _env = EnvVar::set("PROBE_RUN_TEST_ORDER", KEY);
+    let outcome = run_once(
+        &flight,
+        &db,
+        &request(
+            &selected,
+            "PROBE_RUN_TEST_ORDER",
+            &mock.base,
+            typical_claims(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(outcome.launch, ProbeLaunch::BlockedBudget);
+    assert_eq!(mock.hits.load(Ordering::SeqCst), 0);
+    let store = db.lock().unwrap();
+    assert!(store.list_probe_results().unwrap().is_empty());
+    assert_eq!(store.probe_charges().unwrap().len(), 1);
     assert_no_secret(&format!("{outcome:?} {}", rendered_store(&store)));
 }
 
@@ -560,5 +697,6 @@ fn a_key_passed_as_the_variable_name_is_not_echoed_or_sent() {
     assert_eq!(mock.hits.load(Ordering::SeqCst), 0);
     let store = db.lock().unwrap();
     assert!(store.list_probe_results().unwrap().is_empty());
+    assert!(store.probe_charges().unwrap().is_empty());
     assert_no_secret(&format!("{outcome:?} {}", rendered_store(&store)));
 }

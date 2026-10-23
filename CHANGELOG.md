@@ -12,7 +12,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and `cap-json` when those capabilities are claimed). The `probe_plan`
   example prints that plan and no longer builds the JSON itself.
   Thinking-signature and long-context bodies are still not generated.
-  The core still sends no request.
+  A body cannot include both a function tool and `response_format`:
+  `OpenAiChatBody::try_new` and `to_json` reject that pair. The core
+  still sends no request.
 
 ### Changed
 

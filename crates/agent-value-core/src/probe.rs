@@ -616,43 +616,96 @@ pub struct OpenAiProbeJsonSchema {
 
 /// Chat Completions request body for one minimal-probe question.
 ///
-/// `tool` and `json_schema` are set by [`build_openai_chat_plan`] for
-/// `cap-tool` and `cap-json` only, and never both. Sampling is the fixed
-/// probe temperature and max tokens.
+/// A function tool and a strict JSON `response_format` are mutually
+/// exclusive. The fields that carry them are private: [`Self::try_new`]
+/// is the only public constructor, and [`Self::to_json`] repeats the
+/// check, so a caller cannot print a body that has both. Sampling on
+/// plan rows is the fixed probe temperature and max tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenAiChatBody {
     pub model: String,
     pub messages: Vec<OpenAiChatMessage>,
     pub temperature: f64,
     pub max_tokens: u32,
-    pub tool: Option<OpenAiProbeTool>,
-    pub json_schema: Option<OpenAiProbeJsonSchema>,
+    tool: Option<OpenAiProbeTool>,
+    json_schema: Option<OpenAiProbeJsonSchema>,
 }
 
 impl OpenAiChatBody {
+    /// Builds a body. Errors when `tool` and `json_schema` are both set.
+    pub fn try_new(
+        model: String,
+        messages: Vec<OpenAiChatMessage>,
+        temperature: f64,
+        max_tokens: u32,
+        tool: Option<OpenAiProbeTool>,
+        json_schema: Option<OpenAiProbeJsonSchema>,
+    ) -> Result<Self> {
+        exclusive_attachment(&tool, &json_schema)?;
+        Ok(Self {
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            tool,
+            json_schema,
+        })
+    }
+
+    /// Function tool, if this body is the tool-call probe.
+    pub fn tool(&self) -> Option<&OpenAiProbeTool> {
+        self.tool.as_ref()
+    }
+
+    /// Strict JSON schema, if this body is the JSON probe.
+    pub fn json_schema(&self) -> Option<&OpenAiProbeJsonSchema> {
+        self.json_schema.as_ref()
+    }
+
     /// Compact JSON object, the `body` value of a `probe_plan` line.
     ///
     /// No extra spaces. Key order is `model`, `messages`, `temperature`,
-    /// `max_tokens`, then `tools` / `tool_choice` and `response_format`
-    /// when present. `temperature` uses [`std::fmt::Display`], so `0.0`
-    /// is printed as `0`. `tools/probe_live.py` parses this and
+    /// `max_tokens`, then either `tools` / `tool_choice` or
+    /// `response_format`. `temperature` uses [`std::fmt::Display`], so
+    /// `0.0` is printed as `0`. Errors when both attachments are set,
+    /// same as [`Self::try_new`]. `tools/probe_live.py` parses this and
     /// re-serializes it when it sends; this crate does not send it.
-    pub fn to_json(&self) -> String {
-        let mut extra = String::new();
-        if let Some(tool) = &self.tool {
-            extra.push_str(&tool_json_suffix(tool));
-        }
-        if let Some(schema) = &self.json_schema {
-            extra.push_str(&json_schema_suffix(schema));
-        }
-        format!(
+    pub fn to_json(&self) -> Result<String> {
+        let extra = match exclusive_attachment(&self.tool, &self.json_schema)? {
+            ChatAttachment::None => String::new(),
+            ChatAttachment::Tool(tool) => tool_json_suffix(tool),
+            ChatAttachment::JsonSchema(schema) => json_schema_suffix(schema),
+        };
+        Ok(format!(
             "{{\"model\":{},\"messages\":{},\"temperature\":{},\"max_tokens\":{}{}}}",
             json_string(&self.model),
             messages_json(&self.messages),
             self.temperature,
             self.max_tokens,
             extra
-        )
+        ))
+    }
+}
+
+/// The one optional attachment a chat body may carry.
+enum ChatAttachment<'a> {
+    None,
+    Tool(&'a OpenAiProbeTool),
+    JsonSchema(&'a OpenAiProbeJsonSchema),
+}
+
+fn exclusive_attachment<'a>(
+    tool: &'a Option<OpenAiProbeTool>,
+    json_schema: &'a Option<OpenAiProbeJsonSchema>,
+) -> Result<ChatAttachment<'a>> {
+    match (tool, json_schema) {
+        (Some(_), Some(_)) => Err(CoreError::InvalidField {
+            field: "openai chat body",
+            reason: "tool and response_format are mutually exclusive",
+        }),
+        (Some(tool), None) => Ok(ChatAttachment::Tool(tool)),
+        (None, Some(schema)) => Ok(ChatAttachment::JsonSchema(schema)),
+        (None, None) => Ok(ChatAttachment::None),
     }
 }
 
@@ -666,12 +719,15 @@ pub struct OpenAiChatPlanRow {
 
 impl OpenAiChatPlanRow {
     /// One plan line, no trailing newline: `{"id":"...","body":{...}}`.
-    pub fn to_json_line(&self) -> String {
-        format!(
+    ///
+    /// Returns the same error as [`OpenAiChatBody::to_json`] when the body
+    /// has both a tool and a response format.
+    pub fn to_json_line(&self) -> Result<String> {
+        Ok(format!(
             "{{\"id\":{},\"body\":{}}}",
             json_string(&self.id),
-            self.body.to_json()
-        )
+            self.body.to_json()?
+        ))
     }
 }
 
@@ -682,9 +738,9 @@ impl OpenAiChatPlanRow {
 /// `cap-tool` when `claims.tool_call`, then `cap-json` when
 /// `claims.json_schema`. Those capability ids are [`capability_id`].
 /// Thinking-signature and long-context items are not generated, even if
-/// claimed. Expected
-/// answers are not included. `model` is copied as given (not normalised).
-/// Seed 0 is rejected. This function does not send a request.
+/// claimed. Expected answers are not included. `model` is copied as given
+/// (not normalised). Seed 0 is rejected. This function does not send a
+/// request.
 pub fn build_openai_chat_plan(
     seed: u64,
     model: &str,
@@ -695,7 +751,7 @@ pub fn build_openai_chat_plan(
     for q in questions {
         rows.push(OpenAiChatPlanRow {
             id: q.id,
-            body: plain_chat_body(model, q.prompt),
+            body: plain_chat_body(model, q.prompt)?,
         });
     }
     let items = applicable_items(claims, &Protocol::OpenAiChatCompletions);
@@ -704,54 +760,76 @@ pub fn build_openai_chat_plan(
         if items.contains(&CapabilityItem::ToolCall) {
             rows.push(OpenAiChatPlanRow {
                 id: capability_id(CapabilityItem::ToolCall).to_string(),
-                body: OpenAiChatBody {
-                    tool: Some(OpenAiProbeTool {
-                        name: TOOL_NAME.to_string(),
-                        description: PROBE_TOOL_DESCRIPTION.to_string(),
-                        argument: PROBE_TOOL_ARGUMENT.to_string(),
-                        tool_choice: PROBE_TOOL_CHOICE.to_string(),
-                    }),
-                    ..plain_chat_body(model, format!("Call {TOOL_NAME} with n = {n}."))
-                },
+                body: chat_body(
+                    model,
+                    format!("Call {TOOL_NAME} with n = {n}."),
+                    Some(probe_tool()),
+                    None,
+                )?,
             });
         }
         if items.contains(&CapabilityItem::JsonSchema) {
             rows.push(OpenAiChatPlanRow {
                 id: capability_id(CapabilityItem::JsonSchema).to_string(),
-                body: OpenAiChatBody {
-                    json_schema: Some(OpenAiProbeJsonSchema {
-                        name: PROBE_JSON_SCHEMA_NAME.to_string(),
-                        field: PROBE_JSON_SCHEMA_FIELD.to_string(),
-                    }),
-                    ..plain_chat_body(
-                        model,
-                        format!("Return a JSON object whose answer field is {n}."),
-                    )
-                },
+                body: chat_body(
+                    model,
+                    format!("Return a JSON object whose answer field is {n}."),
+                    None,
+                    Some(probe_json_schema()),
+                )?,
             });
         }
     }
     Ok(rows)
 }
 
-fn plain_chat_body(model: &str, user: String) -> OpenAiChatBody {
-    OpenAiChatBody {
-        model: model.to_string(),
-        messages: vec![
-            OpenAiChatMessage {
-                role: "system".to_string(),
-                content: PROBE_SYSTEM_PROMPT.to_string(),
-            },
-            OpenAiChatMessage {
-                role: "user".to_string(),
-                content: user,
-            },
-        ],
-        temperature: PROBE_TEMPERATURE,
-        max_tokens: PROBE_MAX_TOKENS,
-        tool: None,
-        json_schema: None,
+fn probe_tool() -> OpenAiProbeTool {
+    OpenAiProbeTool {
+        name: TOOL_NAME.to_string(),
+        description: PROBE_TOOL_DESCRIPTION.to_string(),
+        argument: PROBE_TOOL_ARGUMENT.to_string(),
+        tool_choice: PROBE_TOOL_CHOICE.to_string(),
     }
+}
+
+fn probe_json_schema() -> OpenAiProbeJsonSchema {
+    OpenAiProbeJsonSchema {
+        name: PROBE_JSON_SCHEMA_NAME.to_string(),
+        field: PROBE_JSON_SCHEMA_FIELD.to_string(),
+    }
+}
+
+fn chat_messages(user: String) -> Vec<OpenAiChatMessage> {
+    vec![
+        OpenAiChatMessage {
+            role: "system".to_string(),
+            content: PROBE_SYSTEM_PROMPT.to_string(),
+        },
+        OpenAiChatMessage {
+            role: "user".to_string(),
+            content: user,
+        },
+    ]
+}
+
+fn plain_chat_body(model: &str, user: String) -> Result<OpenAiChatBody> {
+    chat_body(model, user, None, None)
+}
+
+fn chat_body(
+    model: &str,
+    user: String,
+    tool: Option<OpenAiProbeTool>,
+    json_schema: Option<OpenAiProbeJsonSchema>,
+) -> Result<OpenAiChatBody> {
+    OpenAiChatBody::try_new(
+        model.to_string(),
+        chat_messages(user),
+        PROBE_TEMPERATURE,
+        PROBE_MAX_TOKENS,
+        tool,
+        json_schema,
+    )
 }
 
 /// JSON string literal, same escapes `probe_plan` used before this lived
@@ -1487,5 +1565,32 @@ mod probe_unit_tests {
             let x = r.range(3, 5);
             assert!((3..=5).contains(&x));
         }
+    }
+
+    #[test]
+    fn to_json_rejects_tool_and_response_format_together() {
+        // Same-module struct literal, skipping `try_new`. Serialization
+        // still refuses to emit both attachments.
+        let body = OpenAiChatBody {
+            model: "m".into(),
+            messages: vec![],
+            temperature: PROBE_TEMPERATURE,
+            max_tokens: PROBE_MAX_TOKENS,
+            tool: Some(probe_tool()),
+            json_schema: Some(probe_json_schema()),
+        };
+        let err = body.to_json().unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::InvalidField {
+                field: "openai chat body",
+                reason: "tool and response_format are mutually exclusive",
+            }
+        ));
+        let row = OpenAiChatPlanRow {
+            id: "both".into(),
+            body,
+        };
+        assert!(row.to_json_line().is_err());
     }
 }

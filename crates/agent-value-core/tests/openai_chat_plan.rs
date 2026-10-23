@@ -5,8 +5,9 @@
 
 use agent_value_core::error::CoreError;
 use agent_value_core::probe::{
-    build_openai_chat_plan, capability_number, deterministic_set, CapabilityClaims,
-    OpenAiChatPlanRow, PROBE_MAX_TOKENS, PROBE_SYSTEM_PROMPT, PROBE_TEMPERATURE, TOOL_NAME,
+    build_openai_chat_plan, capability_number, deterministic_set, CapabilityClaims, OpenAiChatBody,
+    OpenAiChatMessage, OpenAiChatPlanRow, OpenAiProbeJsonSchema, OpenAiProbeTool, PROBE_MAX_TOKENS,
+    PROBE_SYSTEM_PROMPT, PROBE_TEMPERATURE, TOOL_NAME,
 };
 
 const BOTH_20261022: &str = include_str!("fixtures/openai_chat_plan_20261022.jsonl");
@@ -23,10 +24,14 @@ fn claims(tool: bool, json: bool) -> CapabilityClaims {
 fn render(rows: &[OpenAiChatPlanRow]) -> String {
     let mut s = String::new();
     for row in rows {
-        s.push_str(&row.to_json_line());
+        s.push_str(&row.to_json_line().unwrap());
         s.push('\n');
     }
     s
+}
+
+fn line(row: &OpenAiChatPlanRow) -> String {
+    row.to_json_line().unwrap()
 }
 
 fn ids(seed: u64, tool: bool, json: bool) -> Vec<String> {
@@ -76,30 +81,21 @@ fn row_count_and_ids_follow_claims() {
 #[test]
 fn claim_subsets_reuse_the_full_plan_lines() {
     let full = build_openai_chat_plan(20261022, "probe-model", &claims(true, true)).unwrap();
-    let lines: Vec<String> = full.iter().map(|r| r.to_json_line()).collect();
+    let lines: Vec<String> = full.iter().map(line).collect();
     assert_eq!(lines.len(), 12);
 
     let none = build_openai_chat_plan(20261022, "probe-model", &claims(false, false)).unwrap();
-    assert_eq!(
-        none.iter().map(|r| r.to_json_line()).collect::<Vec<_>>(),
-        lines[..10]
-    );
+    assert_eq!(none.iter().map(line).collect::<Vec<_>>(), lines[..10]);
 
     let tool = build_openai_chat_plan(20261022, "probe-model", &claims(true, false)).unwrap();
     let mut tool_lines = lines[..10].to_vec();
     tool_lines.push(lines[10].clone());
-    assert_eq!(
-        tool.iter().map(|r| r.to_json_line()).collect::<Vec<_>>(),
-        tool_lines
-    );
+    assert_eq!(tool.iter().map(line).collect::<Vec<_>>(), tool_lines);
 
     let json = build_openai_chat_plan(20261022, "probe-model", &claims(false, true)).unwrap();
     let mut json_lines = lines[..10].to_vec();
     json_lines.push(lines[11].clone());
-    assert_eq!(
-        json.iter().map(|r| r.to_json_line()).collect::<Vec<_>>(),
-        json_lines
-    );
+    assert_eq!(json.iter().map(line).collect::<Vec<_>>(), json_lines);
 }
 
 #[test]
@@ -117,8 +113,8 @@ fn rows_use_deterministic_prompts_and_fixed_sampling() {
         assert_eq!(row.body.messages[0].content, PROBE_SYSTEM_PROMPT);
         assert_eq!(row.body.messages[1].role, "user");
         assert_eq!(row.body.messages[1].content, q.prompt);
-        assert!(row.body.tool.is_none());
-        assert!(row.body.json_schema.is_none());
+        assert!(row.body.tool().is_none());
+        assert!(row.body.json_schema().is_none());
     }
     let n = capability_number(seed);
     let tool = &rows[10];
@@ -127,12 +123,12 @@ fn rows_use_deterministic_prompts_and_fixed_sampling() {
         tool.body.messages[1].content,
         format!("Call {TOOL_NAME} with n = {n}.")
     );
-    let t = tool.body.tool.as_ref().unwrap();
+    let t = tool.body.tool().unwrap();
     assert_eq!(t.name, TOOL_NAME);
     assert_eq!(t.description, "Record one integer.");
     assert_eq!(t.argument, "n");
     assert_eq!(t.tool_choice, "required");
-    assert!(tool.body.json_schema.is_none());
+    assert!(tool.body.json_schema().is_none());
 
     let js = &rows[11];
     assert_eq!(js.id, "cap-json");
@@ -140,8 +136,8 @@ fn rows_use_deterministic_prompts_and_fixed_sampling() {
         js.body.messages[1].content,
         format!("Return a JSON object whose answer field is {n}.")
     );
-    assert!(js.body.tool.is_none());
-    let schema = js.body.json_schema.as_ref().unwrap();
+    assert!(js.body.tool().is_none());
+    let schema = js.body.json_schema().unwrap();
     assert_eq!(
         (schema.name.as_str(), schema.field.as_str()),
         ("answer", "answer")
@@ -158,6 +154,75 @@ fn thinking_and_long_context_claims_add_no_rows() {
     let rows = build_openai_chat_plan(7, "probe-model", &c).unwrap();
     assert_eq!(rows.len(), 10);
     assert!(rows.iter().all(|r| r.id.starts_with("det-")));
+}
+
+#[test]
+fn thinking_and_long_context_stay_out_when_tool_or_json_are_claimed() {
+    let with = |tool: bool, json: bool| CapabilityClaims {
+        tool_call: tool,
+        json_schema: json,
+        thinking: true,
+        long_context_due: true,
+    };
+    let tool_rows = build_openai_chat_plan(20261022, "probe-model", &with(true, false)).unwrap();
+    let json_rows = build_openai_chat_plan(20261022, "probe-model", &with(false, true)).unwrap();
+    let both_rows = build_openai_chat_plan(20261022, "probe-model", &with(true, true)).unwrap();
+    assert_eq!(render(&both_rows), BOTH_20261022);
+    assert_eq!(
+        render(&tool_rows),
+        render(&build_openai_chat_plan(20261022, "probe-model", &claims(true, false)).unwrap())
+    );
+    assert_eq!(
+        render(&json_rows),
+        render(&build_openai_chat_plan(20261022, "probe-model", &claims(false, true)).unwrap())
+    );
+    for rows in [&tool_rows, &json_rows, &both_rows] {
+        assert!(rows.iter().any(|r| r.id.starts_with("det-")));
+        for row in rows {
+            assert!(
+                row.id.starts_with("det-") || row.id == "cap-tool" || row.id == "cap-json",
+                "{}",
+                row.id
+            );
+            let text = line(row);
+            assert!(!text.contains("cap-thinking"));
+            assert!(!text.contains("cap-long"));
+            let has_tool = text.contains("\"tools\"");
+            let has_schema = text.contains("\"response_format\"");
+            assert!(!(has_tool && has_schema), "{text}");
+        }
+    }
+}
+
+#[test]
+fn try_new_rejects_tool_and_response_format_together() {
+    let err = OpenAiChatBody::try_new(
+        "probe-model".into(),
+        vec![OpenAiChatMessage {
+            role: "user".into(),
+            content: "n".into(),
+        }],
+        PROBE_TEMPERATURE,
+        PROBE_MAX_TOKENS,
+        Some(OpenAiProbeTool {
+            name: TOOL_NAME.into(),
+            description: "Record one integer.".into(),
+            argument: "n".into(),
+            tool_choice: "required".into(),
+        }),
+        Some(OpenAiProbeJsonSchema {
+            name: "answer".into(),
+            field: "answer".into(),
+        }),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        CoreError::InvalidField {
+            field: "openai chat body",
+            reason: "tool and response_format are mutually exclusive",
+        }
+    ));
 }
 
 #[test]
@@ -182,7 +247,7 @@ fn repeated_calls_match_and_model_text_is_preserved() {
     let raw = "A\"B\\C\n\t\r café";
     let rows = build_openai_chat_plan(1, raw, &claims(false, false)).unwrap();
     assert_eq!(rows[0].body.model, raw);
-    let line = rows[0].to_json_line();
+    let line = line(&rows[0]);
     assert!(line.contains(r#""model":"A\"B\\C\n\t\u000d café""#));
     assert!(!line.contains("\"temperature\":0.0"));
 }

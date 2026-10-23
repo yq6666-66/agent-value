@@ -41,6 +41,6 @@ fn main() {
     let plan =
         build_openai_chat_plan(seed, model, &claims(args.get(3))).expect("seed must be non-zero");
     for row in plan {
-        println!("{}", row.to_json_line());
+        println!("{}", row.to_json_line().expect("plan row"));
     }
 }

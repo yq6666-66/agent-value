@@ -4,6 +4,8 @@
 //! replies an outside runner collected, and classifies one run of one probe
 //! class. Sending requests is the caller's job (CI never touches the
 //! network); see `tools/probe_live.py` and `examples/`.
+//! [`build_openai_chat_plan`] only builds the OpenAI Chat Completions
+//! bodies that `probe_plan` prints.
 //!
 //! The grade per arm and window, the gate and the log-integrity gate are in
 //! [`crate::authenticity`].
@@ -568,6 +570,319 @@ pub fn capability_state(item: CapabilityItem, expected: &str, ex: &Exchange) -> 
         }
         (_, other) => AnswerState::Unanswered(transport_failure(other)),
     }
+}
+
+// ------------------------------------------------- OpenAI chat plan bodies
+
+/// Description of the single function tool on the tool-call probe.
+const PROBE_TOOL_DESCRIPTION: &str = "Record one integer.";
+/// `tool_choice` sent with that tool.
+const PROBE_TOOL_CHOICE: &str = "required";
+/// Integer argument of [`TOOL_NAME`].
+const PROBE_TOOL_ARGUMENT: &str = "n";
+/// `response_format.json_schema.name` of the strict-JSON probe.
+const PROBE_JSON_SCHEMA_NAME: &str = "answer";
+/// The one integer property of that schema.
+const PROBE_JSON_SCHEMA_FIELD: &str = "answer";
+
+/// One message in an OpenAI Chat Completions request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// The function tool attached to the tool-call probe (`tools` plus
+/// `tool_choice`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiProbeTool {
+    pub name: String,
+    pub description: String,
+    /// Integer argument name (`n`).
+    pub argument: String,
+    /// Sent as `tool_choice` (`required`).
+    pub tool_choice: String,
+}
+
+/// Strict JSON Schema response format of the JSON probe: an object with
+/// one integer field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiProbeJsonSchema {
+    /// `response_format.json_schema.name`.
+    pub name: String,
+    /// The single integer property.
+    pub field: String,
+}
+
+/// Chat Completions request body for one minimal-probe question.
+///
+/// A function tool and a strict JSON `response_format` are mutually
+/// exclusive. The fields that carry them are private: [`Self::try_new`]
+/// is the only public constructor, and [`Self::to_json`] repeats the
+/// check, so a caller cannot print a body that has both. Sampling on
+/// plan rows is the fixed probe temperature and max tokens.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenAiChatBody {
+    pub model: String,
+    pub messages: Vec<OpenAiChatMessage>,
+    pub temperature: f64,
+    pub max_tokens: u32,
+    tool: Option<OpenAiProbeTool>,
+    json_schema: Option<OpenAiProbeJsonSchema>,
+}
+
+impl OpenAiChatBody {
+    /// Builds a body. Errors when `tool` and `json_schema` are both set.
+    pub fn try_new(
+        model: String,
+        messages: Vec<OpenAiChatMessage>,
+        temperature: f64,
+        max_tokens: u32,
+        tool: Option<OpenAiProbeTool>,
+        json_schema: Option<OpenAiProbeJsonSchema>,
+    ) -> Result<Self> {
+        exclusive_attachment(&tool, &json_schema)?;
+        Ok(Self {
+            model,
+            messages,
+            temperature,
+            max_tokens,
+            tool,
+            json_schema,
+        })
+    }
+
+    /// Function tool, if this body is the tool-call probe.
+    pub fn tool(&self) -> Option<&OpenAiProbeTool> {
+        self.tool.as_ref()
+    }
+
+    /// Strict JSON schema, if this body is the JSON probe.
+    pub fn json_schema(&self) -> Option<&OpenAiProbeJsonSchema> {
+        self.json_schema.as_ref()
+    }
+
+    /// Compact JSON object, the `body` value of a `probe_plan` line.
+    ///
+    /// No extra spaces. Key order is `model`, `messages`, `temperature`,
+    /// `max_tokens`, then either `tools` / `tool_choice` or
+    /// `response_format`. `temperature` uses [`std::fmt::Display`], so
+    /// `0.0` is printed as `0`. Errors when both attachments are set,
+    /// same as [`Self::try_new`]. `tools/probe_live.py` parses this and
+    /// re-serializes it when it sends; this crate does not send it.
+    pub fn to_json(&self) -> Result<String> {
+        let extra = match exclusive_attachment(&self.tool, &self.json_schema)? {
+            ChatAttachment::None => String::new(),
+            ChatAttachment::Tool(tool) => tool_json_suffix(tool),
+            ChatAttachment::JsonSchema(schema) => json_schema_suffix(schema),
+        };
+        Ok(format!(
+            "{{\"model\":{},\"messages\":{},\"temperature\":{},\"max_tokens\":{}{}}}",
+            json_string(&self.model),
+            messages_json(&self.messages),
+            self.temperature,
+            self.max_tokens,
+            extra
+        ))
+    }
+}
+
+/// The one optional attachment a chat body may carry.
+enum ChatAttachment<'a> {
+    None,
+    Tool(&'a OpenAiProbeTool),
+    JsonSchema(&'a OpenAiProbeJsonSchema),
+}
+
+fn exclusive_attachment<'a>(
+    tool: &'a Option<OpenAiProbeTool>,
+    json_schema: &'a Option<OpenAiProbeJsonSchema>,
+) -> Result<ChatAttachment<'a>> {
+    match (tool, json_schema) {
+        (Some(_), Some(_)) => Err(CoreError::InvalidField {
+            field: "openai chat body",
+            reason: "tool and response_format are mutually exclusive",
+        }),
+        (Some(tool), None) => Ok(ChatAttachment::Tool(tool)),
+        (None, Some(schema)) => Ok(ChatAttachment::JsonSchema(schema)),
+        (None, None) => Ok(ChatAttachment::None),
+    }
+}
+
+/// One row of the OpenAI Chat Completions plan: `{"id","body"}`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenAiChatPlanRow {
+    /// `det-01` … `det-10`, `cap-tool`, or `cap-json`.
+    pub id: String,
+    pub body: OpenAiChatBody,
+}
+
+impl OpenAiChatPlanRow {
+    /// One plan line, no trailing newline: `{"id":"...","body":{...}}`.
+    ///
+    /// Returns the same error as [`OpenAiChatBody::to_json`] when the body
+    /// has both a tool and a response format.
+    pub fn to_json_line(&self) -> Result<String> {
+        Ok(format!(
+            "{{\"id\":{},\"body\":{}}}",
+            json_string(&self.id),
+            self.body.to_json()?
+        ))
+    }
+}
+
+/// OpenAI Chat Completions bodies for the minimal probe (§11.1:
+/// deterministic class, plus the capability items this plan can express).
+///
+/// Order is fixed: `det-01` … `det-10` from [`deterministic_set`], then
+/// `cap-tool` when `claims.tool_call`, then `cap-json` when
+/// `claims.json_schema`. Those capability ids are [`capability_id`].
+/// Thinking-signature and long-context items are not generated, even if
+/// claimed. Expected answers are not included. `model` is copied as given
+/// (not normalised). Seed 0 is rejected. This function does not send a
+/// request.
+pub fn build_openai_chat_plan(
+    seed: u64,
+    model: &str,
+    claims: &CapabilityClaims,
+) -> Result<Vec<OpenAiChatPlanRow>> {
+    let questions = deterministic_set(seed)?;
+    let mut rows = Vec::with_capacity(questions.len() + 2);
+    for q in questions {
+        rows.push(OpenAiChatPlanRow {
+            id: q.id,
+            body: plain_chat_body(model, q.prompt)?,
+        });
+    }
+    let items = applicable_items(claims, &Protocol::OpenAiChatCompletions);
+    if items.contains(&CapabilityItem::ToolCall) || items.contains(&CapabilityItem::JsonSchema) {
+        let n = capability_number(seed);
+        if items.contains(&CapabilityItem::ToolCall) {
+            rows.push(OpenAiChatPlanRow {
+                id: capability_id(CapabilityItem::ToolCall).to_string(),
+                body: chat_body(
+                    model,
+                    format!("Call {TOOL_NAME} with n = {n}."),
+                    Some(probe_tool()),
+                    None,
+                )?,
+            });
+        }
+        if items.contains(&CapabilityItem::JsonSchema) {
+            rows.push(OpenAiChatPlanRow {
+                id: capability_id(CapabilityItem::JsonSchema).to_string(),
+                body: chat_body(
+                    model,
+                    format!("Return a JSON object whose answer field is {n}."),
+                    None,
+                    Some(probe_json_schema()),
+                )?,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+fn probe_tool() -> OpenAiProbeTool {
+    OpenAiProbeTool {
+        name: TOOL_NAME.to_string(),
+        description: PROBE_TOOL_DESCRIPTION.to_string(),
+        argument: PROBE_TOOL_ARGUMENT.to_string(),
+        tool_choice: PROBE_TOOL_CHOICE.to_string(),
+    }
+}
+
+fn probe_json_schema() -> OpenAiProbeJsonSchema {
+    OpenAiProbeJsonSchema {
+        name: PROBE_JSON_SCHEMA_NAME.to_string(),
+        field: PROBE_JSON_SCHEMA_FIELD.to_string(),
+    }
+}
+
+fn chat_messages(user: String) -> Vec<OpenAiChatMessage> {
+    vec![
+        OpenAiChatMessage {
+            role: "system".to_string(),
+            content: PROBE_SYSTEM_PROMPT.to_string(),
+        },
+        OpenAiChatMessage {
+            role: "user".to_string(),
+            content: user,
+        },
+    ]
+}
+
+fn plain_chat_body(model: &str, user: String) -> Result<OpenAiChatBody> {
+    chat_body(model, user, None, None)
+}
+
+fn chat_body(
+    model: &str,
+    user: String,
+    tool: Option<OpenAiProbeTool>,
+    json_schema: Option<OpenAiProbeJsonSchema>,
+) -> Result<OpenAiChatBody> {
+    OpenAiChatBody::try_new(
+        model.to_string(),
+        chat_messages(user),
+        PROBE_TEMPERATURE,
+        PROBE_MAX_TOKENS,
+        tool,
+        json_schema,
+    )
+}
+
+/// JSON string literal, same escapes `probe_plan` used before this lived
+/// in the core: quotes, backslashes, `\n`, `\t`, and `\u00xx` for every
+/// other char below U+0020. Other characters are copied as UTF-8.
+fn json_string(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+fn messages_json(messages: &[OpenAiChatMessage]) -> String {
+    let mut out = String::from("[");
+    for (i, m) in messages.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"role\":{},\"content\":{}}}",
+            json_string(&m.role),
+            json_string(&m.content)
+        ));
+    }
+    out.push(']');
+    out
+}
+
+fn tool_json_suffix(tool: &OpenAiProbeTool) -> String {
+    let name = json_string(&tool.name);
+    let description = json_string(&tool.description);
+    let argument = json_string(&tool.argument);
+    let tool_choice = json_string(&tool.tool_choice);
+    format!(
+        ",\"tools\":[{{\"type\":\"function\",\"function\":{{\"name\":{name},\"description\":{description},\"parameters\":{{\"type\":\"object\",\"properties\":{{{argument}:{{\"type\":\"integer\"}}}},\"required\":[{argument}],\"additionalProperties\":false}}}}}}],\"tool_choice\":{tool_choice}"
+    )
+}
+
+fn json_schema_suffix(schema: &OpenAiProbeJsonSchema) -> String {
+    let name = json_string(&schema.name);
+    let field = json_string(&schema.field);
+    format!(
+        ",\"response_format\":{{\"type\":\"json_schema\",\"json_schema\":{{\"name\":{name},\"strict\":true,\"schema\":{{\"type\":\"object\",\"properties\":{{{field}:{{\"type\":\"integer\"}}}},\"required\":[{field}],\"additionalProperties\":false}}}}}}"
+    )
 }
 
 // ------------------------------------------------------------ fingerprint
@@ -1250,5 +1565,32 @@ mod probe_unit_tests {
             let x = r.range(3, 5);
             assert!((3..=5).contains(&x));
         }
+    }
+
+    #[test]
+    fn to_json_rejects_tool_and_response_format_together() {
+        // Same-module struct literal, skipping `try_new`. Serialization
+        // still refuses to emit both attachments.
+        let body = OpenAiChatBody {
+            model: "m".into(),
+            messages: vec![],
+            temperature: PROBE_TEMPERATURE,
+            max_tokens: PROBE_MAX_TOKENS,
+            tool: Some(probe_tool()),
+            json_schema: Some(probe_json_schema()),
+        };
+        let err = body.to_json().unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::InvalidField {
+                field: "openai chat body",
+                reason: "tool and response_format are mutually exclusive",
+            }
+        ));
+        let row = OpenAiChatPlanRow {
+            id: "both".into(),
+            body,
+        };
+        assert!(row.to_json_line().is_err());
     }
 }

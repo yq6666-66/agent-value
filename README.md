@@ -8,12 +8,12 @@ The scoring rules follow a written specification (v22) plus a decision record fo
 
 ## Status
 
-A Tauri desktop app can be built and run locally from source. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display stored or replayed probe results. This implementation does not make real HTTP probe requests. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only. All data stays on your machine. You can list and add arms, see the database path, export, and wipe the local database; the main area is a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
+A Tauri desktop app can be built and run locally from source. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display previously recorded or replayed probe results. This implementation does not make real HTTP probe requests. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only. The desktop app stores its data locally. You can list and add arms, see the database path, export, and delete all rows; the window-results view shows a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
 
 | Spec step | What it covers | Status |
 |---|---|---|
 | 1 | Constants, scoring scopes, arms, time windows, weight versions | Implemented |
-| 2 | Local SQLite data model and privacy rules | Implemented (store is connected for arms list/add, path, export and wipe) |
+| 2 | Local SQLite data model and privacy rules | Implemented (store is connected for arms list/add, path, export and delete all rows) |
 | 3 | Task outcome rules and quality signals | Implemented |
 | 4-5 | Cell states and cell weights $\omega_u$; prior, posterior and retry model | Implemented |
 | 6-7 | Cell cost, time and quality $C^{\ast}, T^{\ast}, Q^{\ast}$; aggregation; value score $V$ | Implemented |
@@ -22,7 +22,7 @@ A Tauri desktop app can be built and run locally from source. It scores coding-s
 | 10 | Reference anchor tiers I / II / III, reference and fallback arm selection, official picks | Core implemented; official picks flow through the same window-results path where applicable. |
 | 11 | Weight elicitation from your answers and behaviour | Core + desktop five-level self-report wizard. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version). |
 | 12 | Weight sensitivity: winner map, flip line, bootstrap and noise floor checks | Core + desktop sensitivity panel (winner map, weight-robust label, flip sentences from core). First window / no-anchor layer: chart withheld. |
-| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show stored rows or checked-in replay fixture; does not send probe HTTP. |
+| 13 | Probes and relay checks | Core + local run script + desktop probe consent / recorded results. First consent stored locally. Budget / observation-period copy from core constants. Grade band reference-only while observation pending. Can show previously recorded or replayed probe results, including the checked-in replay fixture; does not send probe HTTP. |
 
 Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 
@@ -422,7 +422,7 @@ If any positive-weight layer is tier III, the overall reference is $\mathrm{NA}$
 
 ### 9. Weights from your answers and behaviour
 
-*Spec §10. Core + desktop five-level self-report wizard. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version).*
+*Spec §10. Core + desktop five-level self-report wizard. The wizard still uses pairwise A/B tradeoff questions. Question wording in webview; elicit commands call core; save into WeightLedger. Mid-window weight edit is trial only (does not change frozen official version).*
 
 **Self-report.** You answer pairwise questions. Each question offers two options, A and B, that differ in two of cost, time and quality, pulling in opposite directions; the third dimension is equal. With the noise floors $c_0$, $t_0$, $\epsilon$, the ratios between A and B are $\rho_C=(C_A+c_0)/(C_B+c_0)$, $\rho_T=(T_A+t_0)/(T_B+t_0)$ and $\rho_D=(1-Q_A+\epsilon)/(1-Q_B+\epsilon)$; the equal dimension has ratio 1.
 
@@ -560,7 +560,7 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 ### 11. Probes and relay checks
 
-*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show stored rows or the checked-in replay fixture; it does not send probe HTTP. Connecting probe results to the data layer (hard-failure days, budget spending) and scheduled re-runs are still planned.*
+*Spec §11. Core + local run script + desktop probe consent / recorded results. The core only judges exchanges that were already recorded; it sends no requests itself. First consent is stored locally. Budget and observation-period copy come from core constants. Grade bands are reference-only while the observation period is pending. The page can show previously recorded or replayed probe results, including the checked-in replay fixture; it does not send probe HTTP. Writing new probe results into the data layer (hard-failure days, budget spending) and in-app / scheduled live HTTP probes are still planned.*
 
 This checks whether a route really serves the model it claims. The probe results feed only the authenticity part of gate 4 in section 6, and never enter any score; the log-integrity check below works on the requests recorded in the window.
 
@@ -623,7 +623,7 @@ A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-2
 These parts of the specification are not implemented:
 
 - **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6).
-- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); connecting probes to the data layer (storing probe results, hard-failure days from passive logs, recording budget spending); live HTTP probes and scheduled re-runs; generating thinking-signature and long-context requests. Probe grade thresholds remain provisional until the observation period is complete.
+- **The rest of step 13**: collecting and storing the fingerprint baseline, and actually running the observation period (positive and negative controls); connecting probes to the data layer (writing new probe results into the data layer, hard-failure days from passive logs, recording budget spending); in-app / scheduled live HTTP probes; generating thinking-signature and long-context requests. Probe grade thresholds remain provisional until the observation period is complete.
 
 ### Constants
 
@@ -670,7 +670,7 @@ These parts of the specification are not implemented:
 
 ### For users
 
-The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display stored or replayed probe results without making real HTTP probe requests. Data stays on your machine. No packaged installer is provided; build from source to run it (see below).
+The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results without making real HTTP probe requests. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
 
 ### For developers
 
@@ -703,7 +703,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` uses only the Python standard library. It reads the key only from the named environment variable or the local git-ignored `.env`, and never writes it to any output: before writing it checks the raw text, the escaped text and the JSON-escaped form. If it finds the key in what it is about to write, it refuses to write and exits. It does not record request headers. `--base` must be https, except for a local mock server.
 
-Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell includes the window-results, self-report, sensitivity and probe consent/results UI described above. It is not packaged for distribution.
+Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be tested without GUI libraries. Building it needs the Tauri 2 system prerequisites (on Linux: WebKitGTK 4.1 and related development packages). Build the web app first, then run `cargo build` from inside `src-tauri/`. To launch it locally, run `cargo tauri dev`, or run the built binary. CI installs these prerequisites and runs `cargo check` and `cargo clippy` for the shell. The shell includes the window-results, self-report, sensitivity and probe consent/results UI described above. It is not packaged for distribution.
 
 ## Layout
 
@@ -711,7 +711,7 @@ Desktop shell: `src-tauri/` is a separate Cargo package so that the core can be 
 |---|---|
 | `crates/agent-value-core/` | Pure-Rust core library. All implemented formula logic and its tests live here. No dependencies. |
 | `crates/agent-value-store/` | Local SQLite storage (bundled SQLite, no system library needed). |
-| `src-tauri/` | Minimal Tauri 2 desktop shell that links the core crate. Not a member of the default Cargo workspace. |
+| `src-tauri/` | Tauri 2 desktop shell that links the core crate and includes the window-results, self-report, sensitivity, and probe consent/results UI. Not a member of the default Cargo workspace. |
 | `tools/` | Scripts run by hand on your own machine; only their tests run in CI. `probe_live.py` uses only the Python standard library: it sends the probe requests generated by `probe_plan` to an https relay and writes replay data for `probe_judge` and a redacted log. `test_probe_live.py` (standard-library unittest) checks it against a mock server on 127.0.0.1. |
 | `web/` | React + TypeScript + Vite front end (shadcn/ui Nova, Tailwind). Display only; it never computes scores. Pages cover window results, the self-report wizard, sensitivity and probe consent/results. The About area shows the core version returned by the shell. |
 

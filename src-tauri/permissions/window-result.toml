@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-window-result"
+description = "Allows the webview to read a coding-scope window result or an example fixture. Scores come from the core."
+commands.allow = ["window_result"]

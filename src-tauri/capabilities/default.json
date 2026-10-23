@@ -9,6 +9,7 @@
     "allow-demo-example6-layer",
     "allow-store",
     "allow-window-chrome",
-    "allow-elicit"
+    "allow-elicit",
+    "allow-window-result"
   ]
 }

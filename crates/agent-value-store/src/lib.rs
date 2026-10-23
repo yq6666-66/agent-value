@@ -90,6 +90,28 @@ pub struct ConfigVersion {
     pub created_ms: i64,
 }
 
+/// One user task in a window, with the arm route and the summed charge.
+///
+/// Probe tasks are never listed. `charged_micros` is `None` when no
+/// non-auxiliary request recorded a charge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserTaskRow {
+    pub id: String,
+    pub model: String,
+    pub provider_kind: String,
+    pub host: String,
+    pub protocol: String,
+    pub client: String,
+    pub cell: CellId,
+    pub submitted_ms: i64,
+    pub ended_ms: Option<i64>,
+    pub outcome: Outcome,
+    pub active_ms: Option<i64>,
+    pub wait_ms: Option<i64>,
+    pub rating: Option<u8>,
+    pub charged_micros: Option<i64>,
+}
+
 /// Rows removed by [`Store::purge_older_than`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PurgeCounts {
@@ -133,6 +155,17 @@ fn to_i64(what: &'static str, v: u64) -> StoreResult<i64> {
 
 fn corrupt<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Corrupt(e.to_string())
+}
+
+fn latest_label(conn: &Connection, kind: ConfigKind, scope: &str) -> StoreResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT label FROM config_versions WHERE kind = ?1 AND scope = ?2
+             ORDER BY created_ms DESC, label ASC LIMIT 1",
+            params![kind.as_str(), scope],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 impl Store {
@@ -433,6 +466,99 @@ impl Store {
             params![scope.to_string(), before_ms],
             |r| r.get::<_, i64>(0),
         )? as u64)
+    }
+
+    /// User (non-probe) tasks of `scope` with `from_ms <= submitted_ms < to_ms`,
+    /// oldest first. `charged_micros` is the sum of non-auxiliary request
+    /// charges, or `None` when every charge is missing.
+    pub fn list_user_tasks(
+        &self,
+        scope: &ScopeId,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> StoreResult<Vec<UserTaskRow>> {
+        let mut st = self.conn.prepare(
+            "SELECT t.id, a.model, a.provider_kind, a.host, a.protocol, a.client,
+                    t.cell, t.submitted_ms, t.ended_ms, t.outcome, t.active_ms, t.wait_ms, t.rating,
+                    (SELECT SUM(r.charged_micro_yuan) FROM requests r
+                      WHERE r.task_id = t.id AND r.auxiliary = 0)
+             FROM tasks t
+             JOIN arms a ON a.id = t.arm_id
+             WHERE t.scope = ?1 AND t.is_probe = 0 AND t.submitted_ms >= ?2 AND t.submitted_ms < ?3
+             ORDER BY t.submitted_ms, t.id",
+        )?;
+        let rows = st.query_map(params![scope.to_string(), from_ms, to_ms], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Option<i64>>(8)?,
+                r.get::<_, String>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+                r.get::<_, Option<i64>>(11)?,
+                r.get::<_, Option<i64>>(12)?,
+                r.get::<_, Option<i64>>(13)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                id,
+                model,
+                provider_kind,
+                host,
+                protocol,
+                client,
+                cell,
+                submitted_ms,
+                ended_ms,
+                outcome,
+                active_ms,
+                wait_ms,
+                rating,
+                charged_micros,
+            ) = row?;
+            let rating = match rating {
+                None => None,
+                Some(stars) => Some(u8::try_from(stars).map_err(|_| {
+                    StoreError::Corrupt(format!("rating {stars} does not fit in u8"))
+                })?),
+            };
+            out.push(UserTaskRow {
+                id,
+                model,
+                provider_kind,
+                host,
+                protocol,
+                client,
+                cell: CellId::parse(&cell).map_err(corrupt)?,
+                submitted_ms,
+                ended_ms,
+                outcome: Outcome::parse(&outcome).map_err(corrupt)?,
+                active_ms,
+                wait_ms,
+                rating,
+                charged_micros,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Newest configuration label for `scope`, else the all-scope (`*`) row.
+    pub fn latest_config_label(
+        &self,
+        kind: ConfigKind,
+        scope: &ScopeId,
+    ) -> StoreResult<Option<String>> {
+        if let Some(label) = latest_label(&self.conn, kind, &scope.to_string())? {
+            return Ok(Some(label));
+        }
+        latest_label(&self.conn, kind, "*")
     }
 
     // ---- behaviour events ----

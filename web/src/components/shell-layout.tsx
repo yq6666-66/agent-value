@@ -16,7 +16,7 @@ export function ShellLayout({
       <Panel id="primary" defaultSize="62%" minSize="28%">
         <Group orientation="horizontal" className="h-full" id="primary-split">
           <Panel id="frontier" defaultSize="68%" minSize="30%">
-            <FrontierPane />
+            <FrontierPane refreshToken={refreshToken} />
           </Panel>
           <Separator id="primary-separator" className="w-1.5 bg-border" />
           <Panel id="weights" defaultSize="32%" minSize="22%">

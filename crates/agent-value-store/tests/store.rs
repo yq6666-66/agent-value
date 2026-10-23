@@ -818,3 +818,79 @@ fn list_arms_returns_stored_rows_in_id_order() {
     assert_eq!(listed, vec![(first, relay()), (second, official())]);
     assert_eq!(s.list_arms().unwrap().len() as u64, s.arm_count().unwrap());
 }
+
+#[test]
+fn list_user_tasks_keeps_the_window_and_sums_charges() {
+    let s = mem();
+    let mut task = TaskRecord::new("in", coding(), cell("fix"), relay(), NOW);
+    task.outcome = Outcome::Success;
+    task.ended_ms = Some(NOW + 1_000);
+    task.active_ms = Some(1_000);
+    s.insert_task(&task).unwrap();
+    s.insert_task(&TaskRecord::new(
+        "before",
+        coding(),
+        cell("fix"),
+        relay(),
+        NOW - DAY_MS,
+    ))
+    .unwrap();
+    s.insert_task(&TaskRecord::new(
+        "probe",
+        coding(),
+        CellId::Probe,
+        relay(),
+        NOW,
+    ))
+    .unwrap();
+    let mut req = request("r-in", Some("in"), relay(), "RELAY_API_KEY", NOW);
+    req.charged = Some(MicroYuan::from_yuan(0.5).unwrap());
+    s.insert_request(&req).unwrap();
+    let mut again = request("r-in-2", Some("in"), relay(), "RELAY_API_KEY", NOW + 1);
+    again.charged = Some(MicroYuan::from_yuan(0.25).unwrap());
+    s.insert_request(&again).unwrap();
+
+    let rows = s.list_user_tasks(&coding(), NOW, NOW + DAY_MS).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "in");
+    assert_eq!(rows[0].outcome, Outcome::Success);
+    assert_eq!(rows[0].cell, cell("fix"));
+    assert_eq!(rows[0].model, "example-model-1");
+    assert_eq!(rows[0].charged_micros, Some(750_000));
+
+    s.put_config_version(
+        ConfigKind::Reference,
+        Some(&coding()),
+        "ref-old",
+        "old",
+        NOW,
+    )
+    .unwrap();
+    s.put_config_version(
+        ConfigKind::Reference,
+        Some(&coding()),
+        "ref-new",
+        "new",
+        NOW + 1,
+    )
+    .unwrap();
+    s.put_config_version(ConfigKind::PriceTable, None, "prices", "table", NOW)
+        .unwrap();
+    assert_eq!(
+        s.latest_config_label(ConfigKind::Reference, &coding())
+            .unwrap()
+            .as_deref(),
+        Some("ref-new")
+    );
+    assert_eq!(
+        s.latest_config_label(ConfigKind::PriceTable, &coding())
+            .unwrap()
+            .as_deref(),
+        Some("prices")
+    );
+    assert_eq!(
+        s.latest_config_label(ConfigKind::Fallback, &coding())
+            .unwrap(),
+        None
+    );
+}

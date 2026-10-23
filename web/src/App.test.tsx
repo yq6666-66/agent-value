@@ -13,6 +13,8 @@ import {
   UPSERT_ARM_COMMAND,
 } from "@/lib/store";
 import { WINDOW_CHROME_COMMAND } from "@/lib/window-chrome";
+import { WINDOW_RESULT_COMMAND } from "@/lib/window-result";
+import { windowResultFixture } from "@/test-window-result";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -37,6 +39,32 @@ function storeFallback(cmd: string): unknown {
   }
   if (cmd === WINDOW_CHROME_COMMAND) {
     return { window_index: 0, is_first: true, first_window_label: "LABEL-FROM-CORE" };
+  }
+  if (cmd === WINDOW_RESULT_COMMAND) {
+    return windowResultFixture({
+      arms: [],
+      official_top: [],
+      frontier_off: [],
+      frontier_rec: [],
+      eligible: [],
+      weight_source: null,
+      omega_source: null,
+      cell_weights_version: null,
+      reference_version: null,
+      fallback_version: null,
+      price_table_version: null,
+      classification_rules_version: null,
+      authenticity_source: "probes-off",
+      authenticity_undetermined: true,
+      anchor_headers: [],
+      tier_ii_legend: null,
+      diagnostic_anchor_c_text: null,
+      diagnostic_anchor_t_text: null,
+      diagnostic_anchor_q_text: null,
+      measured_anchor_c_text: null,
+      v_withheld: null,
+      empty_reason: null,
+    });
   }
   throw new Error(cmd);
 }

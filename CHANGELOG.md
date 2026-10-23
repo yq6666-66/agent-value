@@ -7,6 +7,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Desktop window: five-level self-report wizard. Question wording stays in
+  the webview. Elicit commands call `agent_value_core::elicit` for the next
+  question, regions and centroid, and save into `WeightLedger`. A mid-window
+  weight edit is a trial only and does not change the frozen official
+  version.
+- Desktop window: coding-scope window results. The shell reads tasks and the
+  frozen window from the local store, then asks the core for cell status,
+  aggregation, eligibility, the frontier, and the recommendation. Example 6,
+  7, and 8 and a tied pair go through that same path; frontier members and
+  diagnostic anchors match the core tests, and a tie is the whole group.
+  Weight source, cell-weight source, frozen input versions, and the
+  authenticity source are on the page. The web view does not recompute
+  them. Starting a window stores the real prior task count and the stored
+  input versions.
+
 ### Changed
 
 ### Fixed
@@ -28,11 +43,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reads sample window chrome from the core. A first window shows
   `FIRST_WINDOW_LABEL` and does not show V. A later window has an empty V
   slot. User scoring is still not wired up.
-- Desktop window: five-level self-report wizard. Question wording stays in
-  the webview. Elicit commands call `agent_value_core::elicit` for the next
-  question, regions and centroid, and save into `WeightLedger`. A mid-window
-  weight edit is a trial only and does not change the frozen official
-  version.
 - README (English and Chinese): section 11, probes and relay checks (§11),
   with section 6 gate 4, the roadmap rows, constants, the local probe
   commands and a `tools/` row in the layout table (the runner's tests run

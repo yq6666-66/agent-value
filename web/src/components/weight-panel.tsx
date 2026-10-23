@@ -5,11 +5,78 @@ import { SelfReportWizard } from "@/components/self-report-wizard";
 import { Button } from "@/components/ui/button";
 import { WeightTrial } from "@/components/weight-trial";
 import { fetchWindowChrome, type WindowChrome, type WindowSample } from "@/lib/window-chrome";
+import { fetchWindowResult, type WindowResult } from "@/lib/window-result";
 
 type ChromeState =
   | { status: "loading" }
   | { status: "ready"; chrome: WindowChrome }
   | { status: "error" };
+
+type StoreState =
+  | { status: "loading" }
+  | { status: "ready"; result: WindowResult }
+  | { status: "error" };
+
+function StoreValue({ refreshToken }: { refreshToken: number }) {
+  const [state, setState] = useState<StoreState>({ status: "loading" });
+  const [requestId, setRequestId] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchWindowResult("store").then(
+      (result) => {
+        if (!cancelled) {
+          setState({ status: "ready", result });
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setState({ status: "error" });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [requestId, refreshToken]);
+
+  if (state.status === "loading") {
+    return <p className="text-sm text-muted-foreground">读取中</p>;
+  }
+  if (state.status === "error") {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <p className="text-sm text-destructive">未能读取</p>
+        <Button type="button" variant="outline" onClick={() => setRequestId((id) => id + 1)}>
+          重试
+        </Button>
+      </div>
+    );
+  }
+
+  const { result } = state;
+  return (
+    <div className="flex flex-col gap-2">
+      {result.empty_reason !== null ? (
+        <p className="text-sm leading-6">{result.empty_reason}</p>
+      ) : null}
+      {result.v_withheld !== null ? <p className="text-sm leading-6">{result.v_withheld}</p> : null}
+      {result.official_top.length > 0 ? (
+        <ul className="text-sm">
+          {result.official_top.map((id) => {
+            const arm = result.arms.find((item) => item.id === id);
+            const value = arm?.v_text ?? "—";
+            return (
+              <li key={id}>
+                {id} {value}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 export function WeightPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [sample, setSample] = useState<WindowSample>("first");
@@ -76,10 +143,10 @@ export function WeightPanel({ refreshToken = 0 }: { refreshToken?: number }) {
         <p className="text-sm leading-6">{label}</p>
       ) : null}
       {state.status === "ready" && label === null ? (
-        <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-6 gap-y-2">
-          <dt className="text-muted-foreground">V</dt>
-          <dd className="text-sm text-muted-foreground">尚未接入</dd>
-        </dl>
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">V</p>
+          <StoreValue refreshToken={refreshToken} />
+        </div>
       ) : null}
       <div className="flex flex-col gap-3 border-t pt-4">
         <p className="text-sm text-muted-foreground">五档自报和窗中试算。数字来自核心库。</p>

@@ -271,6 +271,23 @@ fn run_target_list(store: &agent_value_store::Store) -> Result<Vec<ProbeRunTarge
     Ok(targets)
 }
 
+/// A budget stop or a missing consent disarms an armed schedule before
+/// the panel is snapshotted, so the worker does not wait for the next due
+/// time. A stored gate sentence is dropped when that gate no longer
+/// matches. The schedule stays off until the user enables it again.
+fn reconcile_schedule(app: &AppState, accepted: bool, decision: BudgetDecision) {
+    let active = app.schedule.is_active();
+    if decision == BudgetDecision::Stop && active {
+        app.schedule.stop_for_budget();
+    } else if !accepted && active {
+        app.schedule.note(SCHEDULE_NO_CONSENT_LABEL);
+    }
+    app.schedule.clear_status_if(|label| {
+        (label == SCHEDULE_BUDGET_STOP_LABEL && decision != BudgetDecision::Stop)
+            || (label == SCHEDULE_NO_CONSENT_LABEL && accepted)
+    });
+}
+
 fn decision_text(decision: BudgetDecision) -> &'static str {
     match decision {
         BudgetDecision::Allow => "allow",
@@ -320,6 +337,7 @@ fn assemble(
         _ => return Err(format!("unknown probe source: {source}")),
     };
     let budget_label = monthly_budget_label().map_err(|err| err.to_string())?;
+    reconcile_schedule(app, accepted, budget.decision);
     let schedule = app.schedule.snapshot();
     let schedule_status_label = if budget.decision == BudgetDecision::Stop {
         Some(SCHEDULE_BUDGET_STOP_LABEL.to_string())
@@ -440,7 +458,9 @@ mod tests {
     use agent_value_probe_run::{typical_probe_estimate, Flight, ProbeLaunch};
 
     use crate::probe_run::scheduled_tick;
-    use crate::probe_schedule::{ScheduleBinding, TickClass, PROBE_SCHEDULE_INTERVAL_MS};
+    use crate::probe_schedule::{
+        ScheduleBinding, TickClass, PROBE_SCHEDULE_INTERVAL_MS, SCHEDULE_HALT_LABEL,
+    };
 
     use super::*;
 
@@ -937,6 +957,134 @@ mod tests {
         assert!(!again.ran);
         assert_eq!(charges_of(&app).len(), 1);
         assert!(results_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_budget_charge_disarms_when_the_panel_is_shown_without_a_due_tick() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let arm_id = save_local(&app);
+        let now = now_ms().unwrap();
+        set_schedule_at(
+            &app,
+            &enable_input(&arm_id, "RELAY_API_KEY", "http://127.0.0.1:9"),
+            now,
+        )
+        .unwrap();
+        assert!(app.schedule.is_active());
+        let spent = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+        store_cmd::with_store(&app, |store| {
+            store
+                .record_probe_charge(now, spent)
+                .map_err(|err| err.to_string())
+        })
+        .unwrap();
+        let panel = view(&app, "store").unwrap();
+        assert!(!panel.schedule_active);
+        assert!(panel.next_planned_label.is_none());
+        assert_eq!(
+            panel.schedule_status_label.as_deref(),
+            Some(SCHEDULE_BUDGET_STOP_LABEL)
+        );
+        let later = scheduled_tick(&app, now + PROBE_SCHEDULE_INTERVAL_MS * 8);
+        assert!(!later.ran);
+        assert_eq!(charges_of(&app).len(), 1);
+        assert!(results_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_manual_run_over_budget_disarms_an_armed_schedule() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let arm_id = save_local(&app);
+        let now = now_ms().unwrap();
+        set_schedule_at(
+            &app,
+            &enable_input(&arm_id, "RELAY_API_KEY", "http://127.0.0.1:9"),
+            now,
+        )
+        .unwrap();
+        let spent = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+        store_cmd::with_store(&app, |store| {
+            store
+                .record_probe_charge(now, spent)
+                .map_err(|err| err.to_string())
+        })
+        .unwrap();
+        let ran = probe_run::run_from_webview(
+            &app,
+            &RunOnceInput {
+                arm_id,
+                key_env: "RELAY_API_KEY".into(),
+                base_url: "http://127.0.0.1:9".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(ran.launch, ProbeLaunch::BlockedBudget.as_str());
+        let snap = app.schedule.snapshot();
+        assert!(!snap.active);
+        assert!(snap.next_planned_label.is_none());
+        assert_eq!(
+            snap.status_label.as_deref(),
+            Some(SCHEDULE_BUDGET_STOP_LABEL)
+        );
+        let later = scheduled_tick(&app, now + PROBE_SCHEDULE_INTERVAL_MS * 8);
+        assert!(!later.ran);
+        assert_eq!(charges_of(&app).len(), 1);
+        assert!(results_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_missing_arm_halts_the_schedule_and_does_not_echo_the_base() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        let secret_base = "https://evil.example/secret-path";
+        app.schedule.enable(
+            0,
+            ScheduleBinding {
+                arm_id: "missing-arm".into(),
+                key_env: "RELAY_API_KEY".into(),
+                base_url: secret_base.into(),
+            },
+        );
+        let due = scheduled_tick(&app, PROBE_SCHEDULE_INTERVAL_MS);
+        assert!(due.ran);
+        assert_eq!(due.class, Some(TickClass::Halt));
+        let snap = app.schedule.snapshot();
+        assert!(!snap.active);
+        assert!(snap.next_planned_label.is_none());
+        let label = snap.status_label.unwrap();
+        assert_eq!(label, SCHEDULE_HALT_LABEL);
+        assert!(!label.contains("evil.example"));
+        assert!(!label.contains("secret-path"));
+        assert!(!label.contains("RELAY_API_KEY"));
+        assert!(charges_of(&app).is_empty());
+        assert!(results_of(&app).is_empty());
+        let later = scheduled_tick(&app, PROBE_SCHEDULE_INTERVAL_MS * 6);
+        assert!(!later.ran);
+        assert!(charges_of(&app).is_empty());
+    }
+
+    #[test]
+    fn a_budget_stop_note_clears_when_the_month_allows_again() {
+        let app = app();
+        set_consent(&app, true, "store").unwrap();
+        app.schedule.stop_for_budget();
+        let panel = view(&app, "store").unwrap();
+        assert!(!panel.schedule_active);
+        assert!(panel.next_planned_label.is_none());
+        assert!(panel.schedule_status_label.is_none());
+        assert_eq!(panel.budget_decision, "allow");
+    }
+
+    #[test]
+    fn a_no_consent_note_clears_after_acceptance() {
+        let app = app();
+        app.schedule.note(SCHEDULE_NO_CONSENT_LABEL);
+        let panel = set_consent(&app, true, "store").unwrap();
+        assert!(panel.accepted);
+        assert!(!panel.schedule_active);
+        assert!(panel.schedule_status_label.is_none());
     }
 
     #[test]

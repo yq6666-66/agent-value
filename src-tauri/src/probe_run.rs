@@ -21,9 +21,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use agent_value_core::arm::Arm;
+use agent_value_core::authenticity::{probe_budget, BudgetDecision};
+use agent_value_core::constants::PROBE_MONTHLY_BUDGET_YUAN;
 use agent_value_core::privacy::KeyEnvVarName;
+use agent_value_core::records::MicroYuan;
 use agent_value_probe_http::base_url_allowed;
-use agent_value_probe_run::{typical_claims, ProbeLaunch, ProbeRunOutcome, ProbeRunRequest};
+use agent_value_probe_run::{
+    spent_in_month, typical_claims, typical_probe_estimate, ProbeLaunch, ProbeRunOutcome,
+    ProbeRunRequest,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::probe_schedule::{ScheduleBinding, TickClass, TickReport};
@@ -148,7 +154,7 @@ fn resolve(app: &AppState, input: &RunOnceInput) -> Result<Resolved, BindFail> {
 pub fn run_from_webview(app: &AppState, input: &RunOnceInput) -> Result<RunOnceView, String> {
     let resolved = match resolve(app, input) {
         Ok(resolved) => resolved,
-        Err(BindFail::Rejected(view)) => return Ok(view),
+        Err(BindFail::Rejected(view)) => return Ok(finish_run(app, view)),
         Err(BindFail::Store(err)) => return Err(err),
     };
     let request = ProbeRunRequest {
@@ -164,9 +170,56 @@ pub fn run_from_webview(app: &AppState, input: &RunOnceInput) -> Result<RunOnceV
         Ok(outcome) => outcome,
         // The page does not render invoke errors. Keep this sentence free of
         // anything the caller typed.
-        Err(_) => return Ok(RunOnceView::failed("这次探测没有完成。")),
+        Err(_) => return Ok(finish_run(app, RunOnceView::failed("这次探测没有完成。"))),
     };
-    Ok(RunOnceView::from_outcome(outcome))
+    Ok(finish_run(app, RunOnceView::from_outcome(outcome)))
+}
+
+/// After a run that returned a view, a monthly budget stop disarms an
+/// armed schedule now. The worker does not wait for the next due time.
+/// A manual rejection that is not a budget stop stays the schedule's
+/// decision on the next tick.
+fn finish_run(app: &AppState, view: RunOnceView) -> RunOnceView {
+    let stopped = view.launch == ProbeLaunch::BlockedBudget.as_str() || budget_is_stop(app);
+    if app.schedule.is_active() && stopped {
+        app.schedule.stop_for_budget();
+    }
+    view
+}
+
+fn budget_is_stop(app: &AppState) -> bool {
+    let Some(at_ms) = crate::probe_schedule::system_now_ms() else {
+        return false;
+    };
+    let Ok(charges) = crate::store_cmd::with_store(app, |store| {
+        store.probe_charges().map_err(|err| err.to_string())
+    }) else {
+        return false;
+    };
+    let Ok(spent) = spent_in_month(&charges, at_ms) else {
+        return false;
+    };
+    let Ok(estimate) = typical_probe_estimate() else {
+        return false;
+    };
+    let Ok(budget) = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN) else {
+        return false;
+    };
+    probe_budget(spent, estimate, budget).ok() == Some(BudgetDecision::Stop)
+}
+
+/// Pre-HTTP failures that will not succeed on a later interval.
+/// Transient HTTP and store failures are not in this list.
+fn permanent_schedule_failure(detail: &str) -> bool {
+    matches!(
+        detail,
+        "要选择一条臂，并填写密钥变量名和基址。"
+            | "密钥只填写变量名，例如 RELAY_API_KEY。不要填写密钥本身。"
+            | "基址必须是 https，或本机模拟用的 http。不能带用户信息、查询或片段。"
+            | "没有这条臂。"
+            | "基址的主机必须和所选臂一致。"
+            | "这条路线的协议不是 OpenAI Chat Completions。"
+    )
 }
 
 /// Host-binds a schedule arm the same way as [`run_from_webview`]. Does not
@@ -186,10 +239,13 @@ pub(crate) fn schedule_binding(
 /// One due scheduled tick. Call it on the schedule thread, not on the async
 /// runtime: it uses [`run_from_webview`], which blocks for HTTP.
 ///
-/// No stored consent means the runner is not called. A budget stop clears
-/// the schedule inside [`ProbeSchedule::tick`](crate::probe_schedule::ProbeSchedule::tick)
-/// so a later tick does not send. Other launches, including same-day
-/// already-run, advance one interval and do not catch up.
+/// No stored consent means the runner is not called. A budget stop, or a
+/// binding that can never send, clears the schedule inside
+/// [`ProbeSchedule::tick`](crate::probe_schedule::ProbeSchedule::tick) so a
+/// later tick does not send. A run that crosses the budget also disarms
+/// inside [`run_from_webview`] before this returns. Other launches,
+/// including same-day already-run and a transient failure, advance one
+/// interval and do not catch up.
 pub(crate) fn scheduled_tick(app: &AppState, now_ms: i64) -> TickReport {
     let consent = crate::store_cmd::with_store(app, |store| {
         store.probe_consent().map_err(|err| err.to_string())
@@ -204,11 +260,23 @@ pub(crate) fn scheduled_tick(app: &AppState, now_ms: i64) -> TickReport {
             base_url: binding.base_url.clone(),
         };
         match run_from_webview(app, &input) {
-            Ok(view) if view.launch == ProbeLaunch::BlockedBudget.as_str() => TickClass::Budget,
-            Ok(view) if view.launch == ProbeLaunch::BlockedConsent.as_str() => TickClass::Consent,
-            _ => TickClass::Continue,
+            Ok(view) => classify_tick(app, &view),
+            Err(_) => TickClass::Continue,
         }
     })
+}
+
+fn classify_tick(app: &AppState, view: &RunOnceView) -> TickClass {
+    if view.launch == ProbeLaunch::BlockedBudget.as_str() || budget_is_stop(app) {
+        return TickClass::Budget;
+    }
+    if view.launch == ProbeLaunch::BlockedConsent.as_str() {
+        return TickClass::Consent;
+    }
+    if view.launch == ProbeLaunch::Failed.as_str() && permanent_schedule_failure(&view.detail) {
+        return TickClass::Halt;
+    }
+    TickClass::Continue
 }
 
 /// Hostname only. A route host may include `:port` or `[ipv6]:port`.

@@ -12,8 +12,8 @@
 //! by the caller, which must use the same `probe_run` / `run_once` gates
 //! (consent, monthly budget, same-day already-run, host bind, key variable
 //! name, provisional charge, store writes) on this thread, off the async
-//! runtime. A budget stop or a missing consent clears the schedule so later
-//! checks do not send.
+//! runtime. A budget stop, a missing consent, or a binding that can never
+//! send clears the schedule so later checks do not send.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -34,6 +34,10 @@ pub const SCHEDULE_BUDGET_STOP_LABEL: &str = "已超过月预算，已停止后�
 
 /// Shown when a tick or an enable finds no stored acceptance.
 pub const SCHEDULE_NO_CONSENT_LABEL: &str = "尚未同意，不会定时探测。";
+
+/// Shown when a binding can never send (arm gone, host bind, protocol).
+/// The sentence does not repeat a URL, a host, or a token.
+pub const SCHEDULE_HALT_LABEL: &str = "定时已停止。这次绑定无法发送，不会继续重试。";
 
 const MS_PER_DAY: i64 = 86_400_000;
 
@@ -57,6 +61,8 @@ pub enum TickClass {
     Budget,
     /// Consent missing. Do not call the runner again.
     Consent,
+    /// The binding cannot send. Do not call the runner again.
+    Halt,
 }
 
 /// Whether this check called the runner.
@@ -124,6 +130,10 @@ impl ProbeSchedule {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        self.lock().active
+    }
+
     pub fn snapshot(&self) -> ScheduleSnapshot {
         let guard = self.lock();
         let next_planned_label = if guard.active {
@@ -185,6 +195,16 @@ impl ProbeSchedule {
         guard.disarm();
         guard.status_label = Some(SCHEDULE_BUDGET_STOP_LABEL.to_string());
         self.cv.notify_all();
+    }
+
+    /// Drops a stored status sentence when `drop_label` says that gate no
+    /// longer matches. Does not arm or disarm. A stopped schedule stays off.
+    pub fn clear_status_if(&self, drop_label: impl Fn(&str) -> bool) {
+        let mut guard = self.lock();
+        let stale = guard.status_label.as_deref().is_some_and(drop_label);
+        if stale {
+            guard.status_label = None;
+        }
     }
 
     /// Wakes the worker so process exit does not leave it waiting.
@@ -258,17 +278,10 @@ impl ProbeSchedule {
             binding
         };
         let class = run(&binding);
-        if class == TickClass::Budget || class == TickClass::Consent {
+        if let Some(label) = disarm_label(class) {
             let mut guard = self.lock();
             guard.disarm();
-            guard.status_label = Some(
-                if class == TickClass::Budget {
-                    SCHEDULE_BUDGET_STOP_LABEL
-                } else {
-                    SCHEDULE_NO_CONSENT_LABEL
-                }
-                .to_string(),
-            );
+            guard.status_label = Some(label.to_string());
             self.cv.notify_all();
         }
         TickReport {
@@ -373,6 +386,15 @@ pub fn next_planned_label(next_at_ms: i64) -> String {
             "下次计划：{day} {hh:02}:{mm:02}（北京时间）。间隔暂定为 {hours} 小时，错过不补跑。"
         ),
         None => fallback_planned_label(),
+    }
+}
+
+fn disarm_label(class: TickClass) -> Option<&'static str> {
+    match class {
+        TickClass::Continue => None,
+        TickClass::Budget => Some(SCHEDULE_BUDGET_STOP_LABEL),
+        TickClass::Consent => Some(SCHEDULE_NO_CONSENT_LABEL),
+        TickClass::Halt => Some(SCHEDULE_HALT_LABEL),
     }
 }
 
@@ -519,6 +541,31 @@ mod tests {
         let later = schedule.tick(due.saturating_mul(10), true, |_| {
             calls.fetch_add(1, Ordering::SeqCst);
             TickClass::Budget
+        });
+        assert!(!later.ran);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_halt_disarms_and_does_not_run_again() {
+        let schedule = ProbeSchedule::new();
+        let calls = AtomicUsize::new(0);
+        schedule.enable(0, binding());
+        let due = PROBE_SCHEDULE_INTERVAL_MS;
+        let halted = schedule.tick(due, true, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            TickClass::Halt
+        });
+        assert!(halted.ran);
+        assert_eq!(halted.class, Some(TickClass::Halt));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let snap = schedule.snapshot();
+        assert!(!snap.active);
+        assert!(snap.next_planned_label.is_none());
+        assert_eq!(snap.status_label.as_deref(), Some(SCHEDULE_HALT_LABEL));
+        let later = schedule.tick(due.saturating_mul(8), true, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            TickClass::Halt
         });
         assert!(!later.ran);
         assert_eq!(calls.load(Ordering::SeqCst), 1);

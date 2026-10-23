@@ -18,8 +18,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runtime): consent, monthly budget, same-day already-run, host bind,
   key variable name, provisional charge, and store writes. A clock jump
   runs at most one tick and does not catch up missed intervals. A monthly
-  budget stop clears the schedule, does not send again, and the panel
-  says so. While the schedule is on, the panel shows a read-only
+  budget stop disarms the schedule when the panel is shown and when a
+  run crosses the budget, not only at the next due tick. It does not
+  send again, and the panel says so. A binding that can never send
+  (missing arm, host bind, or protocol) also stops the schedule and does
+  not retry; that status sentence does not repeat a URL or a token. A
+  stored stop or no-consent note is cleared when that gate no longer
+  applies, and the schedule stays off until the user enables it again.
+  While the schedule is on, the panel shows a read-only
   next-planned time (下次计划). `sends_http` stays true because a due
   tick can send. Observation thresholds are unchanged.
 - Desktop: manual “跑一次” on the probe panel. The button is shown only

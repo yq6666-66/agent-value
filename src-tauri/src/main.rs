@@ -4,10 +4,11 @@
 
 mod demo_example6;
 mod elicit_cmd;
-// Linked so the shell has the sender. Commands do not call it yet.
+// Re-exports the sender. Orchestration calls the crate directly.
 #[allow(dead_code)]
 mod probe_http;
 mod probe_panel;
+mod probe_run;
 mod sensitivity_panel;
 mod store_cmd;
 mod window_chrome;

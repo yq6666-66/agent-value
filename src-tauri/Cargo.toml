@@ -17,8 +17,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 agent-value-core = { path = "../crates/agent-value-core" }
 agent-value-store = { path = "../crates/agent-value-store" }
-# In-process probe sender. Panel commands do not call it yet.
+# In-process probe sender. Panel commands do not call it.
 agent-value-probe-http = { path = "../crates/agent-value-probe-http" }
+# One-shot run behind consent and the monthly budget. The webview is not wired.
+agent-value-probe-run = { path = "../crates/agent-value-probe-run" }
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

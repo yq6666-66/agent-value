@@ -14,6 +14,7 @@ version = "0.2.0"
 dependencies = [
  "agent-value-core",
  "agent-value-probe-http",
+ "agent-value-probe-run",
  "agent-value-store",
  "getrandom 0.3.4",
  "serde",
@@ -34,6 +35,16 @@ dependencies = [
  "serde_json",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "agent-value-probe-run"
+version = "0.2.0"
+dependencies = [
+ "agent-value-core",
+ "agent-value-probe-http",
+ "agent-value-store",
+ "serde_json",
 ]
 
 [[package]]

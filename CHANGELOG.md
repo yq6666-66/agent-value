@@ -7,6 +7,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Shell: one probe run for a selected arm (`agent-value-probe-run`).
+  The caller passes the arm, the key's environment-variable name, and
+  the base URL. No stored consent, or a monthly budget stop, rejects
+  the run and writes nothing. Otherwise it builds an OpenAI chat plan,
+  sends it with `agent-value-probe-http` (blocking, off the async
+  runtime), judges the replay, and stores the deterministic and
+  capability results plus a provisional charge. The charge and the
+  panel's next-run estimate are plan rows times 0.05 yuan per row.
+  That amount is not a measured price. A second overlapping call does
+  not send. Keys stay out of the store and out of evidence summaries.
+  The panel shows `ready` when a run is allowed. `sends_http` stays
+  false: the page has no run button. Observation thresholds are
+  unchanged, and this run does not mark the observation period done.
 - Core: `probe::build_openai_chat_plan` returns the OpenAI Chat Completions
   request bodies for one minimal probe (`det-01`…`det-10`, plus `cap-tool`
   and `cap-json` when those capabilities are claimed). The `probe_plan`

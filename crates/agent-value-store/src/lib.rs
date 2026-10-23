@@ -621,24 +621,28 @@ impl Store {
 
     /// Stores a probe result. One result per (probe, version, arm, run day).
     pub fn insert_probe_result(&self, p: &ProbeResult) -> StoreResult<()> {
-        p.validate()?;
-        let arm_id = upsert_arm(&self.conn, &p.arm)?;
-        self.conn.execute(
-            "INSERT INTO probe_results (probe_id, probe_version, arm_id, run_day, at_ms, class,
-                verdict, hard_failure, evidence_summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                p.probe_id,
-                p.probe_version,
-                arm_id.0,
-                p.run_day()?.to_string(),
-                p.at_ms,
-                p.class.as_str(),
-                p.verdict.as_str(),
-                p.hard_failure,
-                p.evidence_summary,
-            ],
-        )?;
+        insert_probe_result_on(&self.conn, p)
+    }
+
+    /// Stores every class result of one probe run and the charge for that
+    /// run. One transaction: a failure leaves neither the results nor the
+    /// charge. This does not send a request. The charge is the amount the
+    /// caller passes.
+    pub fn record_probe_run(
+        &self,
+        results: &[ProbeResult],
+        at_ms: i64,
+        charged: MicroYuan,
+    ) -> StoreResult<()> {
+        if results.is_empty() {
+            return Err(StoreError::Conflict("probe run has no results"));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for result in results {
+            insert_probe_result_on(&tx, result)?;
+        }
+        record_probe_charge_on(&tx, at_ms, charged)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -714,11 +718,7 @@ impl Store {
 
     /// Records money already spent on probes. This does not send a request.
     pub fn record_probe_charge(&self, at_ms: i64, charged: MicroYuan) -> StoreResult<()> {
-        self.conn.execute(
-            "INSERT INTO probe_charges (at_ms, charged_micro_yuan) VALUES (?1, ?2)",
-            params![at_ms, charged.micros()],
-        )?;
-        Ok(())
+        record_probe_charge_on(&self.conn, at_ms, charged)
     }
 
     /// Probe charges as `(at_ms, micro-yuan)`, ordered by time.
@@ -1125,6 +1125,36 @@ impl Store {
 
 fn count(conn: &Connection, sql: &str) -> StoreResult<u64> {
     Ok(conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64)
+}
+
+fn insert_probe_result_on(conn: &Connection, p: &ProbeResult) -> StoreResult<()> {
+    p.validate()?;
+    let arm_id = upsert_arm(conn, &p.arm)?;
+    conn.execute(
+        "INSERT INTO probe_results (probe_id, probe_version, arm_id, run_day, at_ms, class,
+            verdict, hard_failure, evidence_summary)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            p.probe_id,
+            p.probe_version,
+            arm_id.0,
+            p.run_day()?.to_string(),
+            p.at_ms,
+            p.class.as_str(),
+            p.verdict.as_str(),
+            p.hard_failure,
+            p.evidence_summary,
+        ],
+    )?;
+    Ok(())
+}
+
+fn record_probe_charge_on(conn: &Connection, at_ms: i64, charged: MicroYuan) -> StoreResult<()> {
+    conn.execute(
+        "INSERT INTO probe_charges (at_ms, charged_micro_yuan) VALUES (?1, ?2)",
+        params![at_ms, charged.micros()],
+    )?;
+    Ok(())
 }
 
 fn upsert_arm(conn: &Connection, arm: &Arm) -> StoreResult<ArmId> {

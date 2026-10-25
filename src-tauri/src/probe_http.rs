@@ -1,8 +1,9 @@
 //! In-process probe HTTP sender.
 //!
 //! The probe panel command does not call this module. `run_probe_once`
-//! calls `probe_run`, which sends through the same crate on a blocking
-//! thread. `sends_http` is true because that command can send.
+//! and a due in-app schedule tick call `probe_run`, which sends through
+//! the same crate on a blocking thread. `sends_http` is true because
+//! those paths can send.
 //! `tools/probe_live.py` remains the command-line runner.
 //!
 //! [`send`] and [`run`] block the calling thread. Call them off the Tauri

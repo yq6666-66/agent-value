@@ -13,10 +13,12 @@ import {
 import {
   PROBE_RUN_FAILED,
   PROBE_RUN_IN_PROGRESS,
+  PROBE_SCHEDULE_FAILED,
   fetchProbePanel,
   probeRunOffered,
   runProbeOnce,
   setProbeConsent,
+  setProbeSchedule,
   type ProbePanel,
   type ProbeSource,
 } from "@/lib/probe";
@@ -48,6 +50,11 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const runningRef = useRef(false);
   const sourceRef = useRef(source);
   sourceRef.current = source;
+  const scheduleWatched =
+    source === "store" &&
+    (state.status === "ready" || state.status === "save-error") &&
+    state.view.source === "store" &&
+    state.view.schedule_active;
 
   useEffect(() => {
     let cancelled = false;
@@ -68,6 +75,25 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
       cancelled = true;
     };
   }, [source, requestId, refreshToken]);
+
+  useEffect(() => {
+    if (!scheduleWatched) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      fetchProbePanel("store")
+        .then((next) => {
+          if (sourceRef.current !== "store" || runningRef.current) {
+            return;
+          }
+          setState({ status: "ready", view: next });
+        })
+        .catch(() => {
+          // Leave the schedule label already on screen. This refresh does not run a probe.
+        });
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [scheduleWatched]);
 
   function choose(next: ProbeSource) {
     if (runningRef.current) {
@@ -102,11 +128,45 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
       : null;
   const showLoading = state.status === "loading" || (state.status !== "error" && view === null);
   const offerRun = view !== null && probeRunOffered(view) && runPhase !== "running";
+  const scheduleOn = view !== null && view.source === "store" && view.schedule_active;
+  const offerSchedule =
+    view !== null &&
+    view.source === "store" &&
+    view.accepted &&
+    view.sends_http &&
+    view.budget_decision !== "stop" &&
+    view.launch !== "blocked-budget" &&
+    view.launch !== "running" &&
+    runPhase !== "running" &&
+    !view.schedule_active;
+  const showFields = offerRun || offerSchedule;
   const selectedArm =
     view !== null && view.run_targets.some((item) => item.id === armId)
       ? armId
       : (view?.run_targets[0]?.id ?? "");
   const canSubmit = selectedArm !== "" && keyEnv.trim() !== "" && baseUrl.trim() !== "";
+
+  async function onSchedule(enabled: boolean) {
+    if (runningRef.current || view === null || view.source !== "store") {
+      return;
+    }
+    if (enabled && (selectedArm === "" || keyEnv.trim() === "" || baseUrl.trim() === "")) {
+      return;
+    }
+    try {
+      const next = await setProbeSchedule({
+        enabled,
+        arm_id: enabled ? selectedArm : "",
+        key_env: enabled ? keyEnv.trim() : "",
+        base_url: enabled ? baseUrl.trim() : "",
+      });
+      if (sourceRef.current === "store") {
+        setState({ status: "ready", view: next });
+      }
+    } catch {
+      setRunDetail(PROBE_SCHEDULE_FAILED);
+    }
+  }
 
   async function onRun(event: FormEvent) {
     event.preventDefault();
@@ -215,7 +275,23 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
               </div>
             ) : null}
             <p className="text-sm leading-6">{view.launch_label}</p>
-            {offerRun ? (
+            {view.source === "store" && view.next_planned_label !== null ? (
+              <p className="text-sm leading-6">{view.next_planned_label}</p>
+            ) : null}
+            {view.source === "store" && view.schedule_status_label !== null ? (
+              <p className="text-sm leading-6">{view.schedule_status_label}</p>
+            ) : null}
+            {view.source === "store" && (offerSchedule || scheduleOn) ? (
+              <p className="text-sm leading-6 text-muted-foreground">{view.schedule_hint}</p>
+            ) : null}
+            {scheduleOn ? (
+              <div>
+                <Button type="button" onClick={() => onSchedule(false)}>
+                  停止定时
+                </Button>
+              </div>
+            ) : null}
+            {showFields ? (
               <form className="flex flex-col gap-3" onSubmit={onRun}>
                 {view.run_targets.length === 0 ? (
                   <p className="text-sm leading-6">还没有可选的臂。</p>
@@ -267,10 +343,17 @@ export function ProbePanel({ refreshToken = 0 }: { refreshToken?: number }) {
                     spellCheck={false}
                   />
                 </div>
-                <div>
-                  <Button type="submit" disabled={!canSubmit}>
-                    跑一次
-                  </Button>
+                <div className="flex flex-wrap gap-2">
+                  {offerRun ? (
+                    <Button type="submit" disabled={!canSubmit}>
+                      跑一次
+                    </Button>
+                  ) : null}
+                  {offerSchedule ? (
+                    <Button type="button" disabled={!canSubmit} onClick={() => onSchedule(true)}>
+                      启用定时
+                    </Button>
+                  ) : null}
                 </div>
               </form>
             ) : null}

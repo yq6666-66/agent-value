@@ -5,8 +5,8 @@
 //! class. Sending requests is the caller's job (this crate never touches the
 //! network). The command-line runner is `tools/probe_live.py`. The desktop
 //! shell can run one probe through `agent-value-probe-run` (consent and the
-//! monthly budget, then `agent-value-probe-http`). The probe panel does
-//! not send.
+//! monthly budget, then `agent-value-probe-http`), by hand or from an in-app
+//! schedule. This module does not send.
 //! [`build_openai_chat_plan`] only builds the OpenAI Chat Completions
 //! bodies that `probe_plan` prints.
 //!

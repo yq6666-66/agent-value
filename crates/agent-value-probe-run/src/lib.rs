@@ -17,12 +17,15 @@
 //!
 //! The single-flight lock and the budget snapshot are per process.
 //!
-//! Thinking-signature and long-context rows are not in the plan. Fingerprint
-//! rows are not invented, and the observation period is not marked complete.
+//! Thinking-signature and long-context rows are not in the plan. [`run_once`]
+//! does not write fingerprint rows. [`collect_fingerprint_baseline`] collects
+//! an official-direct fingerprint baseline into the local store. It does not
+//! call [`run_once`], does not insert a daily probe result, does not record a
+//! probe charge, and does not change observation thresholds.
 //! The desktop command `run_probe_once` calls [`run_once`] on a blocking
 //! thread. An in-app schedule in the shell can call it the same way.
-//! This crate does not start a run by itself, and it does not mark the
-//! observation period complete.
+//! This crate does not start a run by itself, and it does not change
+//! observation thresholds.
 //!
 //! # Provisional estimate
 //!
@@ -581,3 +584,11 @@ impl Drop for TempRun {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+mod fingerprint;
+
+pub use fingerprint::{
+    collect_fingerprint_baseline, fingerprint_collect_estimate, fingerprint_request_count,
+    FingerprintBudgetSnapshot, FingerprintCollectError, FingerprintCollectOutcome,
+    FingerprintCollectRequest, FINGERPRINT_SAMPLING_CONFIG, FINGERPRINT_TASK_SET_VERSION,
+};

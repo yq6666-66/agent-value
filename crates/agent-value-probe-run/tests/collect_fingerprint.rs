@@ -459,6 +459,46 @@ fn success_writes_a_readable_baseline_and_a_later_collect_overwrites_it() {
 }
 
 #[test]
+fn default_monthly_cap_allows_a_full_collect() {
+    let _guard = lock_tests();
+    require_unset(KEY_ENV);
+    let _env = EnvVar::set(KEY_ENV, KEY);
+    let mock = Mock::spawn(text_script("Red"));
+    let (store, clock) = open_store(NOW_MS);
+    let arm = arm(
+        ProviderKind::Official,
+        "127.0.0.1",
+        Protocol::OpenAiChatCompletions,
+    );
+    let budget = FingerprintBudgetSnapshot {
+        spent: MicroYuan::new(0).unwrap(),
+        budget: MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap(),
+    };
+    let outcome = collect(
+        &store,
+        &clock,
+        &arm,
+        &mock.base,
+        KEY_ENV,
+        true,
+        budget,
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(outcome.upsert, FingerprintBaselineUpsert::Inserted);
+    assert_eq!(mock.hits(), 400);
+    let got = store
+        .get_fingerprint_baseline(&outcome.identity)
+        .unwrap()
+        .expect("stored baseline");
+    assert_eq!(got.distribution.run1[0].answers[0].answer, "red");
+    assert_eq!(
+        got.distribution.run1[0].answers[0].count,
+        FINGERPRINT_SAMPLES
+    );
+}
+
+#[test]
 fn precondition_failures_do_not_send_or_write() {
     let _guard = lock_tests();
     require_unset(KEY_ENV);

@@ -590,5 +590,6 @@ mod fingerprint;
 pub use fingerprint::{
     collect_fingerprint_baseline, fingerprint_collect_estimate, fingerprint_request_count,
     FingerprintBudgetSnapshot, FingerprintCollectError, FingerprintCollectOutcome,
-    FingerprintCollectRequest, FINGERPRINT_SAMPLING_CONFIG, FINGERPRINT_TASK_SET_VERSION,
+    FingerprintCollectRequest, FINGERPRINT_ESTIMATE_PER_REQUEST_MICROS,
+    FINGERPRINT_SAMPLING_CONFIG, FINGERPRINT_TASK_SET_VERSION,
 };

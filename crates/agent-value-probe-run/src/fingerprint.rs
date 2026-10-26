@@ -33,8 +33,6 @@ use agent_value_store::{
     DISTRIBUTION_SCHEMA_VERSION,
 };
 
-use crate::PROBE_ESTIMATE_PER_ITEM_MICROS;
-
 /// Task-set label stored on a collected baseline.
 ///
 /// Human-readable form of probe set `"1"`. Bump this when the fingerprint
@@ -50,18 +48,27 @@ pub const FINGERPRINT_TASK_SET_VERSION: &str = "probe-set-1";
 /// temperature of 0.
 pub const FINGERPRINT_SAMPLING_CONFIG: &str = "{\"temperature\":1,\"top_p\":1,\"max_tokens\":64}";
 
+/// Provisional price of one fingerprint sample, in micro-yuan.
+///
+/// 0.02 yuan. Not a measured vendor price and not an observation threshold.
+/// A full collect is 400 samples, 8 yuan, which is under the 10 yuan monthly
+/// cap. This is not [`crate::PROBE_ESTIMATE_PER_ITEM_MICROS`]: that constant
+/// prices one `run_once` plan row at 0.05 yuan, and using it per sample
+/// would price a full collect at 20 yuan.
+pub const FINGERPRINT_ESTIMATE_PER_REQUEST_MICROS: i64 = 20_000;
+
 const OFFICIAL_DIRECT: &str = "official-direct";
 const MAX_ANSWER_CHARS: usize = 200;
 
 /// Spent total and cap for one [`probe_budget`] check.
 ///
-/// `run_once` reads spent from stored probe charges and uses the monthly
-/// cap. This collect takes both numbers from the caller so it does not read
-/// or write probe charges. The product cap is
+/// `spent` is advisory input from the caller. This collect does not read or
+/// write H-track probe charges, so a caller who always passes `spent` of 0
+/// is not stopped by earlier collects. `run_once` still accounts its own
+/// charges separately. The product cap is
 /// [`agent_value_core::constants::PROBE_MONTHLY_BUDGET_YUAN`]. This function
-/// does not change that cap. The provisional estimate is
-/// [`fingerprint_collect_estimate`], which is above that cap, so a snapshot
-/// that uses the cap stops before any request.
+/// does not change that cap. With spent 0 and that cap, a full collect is
+/// allowed: [`fingerprint_collect_estimate`] is strictly under the cap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FingerprintBudgetSnapshot {
     pub spent: MicroYuan,
@@ -87,7 +94,13 @@ pub struct FingerprintCollectRequest<'a> {
 pub struct FingerprintCollectOutcome {
     pub upsert: FingerprintBaselineUpsert,
     pub identity: FingerprintBaselineIdentity,
+    /// Clock reading taken immediately before the upsert, not before the
+    /// first sample was sent.
     pub collected_at_ms: i64,
+    /// How many [`agent_value_probe_http::send`] calls returned `Ok`.
+    /// This outcome exists only after every sample was accepted, so the
+    /// count is the full collect. A rejected sample does not produce an
+    /// outcome, and calls that returned `Err` are not included.
     pub requests_sent: u32,
 }
 
@@ -149,13 +162,13 @@ pub fn fingerprint_request_count() -> usize {
 }
 
 /// Provisional charge of one full collect: request count times
-/// [`PROBE_ESTIMATE_PER_ITEM_MICROS`]. Not a measured price and not an
-/// observation threshold.
+/// [`FINGERPRINT_ESTIMATE_PER_REQUEST_MICROS`]. Not a measured price and
+/// not an observation threshold. Strictly under the monthly cap.
 pub fn fingerprint_collect_estimate() -> Result<MicroYuan, FingerprintCollectError> {
     let rows = i64::try_from(fingerprint_request_count())
         .map_err(|_| FingerprintCollectError::NotStored)?;
     let micros = rows
-        .checked_mul(PROBE_ESTIMATE_PER_ITEM_MICROS)
+        .checked_mul(FINGERPRINT_ESTIMATE_PER_REQUEST_MICROS)
         .ok_or(FingerprintCollectError::NotStored)?;
     MicroYuan::new(micros).map_err(|_| FingerprintCollectError::NotStored)
 }
@@ -193,8 +206,7 @@ pub fn collect_fingerprint_baseline(
     if host_rejected(request.base_url, request.arm.route().host()) {
         return Err(FingerprintCollectError::HostRejected);
     }
-    let collected_at_ms = clock.now_ms();
-    if collected_at_ms < 0 {
+    if clock.now_ms() < 0 {
         return Err(FingerprintCollectError::ClockOutOfRange);
     }
     let estimate = fingerprint_collect_estimate()?;
@@ -204,6 +216,12 @@ pub fn collect_fingerprint_baseline(
         Err(_) => return Err(FingerprintCollectError::NotStored),
     }
     let (distribution, requests_sent) = collect_distribution(request)?;
+    // Stamp the row at upsert time. The earlier read only refuses a clock
+    // that is already negative, so the 400 samples are not sent in that case.
+    let collected_at_ms = clock.now_ms();
+    if collected_at_ms < 0 {
+        return Err(FingerprintCollectError::ClockOutOfRange);
+    }
     let identity = identity_for(request.arm)?;
     let write = FingerprintBaselineWrite {
         identity: identity.clone(),
@@ -335,8 +353,8 @@ fn commit(
         Ok(upsert) => Ok(upsert),
         Err(StoreError::Core(CoreError::InvalidField {
             field: "distribution",
-            reason,
-        })) if reason.contains("larger") => Err(FingerprintCollectError::DistributionRejected),
+            ..
+        })) => Err(FingerprintCollectError::DistributionRejected),
         Err(_) => Err(FingerprintCollectError::NotStored),
     }
 }
@@ -437,18 +455,23 @@ mod tests {
     }
 
     #[test]
-    fn provisional_estimate_stops_against_the_monthly_cap() {
+    fn provisional_estimate_fits_under_the_monthly_cap() {
         assert_eq!(fingerprint_request_count(), 400);
+        assert_eq!(
+            400 * FINGERPRINT_ESTIMATE_PER_REQUEST_MICROS,
+            fingerprint_collect_estimate().unwrap().micros()
+        );
         let estimate = fingerprint_collect_estimate().unwrap();
         let cap = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
-        assert!(estimate.micros() > cap.micros());
+        assert!(estimate.micros() < cap.micros());
         assert_eq!(
             probe_budget(MicroYuan::new(0).unwrap(), estimate, cap).unwrap(),
-            BudgetDecision::Stop
-        );
-        assert_eq!(
-            probe_budget(MicroYuan::new(0).unwrap(), estimate, estimate).unwrap(),
             BudgetDecision::Allow
+        );
+        let short = MicroYuan::new(estimate.micros() - 1).unwrap();
+        assert_eq!(
+            probe_budget(MicroYuan::new(0).unwrap(), estimate, short).unwrap(),
+            BudgetDecision::Stop
         );
     }
 

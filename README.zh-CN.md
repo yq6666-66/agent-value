@@ -704,7 +704,7 @@ cargo run -p agent-value-core --example probe_judge -- <seed> <model> replay.tsv
 
 `tools/probe_live.py` 只用 Python 标准库。key 只从指定的环境变量或本地被 git 忽略的 `.env` 读取，从不写进任何输出：写之前会检查原文、转义后的文本和 JSON 转义形式。如果在要写的内容里发现 key，脚本会拒绝写入并退出。脚本不记录请求头。`--base` 必须是 https，本机的模拟服务器除外。
 
-`agent-value-probe-run` 里的 `collect_fingerprint_baseline` 采集官方直连指纹基线。它是库函数：没有命令行入口，也没有桌面按钮。调用方传入官方直连的 OpenAI Chat Completions 臂、主机与该臂路线主机相同的 `https` 基址（例如 `https://api.openai.com`，模型 id 由调用方选定）、bearer token 的环境变量名、同意标志、预算快照（交给 `probe_budget` 的 `spent` 和 `budget`）、时钟和存储。token 从该变量或 `./.env` 读取，不写入存储。调用会发送 10 道指纹题，每题 20 个样本，共两轮，然后 upsert 一条基线。未同意、预算停止、主机被拒绝、不是官方直连或密钥不可用时，不发送也不写入。任一次失败、超时或无法解析的样本都不写入。暂定估价是 400 次请求乘以每条 0.05 元，高于 10 元的月预算上限，所以使用该上限的快照会在任何请求之前停止。这不跑观察期，也不改档位阈值。
+`agent-value-probe-run` 里的 `collect_fingerprint_baseline` 采集官方直连指纹基线。它是库函数：没有命令行入口，也没有桌面按钮。调用方传入官方直连的 OpenAI Chat Completions 臂、主机与该臂路线主机相同的 `https` 基址（例如 `https://api.openai.com`，模型 id 由调用方选定）、bearer token 的环境变量名、同意标志、预算快照（交给 `probe_budget` 的 `spent` 和 `budget`）、时钟和存储。token 从该变量或 `./.env` 读取，不写入存储。调用会发送 10 道指纹题，每题 20 个样本，共两轮，温度为 1（top_p 为 1，max tokens 为 64）。这不是确定性探针所用的温度 0。然后 upsert 一条基线。存下的 `provider` 是臂上路线主机的原样，`model_revision` 为空。未同意、预算停止、主机被拒绝、不是官方直连或密钥不可用时，不发送也不写入。任一次失败、超时或无法解析的样本都不写入。暂定价是每个样本 0.02 元，400 个样本共 8 元，低于 10 元的月预算上限。`spent` 是调用方交给这道门的参考输入。这条路径不写入探针花费。这不跑观察期，也不改档位阈值。
 
 `agent-value-probe-run` 可以在已保存同意且未超过月预算时，对选定的一条臂做同样的一次探测。单飞锁和预算检查都是本进程内的。探针面板的 `sends_http` 为 true，因为 `run_probe_once` 可以发送。窗口只在已同意且 launch 为 ready 时提供手动运行，打开时不会自动跑。应用内定时可以用同一条路径稍后重跑：启用前不发送，第一次在暂定的 24 小时间隔之后，月预算停止后不再发送，退出应用即停止。这不是操作系统的定时任务。
 

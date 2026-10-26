@@ -87,13 +87,6 @@ fn allowing_budget() -> FingerprintBudgetSnapshot {
     }
 }
 
-fn monthly_budget() -> FingerprintBudgetSnapshot {
-    FingerprintBudgetSnapshot {
-        spent: MicroYuan::new(0).unwrap(),
-        budget: MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap(),
-    }
-}
-
 enum Fail {
     None,
     Status(u16),
@@ -586,21 +579,20 @@ fn precondition_failures_do_not_send_or_write() {
     assert!(!rendered(&err).contains(KEY));
     assert_eq!(mock.hits(), 0);
 
+    let estimate = fingerprint_collect_estimate().unwrap();
+    let cap = MicroYuan::from_yuan(PROBE_MONTHLY_BUDGET_YUAN).unwrap();
+    assert!(estimate.micros() < cap.micros());
+    let near_cap = FingerprintBudgetSnapshot {
+        spent: MicroYuan::new(cap.micros() - estimate.micros() + 1).unwrap(),
+        budget: cap,
+    };
     let err = collect(
-        &store,
-        &clock,
-        &official,
-        &mock.base,
-        KEY_ENV,
-        true,
-        monthly_budget(),
-        timeout,
+        &store, &clock, &official, &mock.base, KEY_ENV, true, near_cap, timeout,
     )
     .unwrap_err();
     assert_eq!(err, FingerprintCollectError::BudgetStop);
     assert_eq!(mock.hits(), 0);
 
-    let estimate = fingerprint_collect_estimate().unwrap();
     let short = FingerprintBudgetSnapshot {
         spent: MicroYuan::new(0).unwrap(),
         budget: MicroYuan::new(estimate.micros() - 1).unwrap(),

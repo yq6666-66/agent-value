@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Library: `collect_fingerprint_baseline` collects an official-direct fingerprint baseline over HTTP and upserts it into the local fingerprint baseline store. Tests use a mock server. Its provisional per-request price is separate from the plan-row price and stays under the monthly cap. It does not record a probe charge. Observation thresholds are unchanged.
 - Store: official fingerprint baselines can be saved and read back locally
   (upsert, get, and list). A baseline past its 30-day expiry is unavailable.
   This does not collect samples or change observation thresholds.

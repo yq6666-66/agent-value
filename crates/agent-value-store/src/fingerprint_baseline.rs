@@ -362,13 +362,21 @@ fn prepare(write: &FingerprintBaselineWrite) -> StoreResult<Prepared> {
         })?;
     let sampling_hash = sha256_hex(identity.sampling_config.as_bytes());
     let baseline_key = hash_identity(&identity, &sampling_hash);
+    let distribution_json = encode_distribution(&distribution);
+    if distribution_json.len() > MAX_DISTRIBUTION_BYTES {
+        return Err(CoreError::InvalidField {
+            field: "distribution",
+            reason: "is larger than the store allows",
+        }
+        .into());
+    }
     Ok(Prepared {
         identity,
         baseline_key,
         sampling_hash,
         collected_at_ms: write.collected_at_ms,
         expires_at_ms,
-        distribution_json: encode_distribution(&distribution),
+        distribution_json,
     })
 }
 
@@ -998,6 +1006,140 @@ mod tests {
             run1: vec![question("red"); QUESTIONS],
             run2: vec![question("blue"); QUESTIONS],
         }
+    }
+
+    #[test]
+    fn distribution_at_the_byte_cap_round_trips_and_one_extra_byte_is_refused() {
+        let (under, over) = distributions_around_the_byte_cap();
+        assert!(encode_distribution(&under).len() <= MAX_DISTRIBUTION_BYTES);
+        assert!(encode_distribution(&over).len() > MAX_DISTRIBUTION_BYTES);
+        assert!(under.run2[0].answers[0].answer.starts_with('你'));
+
+        let clock = FixedClock::new(1_700_000_000_000);
+        let store = crate::Store::open_in_memory_with_clock(test_digest_key(), clock).unwrap();
+        let mut under_write = test_write(under);
+        under_write.identity.model_revision = "under".into();
+        assert_eq!(
+            store.upsert_fingerprint_baseline(&under_write).unwrap(),
+            crate::FingerprintBaselineUpsert::Inserted
+        );
+        let got = store
+            .get_fingerprint_baseline(&under_write.identity)
+            .unwrap()
+            .expect("a row at the byte cap stays readable");
+        assert_eq!(got.distribution, under_write.distribution);
+
+        let mut over_write = test_write(over);
+        over_write.identity.model_revision = "over".into();
+        let err = store.upsert_fingerprint_baseline(&over_write).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::StoreError::Core(CoreError::InvalidField {
+                field: "distribution",
+                ..
+            })
+        ));
+        assert!(!format!("{err} {err:?}").contains('你'));
+        assert!(store
+            .get_fingerprint_baseline(&over_write.identity)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_fingerprint_baseline(&under_write.identity)
+            .unwrap()
+            .is_some());
+    }
+
+    fn test_digest_key() -> crate::DigestKey {
+        crate::DigestKey::from_bytes(b"test-only-digest-key-aaaaaaaaaaaa").unwrap()
+    }
+
+    fn test_write(distribution: FingerprintDistribution) -> FingerprintBaselineWrite {
+        FingerprintBaselineWrite {
+            identity: FingerprintBaselineIdentity {
+                provider: "example-provider".into(),
+                model_id: "example-model".into(),
+                model_revision: String::new(),
+                protocol: "anthropic-messages".into(),
+                connection_kind: "official-direct".into(),
+                task_set_version: "probe-set-1".into(),
+                system_prompt_hash: sha256_hex(b"prompt"),
+                sampling_config: "temperature=1".into(),
+                distribution_schema_version: DISTRIBUTION_SCHEMA_VERSION,
+            },
+            collected_at_ms: 1_700_000_000_000,
+            distribution,
+        }
+    }
+
+    /// Largest valid distribution at or under the byte cap, and the next
+    /// larger one. One answer starts with a multibyte character and grows by
+    /// a single ASCII byte, so the step across the cap is one byte when the
+    /// answer still has room.
+    fn distributions_around_the_byte_cap() -> (FingerprintDistribution, FingerprintDistribution) {
+        fn sized(per_question: usize, vary_len: usize) -> FingerprintDistribution {
+            let one_run = |vary: bool| {
+                let mut run = Vec::with_capacity(QUESTIONS);
+                for q in 0..QUESTIONS {
+                    let mut answers = Vec::with_capacity(per_question);
+                    for a in 0..per_question {
+                        let varying = vary && q == 0 && a == 0;
+                        let len = if varying { vary_len } else { 200 };
+                        let tag = if q == 0 && a == 0 {
+                            "你".to_string()
+                        } else {
+                            format!("q{q}a{a}")
+                        };
+                        let mut answer = tag;
+                        answer.extend(std::iter::repeat_n('b', len - answer.chars().count()));
+                        answers.push(AnswerCount { answer, count: 1 });
+                    }
+                    run.push(QuestionAnswers { answers });
+                }
+                run
+            };
+            FingerprintDistribution {
+                run1: one_run(true),
+                run2: one_run(false),
+            }
+        }
+
+        let size =
+            |per_question, vary_len| encode_distribution(&sized(per_question, vary_len)).len();
+        let mut per_lo = 1;
+        let mut per_hi = MAX_ANSWERS;
+        while per_lo < per_hi {
+            let mid = (per_lo + per_hi).div_ceil(2);
+            if size(mid, 1) <= MAX_DISTRIBUTION_BYTES {
+                per_lo = mid;
+            } else {
+                per_hi = mid - 1;
+            }
+        }
+        let mut len_lo = 1;
+        let mut len_hi = MAX_ANSWER_CHARS;
+        while len_lo < len_hi {
+            let mid = (len_lo + len_hi).div_ceil(2);
+            if size(per_lo, mid) <= MAX_DISTRIBUTION_BYTES {
+                len_lo = mid;
+            } else {
+                len_hi = mid - 1;
+            }
+        }
+        let under = sized(per_lo, len_lo);
+        let over = if len_lo < MAX_ANSWER_CHARS {
+            let over = sized(per_lo, len_lo + 1);
+            assert_eq!(
+                encode_distribution(&over).len(),
+                encode_distribution(&under).len() + 1
+            );
+            over
+        } else if per_lo < MAX_ANSWERS {
+            sized(per_lo + 1, 1)
+        } else {
+            panic!("every valid distribution fits the byte cap");
+        };
+        (under, over)
     }
 
     #[test]

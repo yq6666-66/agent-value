@@ -245,6 +245,75 @@ fn older_upsert_does_not_overwrite() {
 }
 
 #[test]
+fn oversize_distribution_is_refused_or_round_trips() {
+    let (store, _) = open_at(COLLECTED);
+    let answer = "答案".repeat(40);
+    assert!(answer.len() > answer.chars().count());
+    let small = write_at(COLLECTED, &answer);
+    assert_eq!(
+        store.upsert_fingerprint_baseline(&small).unwrap(),
+        FingerprintBaselineUpsert::Inserted
+    );
+    let got = store
+        .get_fingerprint_baseline(&small.identity)
+        .unwrap()
+        .expect("multibyte answer under the cap");
+    assert_eq!(got.distribution, small.distribution);
+
+    let mut worst = write_at(COLLECTED, "x");
+    worst.identity.model_revision = "worst".into();
+    let answers: Vec<AnswerCount> = (0..64)
+        .map(|i| {
+            let prefix = format!("{i:02}");
+            let pad = 200 - prefix.chars().count();
+            AnswerCount {
+                answer: format!("{prefix}{}", "你".repeat(pad)),
+                count: 1,
+            }
+        })
+        .collect();
+    for run in [&mut worst.distribution.run1, &mut worst.distribution.run2] {
+        for question in run {
+            question.answers = answers.clone();
+        }
+    }
+    match store.upsert_fingerprint_baseline(&worst) {
+        Err(StoreError::Core(CoreError::InvalidField {
+            field: "distribution",
+            ..
+        })) => {
+            assert!(store
+                .get_fingerprint_baseline(&worst.identity)
+                .unwrap()
+                .is_none());
+            assert_eq!(baseline_rows(&store), 1);
+            let kept = store
+                .get_fingerprint_baseline(&small.identity)
+                .unwrap()
+                .unwrap();
+            assert_eq!(kept.distribution.run1[0].answers[0].answer, answer);
+        }
+        Ok(_) => {
+            let got = store
+                .get_fingerprint_baseline(&worst.identity)
+                .unwrap()
+                .expect("a stored distribution must stay readable");
+            assert_eq!(got.distribution, worst.distribution);
+        }
+        Err(other) => panic!("unexpected error: {other}"),
+    }
+}
+
+fn baseline_rows(store: &Store) -> i64 {
+    store
+        .raw_connection()
+        .query_row("SELECT COUNT(*) FROM fingerprint_baselines", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+#[test]
 fn empty_and_invalid_fields_are_refused() {
     let (store, _) = open_at(COLLECTED);
     let mut bad = write_at(COLLECTED, "red");
@@ -341,9 +410,6 @@ fn sentinel_secret_never_appears_in_db_debug_or_errors() {
         |w: &mut FingerprintBaselineWrite, s: &str| w.identity.task_set_version = s.into(),
         |w: &mut FingerprintBaselineWrite, s: &str| w.identity.sampling_config = s.into(),
         |w: &mut FingerprintBaselineWrite, s: &str| w.identity.system_prompt_hash = s.into(),
-        |w: &mut FingerprintBaselineWrite, s: &str| {
-            w.distribution.run1[0].answers[0].answer = s.into();
-        },
     ];
     for set in plant {
         let mut bad = good.clone();
@@ -352,6 +418,18 @@ fn sentinel_secret_never_appears_in_db_debug_or_errors() {
         let rendered = format!("{err} {err:?} {:?}", store);
         assert!(!rendered.contains(&sentinel), "{err}");
     }
+    let mut secret_answer = good.clone();
+    secret_answer.distribution.run1[0].answers[0].answer = sentinel.clone();
+    let err = store
+        .upsert_fingerprint_baseline(&secret_answer)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        StoreError::Core(CoreError::LooksLikeSecret {
+            field: "fingerprint baseline",
+        })
+    ));
+    assert!(!format!("{err} {err:?}").contains(&sentinel));
     assert_eq!(
         store.upsert_fingerprint_baseline(&good).unwrap(),
         FingerprintBaselineUpsert::Inserted
@@ -401,6 +479,7 @@ fn migrates_v3_fixture_without_changing_earlier_tables() {
         "probe_charges",
         "outcome_judgements",
     ] {
+        assert!(before.contains_key(name), "{name}");
         assert_eq!(
             after.get(name).map(String::as_str),
             before.get(name).map(String::as_str),

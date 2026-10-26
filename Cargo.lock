@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "agent-value-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "agent-value-probe-http"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agent-value-core",
  "serde",
@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "agent-value-probe-run"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agent-value-core",
  "agent-value-probe-http",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-value-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agent-value-core",
  "hmac",

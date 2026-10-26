@@ -395,8 +395,10 @@ fn schema_has_no_column_for_secrets_or_text() {
             "body",
             "text",
         ];
-        // Reviewed exceptions: an env var NAME, and a hash of config content.
-        let allowed = ["key_env_var", "content_sha256"];
+        // Reviewed exceptions: an env var NAME, a hash of config content,
+        // and the fingerprint baseline's system-prompt hash (the prompt
+        // text is not stored).
+        let allowed = ["key_env_var", "content_sha256", "system_prompt_hash"];
         assert!(
             !forbidden.iter().any(|f| c.contains(f)) || allowed.contains(&c.as_str()),
             "{t}.{c} looks like it could hold a secret or raw text"

@@ -1,13 +1,15 @@
 //! agent-value-store: local SQLite storage for agent-value (v22 §8).
 //!
 //! Stores route metadata per request, tasks, behaviour events with their
-//! available-arm snapshots, probe results, frozen cell weights, weight
-//! versions with frozen windows, and other versioned configuration.
+//! available-arm snapshots, probe results, official fingerprint baselines,
+//! frozen cell weights, weight versions with frozen windows, and other
+//! versioned configuration.
 //!
 //! Privacy (§8): everything stays in one local file. No prompt or code text
 //! is stored, only a category, a length and a keyed digest; API key values
-//! have no column at all (only the env var name); task-level data is purged
-//! after 180 days; export and delete-all are provided.
+//! have no column at all (only the env var name); fingerprint baselines
+//! store answer counts, not a key; task-level data is purged after 180
+//! days; export and delete-all are provided.
 //!
 //! A [`Store`] owns one SQLite connection. It is `Send` but not `Sync`; a
 //! multi-threaded caller (the desktop shell) wraps it in a `Mutex`.
@@ -16,6 +18,7 @@
 
 mod digest;
 mod error;
+mod fingerprint_baseline;
 mod schema;
 
 use std::path::Path;
@@ -41,6 +44,12 @@ use agent_value_core::CoreError;
 
 pub use digest::{sha256_hex, DigestKey, MIN_DIGEST_KEY_BYTES};
 pub use error::{StoreError, StoreResult};
+pub use fingerprint_baseline::{
+    AnswerCount, Clock, FingerprintBaselineIdentity, FingerprintBaselineRecord,
+    FingerprintBaselineSummary, FingerprintBaselineUpsert, FingerprintBaselineWrite,
+    FingerprintDistribution, FixedClock, QuestionAnswers, SystemClock, DISTRIBUTION_SCHEMA_VERSION,
+    FINGERPRINT_BASELINE_TTL_MS,
+};
 
 /// One stored outcome judgement.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +160,7 @@ pub struct ExportDump {
 pub struct Store {
     conn: Connection,
     digest_key: DigestKey,
+    clock: Box<dyn Clock>,
 }
 
 impl std::fmt::Debug for Store {
@@ -180,18 +190,40 @@ fn latest_label(conn: &Connection, kind: ConfigKind, scope: &str) -> StoreResult
 
 impl Store {
     /// Opens (creating if needed) a database file and migrates it.
+    /// Expiry checks use the UTC wall clock.
     pub fn open(path: &Path, digest_key: DigestKey) -> StoreResult<Self> {
+        Self::open_with_clock(path, digest_key, SystemClock)
+    }
+
+    /// [`Store::open`] with a caller-supplied clock. Tests use [`FixedClock`].
+    pub fn open_with_clock(
+        path: &Path,
+        digest_key: DigestKey,
+        clock: impl Clock + 'static,
+    ) -> StoreResult<Self> {
         let conn = Connection::open(path)?;
         conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
-        Self::init(conn, digest_key)
+        Self::init(conn, digest_key, Box::new(clock))
     }
 
     /// An in-memory database (for tests and previews).
     pub fn open_in_memory(digest_key: DigestKey) -> StoreResult<Self> {
-        Self::init(Connection::open_in_memory()?, digest_key)
+        Self::open_in_memory_with_clock(digest_key, SystemClock)
     }
 
-    fn init(mut conn: Connection, digest_key: DigestKey) -> StoreResult<Self> {
+    /// [`Store::open_in_memory`] with a caller-supplied clock.
+    pub fn open_in_memory_with_clock(
+        digest_key: DigestKey,
+        clock: impl Clock + 'static,
+    ) -> StoreResult<Self> {
+        Self::init(Connection::open_in_memory()?, digest_key, Box::new(clock))
+    }
+
+    fn init(
+        mut conn: Connection,
+        digest_key: DigestKey,
+        clock: Box<dyn Clock>,
+    ) -> StoreResult<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         conn.pragma_update(None, "secure_delete", true)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -208,7 +240,11 @@ impl Store {
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
-        Ok(Self { conn, digest_key })
+        Ok(Self {
+            conn,
+            digest_key,
+            clock,
+        })
     }
 
     /// The schema version of the open database.
@@ -741,6 +777,48 @@ impl Store {
             .query_map([arm.0], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
         Ok(v)
+    }
+
+    // ---- fingerprint baselines ----
+
+    /// Saves an official fingerprint baseline.
+    ///
+    /// The row is keyed by a hash of provider, model id, model revision
+    /// (empty when unknown), protocol, connection kind, task-set version,
+    /// system-prompt hash, the hash of the full sampling config, and the
+    /// distribution schema version. A later write replaces the row only when
+    /// its `collected_at_ms` is greater than or equal to the stored one.
+    /// This does not send a request and does not change probe thresholds.
+    pub fn upsert_fingerprint_baseline(
+        &self,
+        write: &FingerprintBaselineWrite,
+    ) -> StoreResult<FingerprintBaselineUpsert> {
+        fingerprint_baseline::upsert(&self.conn, write)
+    }
+
+    /// The baseline for `identity` when it is still within its 30-day
+    /// lifetime at the store clock. Missing and expired are both `Ok(None)`.
+    /// Exactly `expires_at_ms` is still returned; one millisecond later is not.
+    pub fn get_fingerprint_baseline(
+        &self,
+        identity: &FingerprintBaselineIdentity,
+    ) -> StoreResult<Option<FingerprintBaselineRecord>> {
+        fingerprint_baseline::get(&self.conn, self.clock.now_ms(), identity)
+    }
+
+    /// Summaries ordered by baseline key. Expired rows are omitted unless
+    /// `include_expired` is set. Summaries do not include the distribution.
+    pub fn list_fingerprint_baselines(
+        &self,
+        include_expired: bool,
+    ) -> StoreResult<Vec<FingerprintBaselineSummary>> {
+        fingerprint_baseline::list(&self.conn, self.clock.now_ms(), include_expired)
+    }
+
+    /// Deletes baselines whose expiry is strictly before the store clock.
+    /// Nothing else calls this.
+    pub fn prune_expired_fingerprint_baselines(&self) -> StoreResult<usize> {
+        fingerprint_baseline::prune(&self.conn, self.clock.now_ms())
     }
 
     // ---- cell weights ----

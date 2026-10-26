@@ -20,6 +20,8 @@ src-tauri/gen/
 *.sqlite
 *.sqlite3
 *.db
+# Checked-in schema fixture for the store migration test (no user data).
+!crates/agent-value-store/tests/fixtures/schema-v3.sqlite
 
 # Editors / OS
 .DS_Store

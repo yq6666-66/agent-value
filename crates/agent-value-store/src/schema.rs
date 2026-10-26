@@ -6,7 +6,7 @@
 pub(crate) const PROBE_CELL_SQL: &str = "__probe__";
 
 /// Migration `i` brings the schema from version `i` to `i + 1`.
-pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3];
+pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE arms (
@@ -209,6 +209,7 @@ pub(crate) const TABLES: &[&str] = &[
     "probe_results",
     "probe_consent",
     "probe_charges",
+    "fingerprint_baselines",
     "cell_weights",
     "weight_versions",
     "weight_evidence",
@@ -256,4 +257,29 @@ CREATE TABLE probe_charges (
     charged_micro_yuan   INTEGER NOT NULL CHECK (charged_micro_yuan >= 0)
 );
 CREATE INDEX probe_charges_time ON probe_charges (at_ms);
+"#;
+
+/// Official fingerprint baselines. New table only: earlier tables are not
+/// altered. `baseline_key` is a content hash, not an API key. Re-running
+/// this batch is safe (`IF NOT EXISTS`).
+const MIGRATION_4: &str = r#"
+CREATE TABLE IF NOT EXISTS fingerprint_baselines (
+    baseline_key TEXT PRIMARY KEY CHECK (length(baseline_key) = 64),
+    provider TEXT NOT NULL CHECK (length(provider) > 0),
+    model_id TEXT NOT NULL CHECK (length(model_id) > 0),
+    model_revision TEXT NOT NULL,
+    protocol TEXT NOT NULL CHECK (length(protocol) > 0),
+    connection_kind TEXT NOT NULL CHECK (length(connection_kind) > 0),
+    task_set_version TEXT NOT NULL CHECK (length(task_set_version) > 0),
+    system_prompt_hash TEXT NOT NULL CHECK (length(system_prompt_hash) = 64),
+    sampling_hash TEXT NOT NULL CHECK (length(sampling_hash) = 64),
+    sampling_config TEXT NOT NULL CHECK (length(sampling_config) > 0),
+    distribution_schema_version INTEGER NOT NULL CHECK (distribution_schema_version = 1),
+    collected_at_ms INTEGER NOT NULL CHECK (collected_at_ms >= 0),
+    expires_at_ms INTEGER NOT NULL,
+    distribution_json TEXT NOT NULL,
+    CHECK (expires_at_ms = collected_at_ms + 2592000000)
+);
+CREATE INDEX IF NOT EXISTS fingerprint_baselines_expires_at
+    ON fingerprint_baselines (expires_at_ms);
 "#;

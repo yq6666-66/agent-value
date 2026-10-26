@@ -8,6 +8,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.3.0] - 2026-10-26
+
+### Added
+
 - Library: `collect_fingerprint_baseline` collects an official-direct fingerprint baseline over HTTP and upserts it into the local fingerprint baseline store. Tests use a mock server. Its provisional per-request price is separate from the plan-row price and stays under the monthly cap. It does not record a probe charge. Observation thresholds are unchanged.
 - Store: official fingerprint baselines can be saved and read back locally
   (upsert, get, and list). A baseline past its 30-day expiry is unavailable.
@@ -92,10 +100,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   followed, so a 3xx kind can differ from the Python runner. The probe
   panel still does not send. The Python runner remains the command-line
   tool.
-
-### Changed
-
-### Fixed
 
 ## [0.2.0] - 2026-10-23
 

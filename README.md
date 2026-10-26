@@ -1,3 +1,4 @@
+
 # agent-value
 
 English | [简体中文](README.zh-CN.md)
@@ -8,7 +9,7 @@ The scoring rules follow a written specification (v22) plus a decision record fo
 
 ## Status
 
-A Tauri desktop app can be built and run locally from source. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent it can run one probe by hand. You can also enable an in-app re-run; that schedule stays off until you enable it, waits one provisional interval before the first send, and stops when the app exits. Opening the app does not send a probe. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only. The probe-run library can collect an official-direct fingerprint baseline over HTTP and store it locally; tests use a mock server, and observation-period thresholds are unchanged. The desktop app stores its data locally. You can list and add arms, see the database path, export, and delete all rows; the window-results view shows a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
+A Tauri desktop app can be built and run locally from source; no packaged installer is provided. It scores coding-scope windows from the local store through the core library, and shows frontier, eligibility, recommendation, authenticity sources, and weight sources. You can run a five-level self-report wizard, open a sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent it can run one probe by hand. You can also enable an in-app re-run; that schedule stays off until you enable it, waits one provisional interval before the first send, and stops when the app exits. While the schedule is on, the probe panel shows the next planned time and reflects a monthly budget stop. Opening the app does not send a probe. Observation-period grade thresholds are not calibrated; until the observation period is complete, grade bands are reference-only and shown with authenticity undetermined. The probe-run library can collect an official-direct fingerprint baseline over HTTP and store it locally; tests use a mock server, and observation-period thresholds are unchanged. The desktop app stores its data locally. You can list and add arms, see the database path, export, and delete all rows; the window-results view shows a resizable frontier beside a weight panel; in a first window the panel shows the first-window label and does not show V.
 
 | Spec step | What it covers | Status |
 |---|---|---|
@@ -671,7 +672,7 @@ These parts of the specification are not implemented:
 
 ### For users
 
-The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent, when a run is ready, it can manually run one probe. You can enable an in-app re-run (provisional 24-hour interval); enabling does not send, and the schedule stops when the app exits. It does not run a probe when the window opens. Grade bands stay reference-only while the observation period is pending. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
+The local Tauri desktop app can list and add arms, show coding-scope window results (frontier, eligibility, recommendation, authenticity sources, and weight sources), run the five-level self-report wizard, open the sensitivity panel, record probe consent, and display previously recorded or replayed probe results. After consent, when a run is ready, it can manually run one probe. You can enable an in-app re-run (provisional 24-hour interval); enabling does not send, and the schedule stops when the app exits. It does not run a probe when the window opens. Grade bands stay reference-only while the observation period is pending, with authenticity undetermined. The desktop app stores its data locally. No packaged installer is provided; build from source to run it (see below).
 
 ### For developers
 

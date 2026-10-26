@@ -396,9 +396,14 @@ fn schema_has_no_column_for_secrets_or_text() {
             "text",
         ];
         // Reviewed exceptions: an env var NAME, a hash of config content,
-        // and the fingerprint baseline's system-prompt hash (the prompt
-        // text is not stored).
-        let allowed = ["key_env_var", "content_sha256", "system_prompt_hash"];
+        // the fingerprint baseline's system-prompt hash (the prompt text
+        // is not stored), and the sha256 of a stored baseline distribution.
+        let allowed = [
+            "key_env_var",
+            "content_sha256",
+            "system_prompt_hash",
+            "baseline_content_sha256",
+        ];
         assert!(
             !forbidden.iter().any(|f| c.contains(f)) || allowed.contains(&c.as_str()),
             "{t}.{c} looks like it could hold a secret or raw text"
@@ -459,14 +464,15 @@ fn probe_results_use_beijing_run_days_one_per_day() {
         ..base.clone()
     };
     s.insert_probe_result(&next).unwrap();
-    // A second result on the same run day for the same probe set is refused.
+    // A second result on the same run day for the same probe set is refused
+    // by the audit insert guard (it sees the existing unique key).
     let dup = ProbeResult {
         at_ms: base.at_ms + 60_000,
         ..base.clone()
     };
     assert!(matches!(
         s.insert_probe_result(&dup),
-        Err(StoreError::Sqlite(_))
+        Err(StoreError::Conflict("replace is forbidden"))
     ));
     let id = s.upsert_arm(&relay()).unwrap();
     assert_eq!(
@@ -700,8 +706,9 @@ fn purge_removes_data_older_than_180_days_and_keeps_versions() {
     let c = s.purge_older_than(NOW).unwrap();
     assert_eq!(
         (c.requests, c.tasks, c.behavior_events, c.probe_results),
-        (2, 1, 1, 1)
+        (2, 1, 1, 0)
     );
+    assert_eq!(s.list_probe_results().unwrap().len(), 1);
     assert_eq!(s.purge_older_than(NOW).unwrap(), Default::default());
     assert_eq!(s.user_task_count_before(&coding(), NOW).unwrap(), 1);
     assert!(s.event_available_arms("e-old").unwrap().is_empty());

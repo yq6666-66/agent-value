@@ -101,7 +101,7 @@ fn master_sql(store: &Store) -> BTreeMap<String, String> {
 
 #[test]
 fn fingerprint_baseline_round_trip() {
-    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(SCHEMA_VERSION, 5);
     assert_eq!(DISTRIBUTION_SCHEMA_VERSION, 1);
     let (store, _) = open_at(COLLECTED);
     let write = write_at(COLLECTED, "marker-answer");
@@ -474,7 +474,6 @@ fn migrates_v3_fixture_without_changing_earlier_tables() {
         "requests",
         "behavior_events",
         "event_available_arms",
-        "probe_results",
         "probe_consent",
         "probe_charges",
         "outcome_judgements",
@@ -487,6 +486,13 @@ fn migrates_v3_fixture_without_changing_earlier_tables() {
         );
     }
     assert!(after.contains_key("fingerprint_baselines"));
+    let probe_sql = after.get("probe_results").map(String::as_str).unwrap();
+    assert!(probe_sql.contains("baseline_key"));
+    assert!(probe_sql.contains("baseline_content_sha256"));
+    assert_ne!(
+        after.get("probe_results").map(String::as_str),
+        before.get("probe_results").map(String::as_str)
+    );
     let model: String = store
         .raw_connection()
         .query_row("SELECT model FROM arms", [], |r| r.get(0))
@@ -501,7 +507,7 @@ fn migrates_v3_fixture_without_changing_earlier_tables() {
     let clock = FixedClock::new(COLLECTED);
     drop(store);
     let store = Store::open_with_clock(&db, digest_key(), clock).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 4);
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert_eq!(
         store.upsert_fingerprint_baseline(&stored).unwrap(),
         FingerprintBaselineUpsert::Inserted
@@ -512,7 +518,7 @@ fn migrates_v3_fixture_without_changing_earlier_tables() {
         .is_some());
     drop(store);
     let store = Store::open(&db, digest_key()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 4);
+    assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
     assert_eq!(
         store
             .raw_connection()

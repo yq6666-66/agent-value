@@ -2,8 +2,8 @@
 //!
 //! Stores route metadata per request, tasks, behaviour events with their
 //! available-arm snapshots, probe results, official fingerprint baselines,
-//! frozen cell weights, weight versions with frozen windows, and other
-//! versioned configuration.
+//! observation-period windows, frozen cell weights, weight versions with
+//! frozen windows, and other versioned configuration.
 //!
 //! Privacy (§8): everything stays in one local file. No prompt or code text
 //! is stored, only a category, a length and a keyed digest; API key values
@@ -19,6 +19,7 @@
 mod digest;
 mod error;
 mod fingerprint_baseline;
+mod observation;
 mod schema;
 
 use std::path::Path;
@@ -49,6 +50,10 @@ pub use fingerprint_baseline::{
     FingerprintBaselineSummary, FingerprintBaselineUpsert, FingerprintBaselineWrite,
     FingerprintDistribution, FixedClock, QuestionAnswers, SystemClock, DISTRIBUTION_SCHEMA_VERSION,
     FINGERPRINT_BASELINE_TTL_MS,
+};
+pub use observation::{
+    ControlAction, ControlRole, ObservationAuditReport, ObservationControl, ObservationWindowRow,
+    ObservationWindowStatus, RegisterObservationWindow,
 };
 
 /// One stored outcome judgement.
@@ -132,6 +137,9 @@ pub struct UserTaskRow {
 }
 
 /// Rows removed by [`Store::purge_older_than`].
+///
+/// `probe_results` stays zero: those rows are an observation audit trail
+/// and are not deleted by the retention purge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PurgeCounts {
     pub requests: usize,
@@ -226,6 +234,8 @@ impl Store {
     ) -> StoreResult<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         conn.pragma_update(None, "secure_delete", true)?;
+        // Nested audit triggers (window insert consumes an intent) must run.
+        conn.pragma_update(None, "recursive_triggers", true)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version > SCHEMA_VERSION {
@@ -240,6 +250,7 @@ impl Store {
             tx.pragma_update(None, "user_version", (i + 1) as i64)?;
             tx.commit()?;
         }
+        conn.execute_batch(schema::OBS_CLOCK_TRIGGERS)?;
         Ok(Self {
             conn,
             digest_key,
@@ -656,8 +667,15 @@ impl Store {
     // ---- probes ----
 
     /// Stores a probe result. One result per (probe, version, arm, run day).
+    ///
+    /// Fingerprint rows record the active baseline's key and content hash.
+    /// The caller does not supply those fields. A row that falls in an ended
+    /// observation window is rejected. A row that matches no window is kept,
+    /// so ordinary daily probes still record.
     pub fn insert_probe_result(&self, p: &ProbeResult) -> StoreResult<()> {
-        insert_probe_result_on(&self.conn, p)
+        observation::with_obs_immediate(&self.conn, self.clock.now_ms(), |conn| {
+            insert_probe_result_on(conn, p)
+        })
     }
 
     /// Stores every class result of one probe run and the charge for that
@@ -673,13 +691,13 @@ impl Store {
         if results.is_empty() {
             return Err(StoreError::Conflict("probe run has no results"));
         }
-        let tx = self.conn.unchecked_transaction()?;
-        for result in results {
-            insert_probe_result_on(&tx, result)?;
-        }
-        record_probe_charge_on(&tx, at_ms, charged)?;
-        tx.commit()?;
-        Ok(())
+        observation::with_obs_immediate(&self.conn, self.clock.now_ms(), |conn| {
+            for result in results {
+                insert_probe_result_on(conn, result)?;
+            }
+            record_probe_charge_on(conn, at_ms, charged)?;
+            Ok(())
+        })
     }
 
     /// Every stored probe result, ordered by arm, time, then id.
@@ -1113,9 +1131,10 @@ impl Store {
     // ---- retention, export, delete ----
 
     /// Deletes task-level data older than the 180-day retention period
-    /// (§8): requests, tasks (with their requests), behaviour events (with
-    /// their snapshots) and probe results. Versions, frozen windows and
-    /// arms are kept as the audit trail. Idempotent.
+    /// (§8): requests, tasks (with their requests) and behaviour events
+    /// (with their snapshots). Probe results stay: they are part of the
+    /// observation audit trail and DELETE on that table is aborted.
+    /// Versions, frozen windows and arms are kept. Idempotent.
     pub fn purge_older_than(&mut self, now_ms: i64) -> StoreResult<PurgeCounts> {
         let cutoff = now_ms
             .checked_sub(i64::from(RETENTION_DAYS) * MS_PER_DAY)
@@ -1127,13 +1146,12 @@ impl Store {
         let tasks = tx.execute("DELETE FROM tasks WHERE submitted_ms < ?1", [cutoff])?;
         let behavior_events =
             tx.execute("DELETE FROM behavior_events WHERE at_ms < ?1", [cutoff])?;
-        let probe_results = tx.execute("DELETE FROM probe_results WHERE at_ms < ?1", [cutoff])?;
         tx.commit()?;
         Ok(PurgeCounts {
             requests,
             tasks,
             behavior_events,
-            probe_results,
+            probe_results: 0,
         })
     }
 
@@ -1178,9 +1196,13 @@ impl Store {
     /// also on). The schema stays in place.
     pub fn delete_all(&mut self) -> StoreResult<()> {
         let tx = self.conn.transaction()?;
+        // Audit DELETE triggers block a selective rewrite. A full wipe drops
+        // them for this transaction, deletes every row, and restores them.
+        let audit_deletes = observation::drop_audit_delete_triggers(&tx)?;
         for name in schema::TABLES.iter().rev() {
             tx.execute(&format!("DELETE FROM {name}"), [])?;
         }
+        observation::restore_audit_delete_triggers(&tx, &audit_deletes)?;
         tx.commit()?;
         self.checkpoint()?;
         self.conn.execute_batch("VACUUM")?;
@@ -1208,10 +1230,21 @@ fn count(conn: &Connection, sql: &str) -> StoreResult<u64> {
 fn insert_probe_result_on(conn: &Connection, p: &ProbeResult) -> StoreResult<()> {
     p.validate()?;
     let arm_id = upsert_arm(conn, &p.arm)?;
+    let now_ms: i64 = conn
+        .query_row("SELECT ms FROM temp.obs_txn_now", [], |row| row.get(0))
+        .map_err(observation::map_sql)?;
+    let (baseline_key, baseline_content) = if p.class == ProbeClass::Fingerprint {
+        match fingerprint_baseline::active_baseline_fields(conn, now_ms)? {
+            Some((key, content)) => (Some(key), Some(content)),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
     conn.execute(
         "INSERT INTO probe_results (probe_id, probe_version, arm_id, run_day, at_ms, class,
-            verdict, hard_failure, evidence_summary)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            verdict, hard_failure, evidence_summary, baseline_key, baseline_content_sha256)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             p.probe_id,
             p.probe_version,
@@ -1222,8 +1255,11 @@ fn insert_probe_result_on(conn: &Connection, p: &ProbeResult) -> StoreResult<()>
             p.verdict.as_str(),
             p.hard_failure,
             p.evidence_summary,
+            baseline_key,
+            baseline_content,
         ],
-    )?;
+    )
+    .map_err(observation::map_sql)?;
     Ok(())
 }
 
@@ -1442,5 +1478,33 @@ mod tests {
         let mut want: Vec<String> = schema::TABLES.iter().map(|s| s.to_string()).collect();
         want.sort();
         assert_eq!(names, want);
+    }
+
+    #[test]
+    fn observation_migration_pins_thresholds_and_consume_shape() {
+        use agent_value_core::authenticity::OBSERVATION_RUN_DAYS;
+        use agent_value_core::constants::{DETERMINISTIC_PASS_MIN, FINGERPRINT_PASS_MIN};
+        use agent_value_core::probe::{DETERMINISTIC_FAIL_MAX, FINGERPRINT_FAIL_MAX};
+        assert_eq!(OBSERVATION_RUN_DAYS, 2);
+        assert_eq!(
+            (
+                DETERMINISTIC_PASS_MIN,
+                DETERMINISTIC_FAIL_MAX,
+                FINGERPRINT_PASS_MIN,
+                FINGERPRINT_FAIL_MAX
+            ),
+            (9, 7, 8, 5)
+        );
+        let sql = schema::MIGRATIONS[4];
+        assert!(sql.contains("det_pass_min = 9"));
+        assert!(sql.contains("det_fail_max = 7"));
+        assert!(sql.contains("fp_pass_min = 8"));
+        assert!(sql.contains("fp_fail_max = 5"));
+        assert!(sql.contains("observation_run_days = 2"));
+        assert!(sql.contains("BEFORE UPDATE ON observation_window_intents"));
+        assert!(!sql.contains("UPDATE OF consumed"));
+        assert!(schema::OBS_CLOCK_TRIGGERS.contains("changes() <> 1"));
+        assert!(schema::OBS_CLOCK_TRIGGERS.contains("temp.obs_txn_now"));
+        assert!(schema::MIGRATIONS[4].contains("audit_nodelete_probe_results"));
     }
 }

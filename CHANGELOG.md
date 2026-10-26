@@ -8,6 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Docs: OPS-OBS observation-period runbook
+  (`docs/ops-obs-runbook.md`). Operators preregister two consecutive
+  Beijing days, run the official-direct arm and the smaller-model arm
+  by hand, then audit with the existing observation store API.
+  `DET_*`, `FP_*`, τ_JS, `OBSERVATION_RUN_DAYS` (2), and Frequency are
+  unchanged. A3 stays off this change. This does not tag a release and
+  does not start a live observation run.
 - Store: an auditable observation-period layer. A window is two
   consecutive Beijing days, preregistered before that start midnight.
   An intent row can be updated only to set `consumed` from 0 to 1.

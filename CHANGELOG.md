@@ -7,6 +7,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Store: official fingerprint baselines can be saved and read back locally
+  (upsert, get, and list). A baseline past its 30-day expiry is unavailable.
+  This does not collect samples or change observation thresholds.
 - Desktop: optional in-app probe re-run. `PROBE_SCHEDULE_INTERVAL_MS` is
   24 hours and is provisional (暂定). It is not an observation-period
   threshold. The schedule is one thread in this process. It is not an

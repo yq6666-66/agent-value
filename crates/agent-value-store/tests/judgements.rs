@@ -37,10 +37,10 @@ fn store_with_task(id: &str) -> Store {
 }
 
 #[test]
-fn schema_is_at_version_three() {
-    assert_eq!(SCHEMA_VERSION, 3);
+fn schema_is_at_version_four() {
+    assert_eq!(SCHEMA_VERSION, 4);
     let s = store_with_task("t1");
-    assert_eq!(s.schema_version().unwrap(), 3);
+    assert_eq!(s.schema_version().unwrap(), 4);
 }
 
 #[test]

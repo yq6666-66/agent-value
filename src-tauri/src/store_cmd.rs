@@ -337,7 +337,10 @@ mod tests {
         for table in json["tables"].as_array().unwrap() {
             for column in table["columns"].as_array().unwrap() {
                 let name = column.as_str().unwrap().to_lowercase();
-                let allowed = name == "key_env_var" || name == "content_sha256";
+                // Hash columns only. Prompt text is not stored.
+                let allowed = name == "key_env_var"
+                    || name == "content_sha256"
+                    || name == "system_prompt_hash";
                 let forbidden = ["secret", "api_key", "password", "prompt", "body"]
                     .iter()
                     .any(|needle| name.contains(needle));

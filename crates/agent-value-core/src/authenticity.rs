@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::arm::Arm;
+use crate::arm::{Arm, ModelId, Protocol, ProviderKind, Route};
 use crate::constants::PROBE_MONTHLY_BUDGET_YUAN;
 use crate::eligibility::AuthenticityGrade;
 use crate::error::{CoreError, Result};
@@ -243,6 +243,264 @@ pub fn observation(
     } else {
         Observation::Pending
     }
+}
+
+/// Which arm of an observation window a day predicate is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservationArmRole {
+    Positive,
+    Negative,
+}
+
+/// Probe id and version frozen onto one observation window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationProbeRef {
+    pub probe_id: String,
+    pub probe_version: String,
+}
+
+/// The three probe identities a window's day predicates read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationProbeSet {
+    pub deterministic: ObservationProbeRef,
+    pub fingerprint: ObservationProbeRef,
+    pub capability: ObservationProbeRef,
+}
+
+/// Baseline identity frozen when the window was preregistered.
+///
+/// Both fields are 64 lower-case hex digits. A fingerprint row matches only
+/// when key and content are both equal to these values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenObservationBaseline {
+    pub baseline_key: String,
+    pub content_sha256: String,
+}
+
+/// One probe row already restricted to a single arm and Beijing day.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationDayRow {
+    pub probe_id: String,
+    pub probe_version: String,
+    pub class: ProbeClass,
+    pub verdict: ProbeVerdict,
+    pub hard_failure: bool,
+    pub baseline_key: Option<String>,
+    pub baseline_content_sha256: Option<String>,
+}
+
+/// Full-day predicate for one arm (plan N=1).
+///
+/// `deterministic` / `capability` / `fingerprint` are `None` when that
+/// preregistered probe has no row. An explicit `not-applicable` verdict is
+/// `Some`, not a missing row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationDayVerdict {
+    pub ok: bool,
+    pub hard: bool,
+    pub polluted: bool,
+    pub deterministic: Option<ProbeVerdict>,
+    pub capability: Option<ProbeVerdict>,
+    pub fingerprint: Option<ProbeVerdict>,
+}
+
+impl ObservationDayVerdict {
+    fn line(&self, label: &str) -> String {
+        format!(
+            "{label}: ok={} hard={} polluted={} det={} cap={} fp={}",
+            u8::from(self.ok),
+            u8::from(self.hard),
+            u8::from(self.polluted),
+            verdict_token(self.deterministic),
+            verdict_token(self.capability),
+            verdict_token(self.fingerprint),
+        )
+    }
+}
+
+fn verdict_token(verdict: Option<ProbeVerdict>) -> &'static str {
+    match verdict {
+        None => "-",
+        Some(v) => v.as_str(),
+    }
+}
+
+/// Both Beijing days of one window, after the window has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationWindowVerdict {
+    pub start_positive: ObservationDayVerdict,
+    pub start_negative: ObservationDayVerdict,
+    pub end_positive: ObservationDayVerdict,
+    pub end_negative: ObservationDayVerdict,
+    pub window_ok: bool,
+}
+
+impl ObservationWindowVerdict {
+    /// Frozen text stored with the final snapshot.
+    pub fn report(&self) -> String {
+        [
+            self.start_positive.line("start_positive"),
+            self.start_negative.line("start_negative"),
+            self.end_positive.line("end_positive"),
+            self.end_negative.line("end_negative"),
+            format!("window_ok={}", u8::from(self.window_ok)),
+        ]
+        .join("\n")
+    }
+}
+
+fn predicate_arm() -> Arm {
+    Arm::new(
+        ModelId::new("observation-day").expect("static model id"),
+        Route::new(
+            ProviderKind::Official,
+            "observation.example",
+            Protocol::OpenAiChatCompletions,
+            "observation",
+        )
+        .expect("static route"),
+    )
+}
+
+fn row_matches(row: &ObservationDayRow, probes: &ObservationProbeSet) -> bool {
+    let expected = match row.class {
+        ProbeClass::Deterministic => &probes.deterministic,
+        ProbeClass::Fingerprint => &probes.fingerprint,
+        ProbeClass::Capability => &probes.capability,
+    };
+    row.probe_id == expected.probe_id && row.probe_version == expected.probe_version
+}
+
+fn fields_match(row: &ObservationDayRow, frozen: &FrozenObservationBaseline) -> bool {
+    row.baseline_key.as_deref() == Some(frozen.baseline_key.as_str())
+        && row.baseline_content_sha256.as_deref() == Some(frozen.content_sha256.as_str())
+}
+
+/// Day predicate for one arm on one Beijing day.
+///
+/// Rows are merged with [`DaySummary::build`] (Fail beats Pass beats
+/// uncertain beats not-applicable; any hard failure makes the day hard).
+/// Only rows whose probe id and version match `probes` count.
+///
+/// Positive: not hard, deterministic pass, capability pass or
+/// not-applicable, fingerprint pass, and all three classes present.
+/// A fingerprint row whose key or content differs from `frozen` fails the day.
+///
+/// Negative: not hard, fingerprint fail, and that row's key and content
+/// match `frozen`. Deterministic and capability rows are not required.
+///
+/// This is not [`observation`]. That helper counts pass days and does not
+/// read frozen baselines.
+pub fn observation_day_verdict(
+    rows: &[ObservationDayRow],
+    probes: &ObservationProbeSet,
+    role: ObservationArmRole,
+    frozen: &FrozenObservationBaseline,
+    day_ms: i64,
+) -> Result<ObservationDayVerdict> {
+    let counted: Vec<&ObservationDayRow> =
+        rows.iter().filter(|row| row_matches(row, probes)).collect();
+    let polluted = counted
+        .iter()
+        .any(|row| row.class == ProbeClass::Fingerprint && !fields_match(row, frozen));
+    let arm = predicate_arm();
+    let results = counted
+        .iter()
+        .map(|row| ProbeResult {
+            probe_id: row.probe_id.clone(),
+            probe_version: row.probe_version.clone(),
+            arm: arm.clone(),
+            at_ms: day_ms,
+            class: row.class,
+            verdict: row.verdict,
+            hard_failure: row.hard_failure,
+            evidence_summary: String::new(),
+        })
+        .collect::<Vec<_>>();
+    let summary = DaySummary::build(&arm, &results, &[])?;
+    let day = RunDay::from_unix_ms(day_ms)?;
+    let class_verdict = |class: ProbeClassKey| summary.verdicts.get(&(class, day)).copied();
+    let deterministic = class_verdict(ProbeClassKey::Deterministic);
+    let capability = class_verdict(ProbeClassKey::Capability);
+    let fingerprint = class_verdict(ProbeClassKey::Fingerprint);
+    let hard = summary.hard_failure_days.contains(&day);
+    let ok = match role {
+        ObservationArmRole::Positive => {
+            !hard
+                && !polluted
+                && deterministic == Some(ProbeVerdict::Pass)
+                && matches!(
+                    capability,
+                    Some(ProbeVerdict::Pass) | Some(ProbeVerdict::NotApplicable)
+                )
+                && fingerprint == Some(ProbeVerdict::Pass)
+        }
+        ObservationArmRole::Negative => {
+            !hard && !polluted && fingerprint == Some(ProbeVerdict::Fail)
+        }
+    };
+    Ok(ObservationDayVerdict {
+        ok,
+        hard,
+        polluted,
+        deterministic,
+        capability,
+        fingerprint,
+    })
+}
+
+/// The four arm-days of one preregistered window, plus the frozen probe set.
+pub struct ObservationWindowInput<'a> {
+    pub start_positive: &'a [ObservationDayRow],
+    pub start_negative: &'a [ObservationDayRow],
+    pub end_positive: &'a [ObservationDayRow],
+    pub end_negative: &'a [ObservationDayRow],
+    pub probes: &'a ObservationProbeSet,
+    pub frozen: &'a FrozenObservationBaseline,
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+/// `window_ok` when both days pass for the positive arm and the negative arm.
+pub fn observation_window_verdict(
+    input: &ObservationWindowInput<'_>,
+) -> Result<ObservationWindowVerdict> {
+    let start_positive = observation_day_verdict(
+        input.start_positive,
+        input.probes,
+        ObservationArmRole::Positive,
+        input.frozen,
+        input.start_ms,
+    )?;
+    let start_negative = observation_day_verdict(
+        input.start_negative,
+        input.probes,
+        ObservationArmRole::Negative,
+        input.frozen,
+        input.start_ms,
+    )?;
+    let end_positive = observation_day_verdict(
+        input.end_positive,
+        input.probes,
+        ObservationArmRole::Positive,
+        input.frozen,
+        input.end_ms,
+    )?;
+    let end_negative = observation_day_verdict(
+        input.end_negative,
+        input.probes,
+        ObservationArmRole::Negative,
+        input.frozen,
+        input.end_ms,
+    )?;
+    let window_ok = start_positive.ok && start_negative.ok && end_positive.ok && end_negative.ok;
+    Ok(ObservationWindowVerdict {
+        start_positive,
+        start_negative,
+        end_positive,
+        end_negative,
+        window_ok,
+    })
 }
 
 /// Display labels (§5 rule 4, §11.3).
@@ -688,5 +946,240 @@ mod tests {
                 budget.format_yuan()
             )
         );
+    }
+
+    fn probes() -> ObservationProbeSet {
+        let r = |id: &str| ObservationProbeRef {
+            probe_id: id.into(),
+            probe_version: "1".into(),
+        };
+        ObservationProbeSet {
+            deterministic: r("det"),
+            fingerprint: r("fp"),
+            capability: r("cap"),
+        }
+    }
+
+    fn frozen() -> FrozenObservationBaseline {
+        FrozenObservationBaseline {
+            baseline_key: "ab".repeat(32),
+            content_sha256: "cd".repeat(32),
+        }
+    }
+
+    fn row(
+        class: ProbeClass,
+        verdict: ProbeVerdict,
+        hard: bool,
+        key: Option<&str>,
+        content: Option<&str>,
+    ) -> ObservationDayRow {
+        let id = match class {
+            ProbeClass::Deterministic => "det",
+            ProbeClass::Fingerprint => "fp",
+            ProbeClass::Capability => "cap",
+        };
+        ObservationDayRow {
+            probe_id: id.into(),
+            probe_version: "1".into(),
+            class,
+            verdict,
+            hard_failure: hard,
+            baseline_key: key.map(str::to_string),
+            baseline_content_sha256: content.map(str::to_string),
+        }
+    }
+
+    fn positive_day() -> Vec<ObservationDayRow> {
+        let base = frozen();
+        vec![
+            row(
+                ProbeClass::Deterministic,
+                ProbeVerdict::Pass,
+                false,
+                None,
+                None,
+            ),
+            row(
+                ProbeClass::Capability,
+                ProbeVerdict::NotApplicable,
+                false,
+                None,
+                None,
+            ),
+            row(
+                ProbeClass::Fingerprint,
+                ProbeVerdict::Pass,
+                false,
+                Some(&base.baseline_key),
+                Some(&base.content_sha256),
+            ),
+        ]
+    }
+
+    fn negative_day() -> Vec<ObservationDayRow> {
+        let base = frozen();
+        vec![row(
+            ProbeClass::Fingerprint,
+            ProbeVerdict::Fail,
+            false,
+            Some(&base.baseline_key),
+            Some(&base.content_sha256),
+        )]
+    }
+
+    #[test]
+    fn day_predicate_requires_each_class_and_treats_not_applicable_as_present() {
+        assert_eq!(OBSERVATION_RUN_DAYS, 2);
+        let day = 1_792_425_600_000;
+        let ok = observation_day_verdict(
+            &positive_day(),
+            &probes(),
+            ObservationArmRole::Positive,
+            &frozen(),
+            day,
+        )
+        .unwrap();
+        assert!(ok.ok);
+        assert_eq!(ok.capability, Some(ProbeVerdict::NotApplicable));
+
+        let mut missing_cap = positive_day();
+        missing_cap.retain(|row| row.class != ProbeClass::Capability);
+        let missing = observation_day_verdict(
+            &missing_cap,
+            &probes(),
+            ObservationArmRole::Positive,
+            &frozen(),
+            day,
+        )
+        .unwrap();
+        assert!(!missing.ok);
+        assert_eq!(missing.capability, None);
+    }
+
+    #[test]
+    fn pollution_of_either_baseline_field_fails_the_day() {
+        let day = 1_792_425_600_000;
+        let base = frozen();
+        for (key, content) in [
+            (Some("ff".repeat(32)), Some(base.content_sha256.clone())),
+            (Some(base.baseline_key.clone()), Some("ee".repeat(32))),
+        ] {
+            let mut rows = positive_day();
+            rows[2].baseline_key = key;
+            rows[2].baseline_content_sha256 = content;
+            let verdict =
+                observation_day_verdict(&rows, &probes(), ObservationArmRole::Positive, &base, day)
+                    .unwrap();
+            assert!(verdict.polluted, "{}", verdict.line("day"));
+            assert!(!verdict.ok);
+        }
+    }
+
+    #[test]
+    fn negative_day_fails_on_hard_and_ignores_other_classes() {
+        let day = 1_792_425_600_000;
+        let ok = observation_day_verdict(
+            &negative_day(),
+            &probes(),
+            ObservationArmRole::Negative,
+            &frozen(),
+            day,
+        )
+        .unwrap();
+        assert!(ok.ok);
+        assert_eq!(ok.deterministic, None);
+
+        let mut hard = negative_day();
+        hard[0].hard_failure = true;
+        let verdict = observation_day_verdict(
+            &hard,
+            &probes(),
+            ObservationArmRole::Negative,
+            &frozen(),
+            day,
+        )
+        .unwrap();
+        assert!(verdict.hard);
+        assert!(!verdict.ok);
+    }
+
+    #[test]
+    fn legacy_observation_does_not_apply_the_frozen_baseline() {
+        let arm = Arm::new(
+            ModelId::new("example-model-1").unwrap(),
+            Route::new(
+                ProviderKind::Official,
+                "api.vendor.example",
+                Protocol::AnthropicMessages,
+                "cli",
+            )
+            .unwrap(),
+        );
+        let mut positive = Vec::new();
+        let mut negative = Vec::new();
+        for offset in [0, 1] {
+            let at = RunDay::parse("2026-10-20")
+                .unwrap()
+                .checked_add_days(offset)
+                .unwrap()
+                .beijing_midnight_unix_ms()
+                .unwrap()
+                + 3_600_000;
+            for (class, verdict) in [
+                (ProbeClass::Deterministic, ProbeVerdict::Pass),
+                (ProbeClass::Capability, ProbeVerdict::Pass),
+                (ProbeClass::Fingerprint, ProbeVerdict::Pass),
+            ] {
+                positive.push(ProbeResult {
+                    probe_id: "p".into(),
+                    probe_version: "1".into(),
+                    arm: arm.clone(),
+                    at_ms: at,
+                    class,
+                    verdict,
+                    hard_failure: false,
+                    evidence_summary: String::new(),
+                });
+            }
+            negative.push(ProbeResult {
+                probe_id: "p".into(),
+                probe_version: "1".into(),
+                arm: arm.clone(),
+                at_ms: at,
+                class: ProbeClass::Fingerprint,
+                verdict: ProbeVerdict::Fail,
+                hard_failure: false,
+                evidence_summary: String::new(),
+            });
+        }
+        let pos = DaySummary::build(&arm, &positive, &[]).unwrap();
+        let neg = DaySummary::build(&arm, &negative, &[]).unwrap();
+        assert_eq!(observation(&pos, &neg, true, true), Observation::Validated);
+
+        let start = RunDay::parse("2026-10-20").unwrap();
+        let start_ms = start.beijing_midnight_unix_ms().unwrap();
+        let end_ms = start
+            .checked_add_days(1)
+            .unwrap()
+            .beijing_midnight_unix_ms()
+            .unwrap();
+        let mut bad = positive_day();
+        bad[2].baseline_content_sha256 = Some("11".repeat(32));
+        let probes = probes();
+        let frozen = frozen();
+        let window = observation_window_verdict(&ObservationWindowInput {
+            start_positive: &bad,
+            start_negative: &negative_day(),
+            end_positive: &positive_day(),
+            end_negative: &negative_day(),
+            probes: &probes,
+            frozen: &frozen,
+            start_ms,
+            end_ms,
+        })
+        .unwrap();
+        assert!(!window.window_ok);
+        assert!(window.report().contains("window_ok=0"));
     }
 }

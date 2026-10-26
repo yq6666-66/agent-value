@@ -11,7 +11,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::digest::sha256_hex;
 use crate::{StoreError, StoreResult};
+use agent_value_core::arm::Protocol;
 use agent_value_core::privacy::has_secret_prefix;
+use agent_value_core::probe::{BaselineKey, FingerprintBaseline};
 use agent_value_core::CoreError;
 
 /// Storage lifetime of one baseline. Usable through this age, missing one
@@ -985,6 +987,135 @@ impl<'a> Parser<'a> {
         self.skip();
         self.s.get(self.i).copied()
     }
+}
+
+/// Key, content hash, and τ_JS text for a baseline that is still inside its
+/// lifetime at `now_ms`. Missing and expired are `Ok(None)` only for the
+/// active lookup; [`freeze_baseline`] reports those as conflicts.
+pub(crate) struct FrozenBaselineParts {
+    pub baseline_key: String,
+    pub content_sha256: String,
+    pub tau_js: String,
+}
+
+pub(crate) fn freeze_baseline(
+    conn: &Connection,
+    baseline_key: &str,
+    now_ms: i64,
+) -> StoreResult<FrozenBaselineParts> {
+    let Some((key, json, expires_at_ms)) = baseline_row(conn, Some(baseline_key), now_ms)? else {
+        return Err(StoreError::Conflict("unknown fingerprint baseline"));
+    };
+    if expires_at_ms < now_ms {
+        return Err(StoreError::Conflict("fingerprint baseline is not active"));
+    }
+    parts(key, &json)
+}
+
+/// Latest unexpired baseline, if any. Used when a fingerprint probe row is stored.
+pub(crate) fn active_baseline_fields(
+    conn: &Connection,
+    now_ms: i64,
+) -> StoreResult<Option<(String, String)>> {
+    let Some((key, json, _)) = baseline_row(conn, None, now_ms)? else {
+        return Ok(None);
+    };
+    let frozen = parts(key, &json)?;
+    Ok(Some((frozen.baseline_key, frozen.content_sha256)))
+}
+
+fn baseline_row(
+    conn: &Connection,
+    baseline_key: Option<&str>,
+    now_ms: i64,
+) -> StoreResult<Option<(String, String, i64)>> {
+    let sql = match baseline_key {
+        Some(_) => {
+            "SELECT baseline_key, distribution_json, expires_at_ms
+             FROM fingerprint_baselines WHERE baseline_key = ?1"
+        }
+        None => {
+            "SELECT baseline_key, distribution_json, expires_at_ms
+             FROM fingerprint_baselines
+             WHERE expires_at_ms >= ?1
+             ORDER BY collected_at_ms DESC, baseline_key DESC
+             LIMIT 1"
+        }
+    };
+    let row = match baseline_key {
+        Some(key) => conn
+            .query_row(sql, [key], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .optional()?,
+        None => conn
+            .query_row(sql, [now_ms], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .optional()?,
+    };
+    Ok(row)
+}
+
+fn parts(key: String, distribution_json: &str) -> StoreResult<FrozenBaselineParts> {
+    if !is_sha256_hex(&key) {
+        return Err(StoreError::Corrupt(
+            "fingerprint baseline key is not 64 lower-case hex digits".into(),
+        ));
+    }
+    let distribution = decode_distribution(distribution_json)?;
+    let tau = tau_js_text(&distribution)?;
+    Ok(FrozenBaselineParts {
+        baseline_key: key,
+        content_sha256: sha256_hex(distribution_json.as_bytes()),
+        tau_js: tau,
+    })
+}
+
+fn tau_js_text(dist: &FingerprintDistribution) -> StoreResult<String> {
+    let run =
+        |questions: &[QuestionAnswers]| -> StoreResult<Vec<agent_value_core::probe::Distribution>> {
+            questions
+                .iter()
+                .map(|question| {
+                    let mut answers = Vec::new();
+                    for item in &question.answers {
+                        for _ in 0..item.count {
+                            answers.push(item.answer.as_str());
+                        }
+                    }
+                    agent_value_core::probe::Distribution::from_answers(answers)
+                        .map_err(StoreError::from)
+                })
+                .collect()
+        };
+    let baseline = FingerprintBaseline {
+        key: BaselineKey {
+            model_version: String::new(),
+            protocol: Protocol::OpenAiChatCompletions,
+            sampling: String::new(),
+        },
+        collected_ms: 0,
+        run1: run(&dist.run1)?,
+        run2: run(&dist.run2)?,
+    };
+    let tau = baseline.tau_js()?;
+    if !tau.is_finite() {
+        return Err(CoreError::NotFinite {
+            what: "tau_js",
+            value: tau,
+        }
+        .into());
+    }
+    Ok(format!("{tau}"))
 }
 
 #[cfg(test)]

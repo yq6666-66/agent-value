@@ -6,7 +6,13 @@
 pub(crate) const PROBE_CELL_SQL: &str = "__probe__";
 
 /// Migration `i` brings the schema from version `i` to `i + 1`.
-pub(crate) const MIGRATIONS: &[&str] = &[MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
+pub(crate) const MIGRATIONS: &[&str] = &[
+    MIGRATION_1,
+    MIGRATION_2,
+    MIGRATION_3,
+    MIGRATION_4,
+    MIGRATION_5,
+];
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE arms (
@@ -210,6 +216,12 @@ pub(crate) const TABLES: &[&str] = &[
     "probe_consent",
     "probe_charges",
     "fingerprint_baselines",
+    "observation_controls",
+    "observation_control_events",
+    "observation_window_intents",
+    "observation_windows",
+    "observation_window_voids",
+    "observation_window_snapshots",
     "cell_weights",
     "weight_versions",
     "weight_evidence",
@@ -282,4 +294,396 @@ CREATE TABLE IF NOT EXISTS fingerprint_baselines (
 );
 CREATE INDEX IF NOT EXISTS fingerprint_baselines_expires_at
     ON fingerprint_baselines (expires_at_ms);
+"#;
+
+/// Persistent half of the observation audit trail (schema version 5).
+///
+/// Clock checks live in [`OBS_CLOCK_TRIGGERS`]. SQLite refuses a trigger
+/// stored in the main schema that reads `temp`, so those guards are created
+/// on each connection. Immutability, the intent consume shape, and the ban
+/// on REPLACE stay here and apply on every connection.
+const MIGRATION_5: &str = r#"
+CREATE TABLE observation_controls (
+    id         INTEGER PRIMARY KEY,
+    role       TEXT NOT NULL CHECK (role IN ('positive', 'negative')),
+    arm_id     INTEGER REFERENCES arms(id),
+    action     TEXT NOT NULL CHECK (action IN ('set', 'clear')),
+    created_at INTEGER NOT NULL,
+    CHECK ((action = 'set') = (arm_id IS NOT NULL))
+);
+
+CREATE TABLE observation_control_events (
+    id         INTEGER PRIMARY KEY,
+    control_id INTEGER NOT NULL UNIQUE REFERENCES observation_controls(id),
+    role       TEXT NOT NULL CHECK (role IN ('positive', 'negative')),
+    arm_id     INTEGER REFERENCES arms(id),
+    action     TEXT NOT NULL CHECK (action IN ('set', 'clear')),
+    created_at INTEGER NOT NULL,
+    CHECK ((action = 'set') = (arm_id IS NOT NULL))
+);
+
+CREATE TABLE observation_window_intents (
+    id         INTEGER PRIMARY KEY,
+    pos_arm    INTEGER NOT NULL REFERENCES arms(id),
+    neg_arm    INTEGER NOT NULL REFERENCES arms(id),
+    start      TEXT NOT NULL,
+    consumed   INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),
+    created_at INTEGER NOT NULL,
+    CHECK (pos_arm <> neg_arm)
+);
+CREATE UNIQUE INDEX observation_window_intents_unconsumed
+    ON observation_window_intents (pos_arm, neg_arm, start)
+    WHERE consumed = 0;
+
+CREATE TABLE observation_windows (
+    id                       INTEGER PRIMARY KEY,
+    intent_id                INTEGER NOT NULL UNIQUE REFERENCES observation_window_intents(id),
+    pos_arm                  INTEGER NOT NULL REFERENCES arms(id),
+    neg_arm                  INTEGER NOT NULL REFERENCES arms(id),
+    start                    TEXT NOT NULL,
+    end_date                 TEXT NOT NULL,
+    end_exclusive            INTEGER NOT NULL,
+    baseline_key             TEXT NOT NULL,
+    baseline_content_sha256  TEXT NOT NULL,
+    det_pass_min             INTEGER NOT NULL CHECK (det_pass_min = 9),
+    det_fail_max             INTEGER NOT NULL CHECK (det_fail_max = 7),
+    fp_pass_min              INTEGER NOT NULL CHECK (fp_pass_min = 8),
+    fp_fail_max              INTEGER NOT NULL CHECK (fp_fail_max = 5),
+    tau_js                   TEXT NOT NULL CHECK (length(tau_js) > 0),
+    det_probe_id             TEXT NOT NULL CHECK (length(det_probe_id) BETWEEN 1 AND 128),
+    det_probe_version        TEXT NOT NULL CHECK (length(det_probe_version) BETWEEN 1 AND 128),
+    fp_probe_id              TEXT NOT NULL CHECK (length(fp_probe_id) BETWEEN 1 AND 128),
+    fp_probe_version         TEXT NOT NULL CHECK (length(fp_probe_version) BETWEEN 1 AND 128),
+    cap_probe_id             TEXT NOT NULL CHECK (length(cap_probe_id) BETWEEN 1 AND 128),
+    cap_probe_version        TEXT NOT NULL CHECK (length(cap_probe_version) BETWEEN 1 AND 128),
+    observation_run_days     INTEGER NOT NULL CHECK (observation_run_days = 2),
+    created_at               INTEGER NOT NULL,
+    UNIQUE (pos_arm, neg_arm, start),
+    CHECK (pos_arm <> neg_arm),
+    CHECK (length(baseline_key) = 64 AND baseline_key NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(baseline_content_sha256) = 64 AND baseline_content_sha256 NOT GLOB '*[^0-9a-f]*'),
+    CHECK (end_date = date(start, '+1 day')),
+    CHECK (end_exclusive = (strftime('%s', date(start, '+2 day')) - 28800) * 1000)
+);
+
+CREATE TABLE observation_window_voids (
+    window_id INTEGER PRIMARY KEY REFERENCES observation_windows(id),
+    voided_at INTEGER NOT NULL
+);
+
+CREATE TABLE observation_window_snapshots (
+    window_id  INTEGER PRIMARY KEY REFERENCES observation_windows(id),
+    created_at INTEGER NOT NULL,
+    window_ok  INTEGER NOT NULL CHECK (window_ok IN (0, 1)),
+    report     TEXT NOT NULL CHECK (length(report) > 0)
+);
+
+ALTER TABLE probe_results ADD COLUMN baseline_key TEXT
+    CHECK (
+        baseline_key IS NULL
+        OR (length(baseline_key) = 64 AND baseline_key NOT GLOB '*[^0-9a-f]*')
+    );
+ALTER TABLE probe_results ADD COLUMN baseline_content_sha256 TEXT
+    CHECK (
+        baseline_content_sha256 IS NULL
+        OR (
+            length(baseline_content_sha256) = 64
+            AND baseline_content_sha256 NOT GLOB '*[^0-9a-f]*'
+        )
+    );
+
+CREATE TRIGGER probe_results_baseline_pair
+BEFORE INSERT ON probe_results
+BEGIN
+    SELECT RAISE(ABORT, 'baseline key and content must both be set or both be null')
+    WHERE (NEW.baseline_key IS NULL) <> (NEW.baseline_content_sha256 IS NULL);
+END;
+
+-- Compare every column. A trigger limited to the consumed column would miss a mixed assignment.
+CREATE TRIGGER observation_window_intents_update
+BEFORE UPDATE ON observation_window_intents
+BEGIN
+    SELECT RAISE(ABORT, 'intent update may only consume 0 to 1')
+    WHERE NOT (
+        OLD.id = NEW.id
+        AND OLD.pos_arm = NEW.pos_arm
+        AND OLD.neg_arm = NEW.neg_arm
+        AND OLD.start = NEW.start
+        AND OLD.created_at = NEW.created_at
+        AND OLD.consumed = 0
+        AND NEW.consumed = 1
+    );
+END;
+
+-- DELETE guards. delete_all drops the audit_nodelete_ triggers, wipes every
+-- row, and recreates them from the SQL saved out of sqlite_master.
+CREATE TRIGGER audit_nodelete_observation_controls
+BEFORE DELETE ON observation_controls
+BEGIN SELECT RAISE(ABORT, 'observation_controls rows are immutable'); END;
+CREATE TRIGGER audit_nodelete_observation_control_events
+BEFORE DELETE ON observation_control_events
+BEGIN SELECT RAISE(ABORT, 'observation_control_events rows are immutable'); END;
+CREATE TRIGGER audit_nodelete_observation_window_intents
+BEFORE DELETE ON observation_window_intents
+BEGIN SELECT RAISE(ABORT, 'observation_window_intents rows are immutable'); END;
+CREATE TRIGGER audit_nodelete_observation_windows
+BEFORE DELETE ON observation_windows
+BEGIN SELECT RAISE(ABORT, 'observation_windows rows are immutable'); END;
+CREATE TRIGGER audit_nodelete_observation_window_voids
+BEFORE DELETE ON observation_window_voids
+BEGIN SELECT RAISE(ABORT, 'observation_window_voids rows are immutable'); END;
+CREATE TRIGGER audit_nodelete_observation_window_snapshots
+BEFORE DELETE ON observation_window_snapshots
+BEGIN SELECT RAISE(ABORT, 'observation_window_snapshots rows are immutable'); END;
+CREATE TRIGGER audit_nodelete_probe_results
+BEFORE DELETE ON probe_results
+BEGIN SELECT RAISE(ABORT, 'probe_results rows are immutable'); END;
+
+CREATE TRIGGER audit_noupdate_observation_controls
+BEFORE UPDATE ON observation_controls
+BEGIN SELECT RAISE(ABORT, 'observation_controls rows are immutable'); END;
+CREATE TRIGGER audit_noupdate_observation_control_events
+BEFORE UPDATE ON observation_control_events
+BEGIN SELECT RAISE(ABORT, 'observation_control_events rows are immutable'); END;
+CREATE TRIGGER audit_noupdate_observation_windows
+BEFORE UPDATE ON observation_windows
+BEGIN SELECT RAISE(ABORT, 'observation_windows rows are immutable'); END;
+CREATE TRIGGER audit_noupdate_observation_window_voids
+BEFORE UPDATE ON observation_window_voids
+BEGIN SELECT RAISE(ABORT, 'observation_window_voids rows are immutable'); END;
+CREATE TRIGGER audit_noupdate_observation_window_snapshots
+BEFORE UPDATE ON observation_window_snapshots
+BEGIN SELECT RAISE(ABORT, 'observation_window_snapshots rows are immutable'); END;
+CREATE TRIGGER audit_noupdate_probe_results
+BEFORE UPDATE ON probe_results
+BEGIN SELECT RAISE(ABORT, 'probe_results rows are immutable'); END;
+
+CREATE TRIGGER audit_noreplace_observation_controls
+BEFORE INSERT ON observation_controls
+WHEN EXISTS (SELECT 1 FROM observation_controls WHERE id = NEW.id)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+CREATE TRIGGER audit_noreplace_observation_control_events
+BEFORE INSERT ON observation_control_events
+WHEN EXISTS (SELECT 1 FROM observation_control_events WHERE id = NEW.id OR control_id = NEW.control_id)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+CREATE TRIGGER audit_noreplace_observation_window_intents
+BEFORE INSERT ON observation_window_intents
+WHEN EXISTS (
+    SELECT 1 FROM observation_window_intents
+    WHERE id = NEW.id
+       OR (
+            pos_arm = NEW.pos_arm AND neg_arm = NEW.neg_arm AND start = NEW.start
+            AND consumed = 0 AND NEW.consumed = 0
+       )
+)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+CREATE TRIGGER audit_noreplace_observation_windows
+BEFORE INSERT ON observation_windows
+WHEN EXISTS (
+    SELECT 1 FROM observation_windows
+    WHERE id = NEW.id
+       OR (pos_arm = NEW.pos_arm AND neg_arm = NEW.neg_arm AND start = NEW.start)
+)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+CREATE TRIGGER audit_noreplace_observation_window_voids
+BEFORE INSERT ON observation_window_voids
+WHEN EXISTS (SELECT 1 FROM observation_window_voids WHERE window_id = NEW.window_id)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+CREATE TRIGGER audit_noreplace_observation_window_snapshots
+BEFORE INSERT ON observation_window_snapshots
+WHEN EXISTS (SELECT 1 FROM observation_window_snapshots WHERE window_id = NEW.window_id)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+CREATE TRIGGER audit_noreplace_probe_results
+BEFORE INSERT ON probe_results
+WHEN EXISTS (
+    SELECT 1 FROM probe_results
+    WHERE id = NEW.id
+       OR (
+            probe_id = NEW.probe_id AND probe_version = NEW.probe_version
+            AND arm_id = NEW.arm_id AND run_day = NEW.run_day
+       )
+)
+BEGIN SELECT RAISE(ABORT, 'replace is forbidden'); END;
+"#;
+
+/// Per-connection clock guards. Installed after migrate. They read the single
+/// row in `temp.obs_txn_now` written at the start of an IMMEDIATE transaction.
+pub(crate) const OBS_CLOCK_TRIGGERS: &str = r#"
+CREATE TEMP TABLE IF NOT EXISTS obs_txn_now (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ms INTEGER NOT NULL
+);
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_intent_insert
+BEFORE INSERT ON observation_window_intents
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'intent created_at must equal obs_txn_now')
+    WHERE NEW.created_at IS NOT (SELECT ms FROM temp.obs_txn_now);
+    SELECT RAISE(ABORT, 'intent must be inserted unconsumed')
+    WHERE NEW.consumed IS NOT 0;
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_window_insert
+BEFORE INSERT ON observation_windows
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'window created_at must equal obs_txn_now')
+    WHERE NEW.created_at IS NOT (SELECT ms FROM temp.obs_txn_now);
+    SELECT RAISE(ABORT, 'window intent match must be exactly one')
+    WHERE (
+        SELECT COUNT(*) FROM observation_window_intents
+        WHERE pos_arm = NEW.pos_arm
+          AND neg_arm = NEW.neg_arm
+          AND start = NEW.start
+          AND consumed = 0
+    ) <> 1;
+    SELECT RAISE(ABORT, 'window intent match must be exactly one')
+    WHERE NEW.intent_id IS NOT (
+        SELECT id FROM observation_window_intents
+        WHERE pos_arm = NEW.pos_arm
+          AND neg_arm = NEW.neg_arm
+          AND start = NEW.start
+          AND consumed = 0
+    );
+    SELECT RAISE(ABORT, 'observation window must be registered before its Beijing start')
+    WHERE (SELECT ms FROM temp.obs_txn_now) >= (strftime('%s', NEW.start) - 28800) * 1000;
+    SELECT RAISE(ABORT, 'observation arm day set already has probe results')
+    WHERE EXISTS (
+        SELECT 1 FROM probe_results
+        WHERE arm_id IN (NEW.pos_arm, NEW.neg_arm)
+          AND run_day IN (NEW.start, NEW.end_date)
+    );
+    SELECT RAISE(ABORT, 'arm day overlaps an open observation window')
+    WHERE EXISTS (
+        SELECT 1 FROM observation_windows w
+        WHERE NOT EXISTS (
+            SELECT 1 FROM observation_window_voids v WHERE v.window_id = w.id
+        )
+          AND (SELECT ms FROM temp.obs_txn_now) < w.end_exclusive
+          AND w.start <= NEW.end_date
+          AND NEW.start <= w.end_date
+          AND (
+                w.pos_arm = NEW.pos_arm OR w.neg_arm = NEW.pos_arm
+                OR w.pos_arm = NEW.neg_arm OR w.neg_arm = NEW.neg_arm
+          )
+    );
+    UPDATE observation_window_intents
+    SET consumed = 1
+    WHERE id = NEW.intent_id
+      AND consumed = 0
+      AND pos_arm = NEW.pos_arm
+      AND neg_arm = NEW.neg_arm
+      AND start = NEW.start;
+    SELECT RAISE(ABORT, 'intent consume must change exactly one row')
+    WHERE changes() <> 1;
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_void_insert
+BEFORE INSERT ON observation_window_voids
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'voided_at must equal obs_txn_now')
+    WHERE NEW.voided_at IS NOT (SELECT ms FROM temp.obs_txn_now);
+    SELECT RAISE(ABORT, 'unknown observation window')
+    WHERE NOT EXISTS (SELECT 1 FROM observation_windows WHERE id = NEW.window_id);
+    SELECT RAISE(ABORT, 'void must be before window start')
+    WHERE (SELECT ms FROM temp.obs_txn_now) >= (
+        SELECT (strftime('%s', start) - 28800) * 1000
+        FROM observation_windows WHERE id = NEW.window_id
+    );
+    SELECT RAISE(ABORT, 'void requires an empty arm day set')
+    WHERE EXISTS (
+        SELECT 1 FROM probe_results p
+        JOIN observation_windows w ON w.id = NEW.window_id
+        WHERE p.arm_id IN (w.pos_arm, w.neg_arm)
+          AND p.run_day IN (w.start, w.end_date)
+    );
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_snapshot_insert
+BEFORE INSERT ON observation_window_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'snapshot created_at must equal obs_txn_now')
+    WHERE NEW.created_at IS NOT (SELECT ms FROM temp.obs_txn_now);
+    SELECT RAISE(ABORT, 'unknown observation window')
+    WHERE NOT EXISTS (SELECT 1 FROM observation_windows WHERE id = NEW.window_id);
+    SELECT RAISE(ABORT, 'snapshot requires a window that is not void')
+    WHERE EXISTS (
+        SELECT 1 FROM observation_window_voids WHERE window_id = NEW.window_id
+    );
+    SELECT RAISE(ABORT, 'snapshot requires an ended window')
+    WHERE (SELECT ms FROM temp.obs_txn_now) < (
+        SELECT end_exclusive FROM observation_windows WHERE id = NEW.window_id
+    );
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_control_insert
+BEFORE INSERT ON observation_controls
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'control created_at must equal obs_txn_now')
+    WHERE NEW.created_at IS NOT (SELECT ms FROM temp.obs_txn_now);
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_control_event
+AFTER INSERT ON observation_controls
+BEGIN
+    INSERT INTO observation_control_events (control_id, role, arm_id, action, created_at)
+    VALUES (NEW.id, NEW.role, NEW.arm_id, NEW.action, NEW.created_at);
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_event_insert
+BEFORE INSERT ON observation_control_events
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'event created_at must equal obs_txn_now')
+    WHERE NEW.created_at IS NOT (SELECT ms FROM temp.obs_txn_now);
+    SELECT RAISE(ABORT, 'event does not match control')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM observation_controls c
+        WHERE c.id = NEW.control_id
+          AND c.role = NEW.role
+          AND c.action = NEW.action
+          AND c.created_at = NEW.created_at
+          AND (
+                (c.arm_id IS NULL AND NEW.arm_id IS NULL)
+                OR c.arm_id = NEW.arm_id
+          )
+    );
+END;
+
+CREATE TEMP TRIGGER IF NOT EXISTS obs_clock_probe_insert
+BEFORE INSERT ON probe_results
+BEGIN
+    SELECT RAISE(ABORT, 'obs_txn_now is missing')
+    WHERE (SELECT COUNT(*) FROM temp.obs_txn_now) <> 1;
+    SELECT RAISE(ABORT, 'probe write matches an ended observation window')
+    WHERE EXISTS (
+        SELECT 1 FROM observation_windows w
+        WHERE NOT EXISTS (
+            SELECT 1 FROM observation_window_voids v WHERE v.window_id = w.id
+        )
+          AND NEW.arm_id IN (w.pos_arm, w.neg_arm)
+          AND NEW.run_day IN (w.start, w.end_date)
+          AND (SELECT ms FROM temp.obs_txn_now) >= w.end_exclusive
+    );
+    SELECT RAISE(ABORT, 'probe write matches more than one open observation window')
+    WHERE (
+        SELECT COUNT(*) FROM observation_windows w
+        WHERE NOT EXISTS (
+            SELECT 1 FROM observation_window_voids v WHERE v.window_id = w.id
+        )
+          AND NEW.arm_id IN (w.pos_arm, w.neg_arm)
+          AND NEW.run_day IN (w.start, w.end_date)
+          AND (SELECT ms FROM temp.obs_txn_now) < w.end_exclusive
+    ) >= 2;
+END;
 "#;

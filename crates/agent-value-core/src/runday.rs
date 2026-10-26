@@ -57,6 +57,31 @@ impl RunDay {
     pub fn day(&self) -> u8 {
         self.day
     }
+
+    /// UTC milliseconds of 00:00 on this Beijing civil date.
+    ///
+    /// Beijing is a fixed UTC+8 offset, so this is the UTC midnight of the
+    /// same calendar date minus 8 hours. [`Self::from_unix_ms`] of this
+    /// instant is this date; one millisecond earlier is the previous date.
+    pub fn beijing_midnight_unix_ms(self) -> Result<i64> {
+        let days = days_from_civil(self.year, u32::from(self.month), u32::from(self.day));
+        let utc_midnight_ms = days.checked_mul(MS_PER_DAY).ok_or(CoreError::Overflow {
+            what: "run day midnight",
+        })?;
+        utc_midnight_ms
+            .checked_sub(i64::from(RUN_DAY_UTC_OFFSET_SECONDS) * 1000)
+            .ok_or(CoreError::Overflow {
+                what: "run day midnight",
+            })
+    }
+
+    /// This date plus `days` in the proleptic Gregorian calendar.
+    pub fn checked_add_days(self, days: i32) -> Result<Self> {
+        let next = days_from_civil(self.year, u32::from(self.month), u32::from(self.day))
+            .checked_add(i64::from(days))
+            .ok_or(CoreError::Overflow { what: "run day" })?;
+        civil_from_days(next)
+    }
 }
 
 impl fmt::Display for RunDay {
@@ -76,6 +101,18 @@ fn days_in_month(y: i32, m: u8) -> u8 {
         2 if is_leap(y) => 29,
         _ => 28,
     }
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Hinnant).
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let mut y = i64::from(year);
+    let m = i64::from(month);
+    y -= i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy as u64;
+    era * 146_097 + doe as i64 - 719_468
 }
 
 /// Days since 1970-01-01 to a proleptic Gregorian date (era-based method).
@@ -141,5 +178,44 @@ mod tests {
             assert!(RunDay::parse(bad).is_err(), "{bad}");
         }
         assert!(RunDay::from_unix_ms(i64::MAX).is_err());
+    }
+
+    #[test]
+    fn beijing_midnight_matches_the_day_boundary() {
+        let day = RunDay::parse("2026-10-20").unwrap();
+        let midnight = day.beijing_midnight_unix_ms().unwrap();
+        // 2026-10-19T16:00:00Z is 2026-10-20 00:00 in Beijing.
+        assert_eq!(midnight, 1_792_425_600_000);
+        assert_eq!(RunDay::from_unix_ms(midnight).unwrap(), day);
+        assert_eq!(
+            RunDay::from_unix_ms(midnight - 1).unwrap().to_string(),
+            "2026-10-19"
+        );
+        assert_eq!(day.checked_add_days(1).unwrap().to_string(), "2026-10-21");
+        assert_eq!(
+            RunDay::parse("2026-10-31")
+                .unwrap()
+                .checked_add_days(1)
+                .unwrap()
+                .to_string(),
+            "2026-11-01"
+        );
+        assert_eq!(
+            RunDay::parse("2024-02-28")
+                .unwrap()
+                .checked_add_days(1)
+                .unwrap()
+                .to_string(),
+            "2024-02-29"
+        );
+        let start = RunDay::parse("1969-12-31").unwrap();
+        for offset in 0..800 {
+            let day = start.checked_add_days(offset).unwrap();
+            let z =
+                super::days_from_civil(day.year(), u32::from(day.month()), u32::from(day.day()));
+            assert_eq!(super::civil_from_days(z).unwrap(), day);
+            let ms = day.beijing_midnight_unix_ms().unwrap();
+            assert_eq!(RunDay::from_unix_ms(ms).unwrap(), day);
+        }
     }
 }

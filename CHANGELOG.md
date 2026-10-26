@@ -8,7 +8,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Store: an auditable observation-period layer. A window is two
+  consecutive Beijing days, preregistered before that start midnight.
+  An intent row can be updated only to set `consumed` from 0 to 1.
+  Windows, voids, snapshots, control events, probe results, and
+  controls cannot be updated or deleted in place. `ready` is true only
+  when a final snapshot, written after the window ended, records that
+  the window passed. The existing `observation` helper does not make
+  that decision. `DET_*`, `FP_*`, τ_JS, and `OBSERVATION_RUN_DAYS` (2)
+  are unchanged. This does not mark the observation period done and
+  does not calibrate those thresholds.
+
 ### Changed
+
+- Store: the 180-day purge no longer deletes `probe_results`. Those
+  rows stay as the observation audit trail. `delete_all` still removes
+  every row, including probe results, inside that wipe transaction.
+  A second probe result for the same probe, version, arm, and Beijing
+  day is still refused; the audit insert guard aborts that insert.
 
 ### Fixed
 

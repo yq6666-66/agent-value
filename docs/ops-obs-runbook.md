@@ -203,20 +203,20 @@ version 等于 `PROBE_SET_VERSION`（`"1"`）。
 - [ ] 基线：被测官方指纹基线不存在或已过期
 - [ ] 预注册：model id / kapibala host / key-env 仍为 TBD（Q1–Q3）
 48h 截止：YYYY-MM-DD HH:MM Asia/Shanghai
-逾期未补 → 观察采集改 Not started 挂起（C1′ v0.3.0 已发，不跳 Release）
+逾期只改 Not started 挂起；C1′ v0.3.0 已发，不再以发布新版本作为止损动作
 ```
 
 截止写完整的 `YYYY-MM-DD HH:MM Asia/Shanghai`。48 小时从这条 BLOCKED 消息算起。
 
 ## 11. 48 小时止损
 
-C1′ v0.3.0 已在 tip 发出。满 48 小时后，观察采集改为 Not started 挂起。不要改走「跳过并发布 C1′」。
+满 48 小时后，逾期只改 Not started 挂起；C1′ v0.3.0 已发，不再以发布新版本作为止损动作。
 
 | 时点 | 动作 |
 |---|---|
 | T0 当日 | 群内 BLOCKED，列出缺项 |
 | T0 起 48 小时仍缺 | 观察采集状态改为 Not started（挂起）。停止等待 |
-| 明确不做 | 不跳 C1′。不改阈值。不 tag。不无限等 |
+| 明确不做 | 不改阈值。不 tag。不无限等。止损只挂起采集，不另开 Release |
 | 文档 | 本 runbook 可以继续合入。开跑挂起不等于文档停摆 |
 
 挂起后若要重启：新的老板书面同意、补齐全部缺项，并预注册一个新窗口（新的 `start`）。旧窗保留。

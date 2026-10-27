@@ -29,12 +29,12 @@ Changes by version are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Key ideas
 
-- **Scoring scope.** Each task type is scored separately. By default there are two scopes: coding and non-coding. Scores are never combined across scopes.
-- **Arm.** The unit being compared: a model plus a route. A route is the API host, the protocol (for example Anthropic Messages or OpenAI Chat Completions) and the agent or client. If any of the three differs, it is a different arm. Changing the API key on the same route does not make a new arm.
-- **Cell and layer.** Tasks are grouped into cells $u$ by subtype (for coding by default: fix, add, refactor, explain and review, other). By default there is one layer; optionally, tasks can be split into layers $d$ by size (small, medium, large), measured only on your own input, and a cell is then a subtype within a layer. Each cell has a weight $\omega_u$ equal to its share of the layer's tasks in the previous window.
-- **Task.** One stretch from your submission to delivery, abandonment or cancellation.
-- **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are in the next item). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated. The desktop shows that first-window frontier with the not-yet-calibrated label; $V$ stays withheld.
-- **Reference arm $R_k$ and fallback arm $F_k$.** $R_k$ is the arm every other arm is compared against. $F_k$ is the arm a task is handed to after an arm fails $K$ times. The reference and fallback arms do not themselves hand off to anyone. $R_k$ is the first available arm in this order: the arm you chose, the scope's official direct arm, and the arm with the most tasks in the previous window. An arm is available if in the previous window it passed the authenticity gate and had no $F_{\rm bad}$ cell; equal task counts go to the arm whose id sorts first. If several official direct arms exist they are tried in order of previous-window tasks; when the one with the most tasks is unavailable, the next official direct arm is used, and the most-tasks arm overall is used only when no official direct arm is available. By default $F_k=R_k$. You can choose a different $F_k$. It is kept only if in the previous window it passed the authenticity gate, had no $F_{\rm bad}$ cell, was tier I or tier II (section 5) in every positive-weight layer, and had at least 3 ratings ($n_q\ge3$) in every positive-weight cell. Otherwise, including when it has no positive-weight layer at all, $F_k$ reverts to $R_k$ and the version record notes this with the reasons.
+1. **Scoring scope.** Each task type is scored separately. By default there are two scopes: coding and non-coding. Scores are never combined across scopes.
+2. **Arm.** The unit being compared: a model plus a route. A route is the API host, the protocol (for example Anthropic Messages or OpenAI Chat Completions) and the agent or client. If any of the three differs, it is a different arm. Changing the API key on the same route does not make a new arm.
+3. **Cell and layer.** Tasks are grouped into cells $u$ by subtype (for coding by default: fix, add, refactor, explain and review, other). By default there is one layer; optionally, tasks can be split into layers $d$ by size (small, medium, large), measured only on your own input, and a cell is then a subtype within a layer. Each cell has a weight $\omega_u$ equal to its share of the layer's tasks in the previous window.
+4. **Task.** One stretch from your submission to delivery, abandonment or cancellation.
+5. **Time window.** Scoring runs in 30-day windows. Cell weights, your weight version, price tables and classification rules for a window are fixed from earlier data when the window starts; the reference and fallback arms are frozen the same way once chosen (the rules for choosing them are in the next item). In the first window $V$ is withheld; the library already does this. By the specification the first window still shows each arm's cost, time and quality and the frontier, labelled as not yet calibrated. The desktop shows that first-window frontier with the not-yet-calibrated label; $V$ stays withheld.
+6. **Reference arm $R_k$ and fallback arm $F_k$.** $R_k$ is the arm every other arm is compared against. $F_k$ is the arm a task is handed to after an arm fails $K$ times. The reference and fallback arms do not themselves hand off to anyone. $R_k$ is the first available arm in this order: the arm you chose, the scope's official direct arm, and the arm with the most tasks in the previous window. An arm is available if in the previous window it passed the authenticity gate and had no $F_{\rm bad}$ cell; equal task counts go to the arm whose id sorts first. If several official direct arms exist they are tried in order of previous-window tasks; when the one with the most tasks is unavailable, the next official direct arm is used, and the most-tasks arm overall is used only when no official direct arm is available. By default $F_k=R_k$. You can choose a different $F_k$. It is kept only if in the previous window it passed the authenticity gate, had no $F_{\rm bad}$ cell, was tier I or tier II (section 5) in every positive-weight layer, and had at least 3 ratings ($n_q\ge3$) in every positive-weight cell. Otherwise, including when it has no positive-weight layer at all, $F_k$ reverts to $R_k$ and the version record notes this with the reasons.
 
 ## How scoring works
 
@@ -59,13 +59,13 @@ Quality $q_j\in[0,1]$ is measured only on successful tasks and only from your ra
 
 Each layer uses one of two quality modes per window:
 
-- **Rating mode**, when every arm in the candidate list the caller passes in (meant to be the eligible set $\mathcal E_d$ from section 6; the library does not connect the two yet) has at least 3 ratings in every positive-weight cell. The reference or fallback arm counts only if it is itself a candidate. Ratings are shrunk toward a pooled mean $q_B$ (the previous window's mean over all arms in that cell, or $0.5$ if there is none):
+1. **Rating mode**, when every arm in the candidate list the caller passes in (meant to be the eligible set $\mathcal E_d$ from section 6; the library does not connect the two yet) has at least 3 ratings in every positive-weight cell. The reference or fallback arm counts only if it is itself a candidate. Ratings are shrunk toward a pooled mean $q_B$ (the previous window's mean over all arms in that cell, or $0.5$ if there is none):
 
 $$
 \hat q=\mathrm{clip}\!\left(\frac{\sum_{j=1}^{n_q}q_j+m_0q_B}{n_q+m_0},\ 0.01,\ 0.99\right),\qquad m_0=0.5 .
 $$
 
-- **Success-rate mode**, otherwise. Every arm in the layer, including the reference arm, gets $\hat q=0.99$, so $Q^{\ast}$ becomes the probability of delivering successfully. The results are to be labelled that way (planned with the display), rather than presenting missing data as average quality.
+2. **Success-rate mode**, otherwise. Every arm in the layer, including the reference arm, gets $\hat q=0.99$, so $Q^{\ast}$ becomes the probability of delivering successfully. The results are to be labelled that way (planned with the display), rather than presenting missing data as average quality.
 
 ### 2. Cell weights and cell states
 
@@ -85,8 +85,8 @@ $$
 
 and $\mathrm{valid}$ otherwise. A failing cell is one of two kinds, checked in this order:
 
-- $F_{\rm thin}$ (too few samples): $n^1+n^0<3$. The pessimistic pass rate is not checked, because it is unreliable with so few samples.
-- $F_{\rm bad}$ (truly failing): $n^1+n^0\ge3$ and $p_K^{lo}<0.75$ or $p_K^{C,lo}<0.75$.
+1. $F_{\rm thin}$ (too few samples): $n^1+n^0<3$. The pessimistic pass rate is not checked, because it is unreliable with so few samples.
+2. $F_{\rm bad}$ (truly failing): $n^1+n^0\ge3$ and $p_K^{lo}<0.75$ or $p_K^{C,lo}<0.75$.
 
 $p_K^{lo}$ and $p_K^{C,lo}$ are defined in the next section. For each layer the code also counts the cells in each state and sums their weights; the reference arm uses exactly the same rules. In a $\mathrm{miss}$ cell, $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and their cancel-robust versions are all $\mathrm{NA}$.
 
@@ -146,9 +146,9 @@ All four describe only the arm's own attempts; retries inside the fallback arm a
 <details>
 <summary>Implementation notes</summary>
 
-- $q_K$ is computed first and $p_K$ is set to $1-q_K$, so $p_K+q_K=1$ exactly. $E[n_F]$ is summed term by term rather than with the closed form $(1-p_1)\frac{1-(1-\pi)^K}{\pi}$; this avoids cancellation error at very small $\pi$ and needs no special case at $\pi=0$, where it reduces to $K(1-p_1)$.
-- The fail test does not invert the Beta distribution. It computes $x^{\ast}=1-0.25/(1-\pi)^{K-1}$; if $x^{\ast}\le0$ the cell passes, otherwise it fails when $\mathrm{BetaCDF}(x^{\ast};\alpha,\beta)>0.05$. This is equivalent to $p_K^{lo}<0.75$. The quantile is found by bisection on the CDF and is used only for display. The incomplete Beta function is implemented in this crate.
-- The prior is chosen by an explicit enum (`DirectPool`, `Discounted(ρ)` with $\rho\in[0,1)$, `LayerMean`, `Jeffreys`), not by comparing $\rho$ to 1. `Discounted` gives $\kappa=0$ when $\kappa_p+n_B=0$; `Discounted(1.0)` and $\rho<0$ return an error.
+1. $q_K$ is computed first and $p_K$ is set to $1-q_K$, so $p_K+q_K=1$ exactly. $E[n_F]$ is summed term by term rather than with the closed form $(1-p_1)\frac{1-(1-\pi)^K}{\pi}$; this avoids cancellation error at very small $\pi$ and needs no special case at $\pi=0$, where it reduces to $K(1-p_1)$.
+2. The fail test does not invert the Beta distribution. It computes $x^{\ast}=1-0.25/(1-\pi)^{K-1}$; if $x^{\ast}\le0$ the cell passes, otherwise it fails when $\mathrm{BetaCDF}(x^{\ast};\alpha,\beta)>0.05$. This is equivalent to $p_K^{lo}<0.75$. The quantile is found by bisection on the CDF and is used only for display. The incomplete Beta function is implemented in this crate.
+3. The prior is chosen by an explicit enum (`DirectPool`, `Discounted(ρ)` with $\rho\in[0,1)$, `LayerMean`, `Jeffreys`), not by comparing $\rho$ to 1. `Discounted` gives $\kappa=0$ when $\kappa_p+n_B=0$; `Discounted(1.0)` and $\rho<0$ return an error.
 
 </details>
 
@@ -241,11 +241,11 @@ with $Q^{\ast,C}_{iu}=p^C_K\hat q+q^C_K\bar Q_F$.
 <details>
 <summary>Implementation notes</summary>
 
-- The specification writes the first term of $E^{UB}$ as $\lfloor S_C/U\rfloor(U-\tilde C_F)$, which goes negative when $U<\tilde C_F$. The code takes $\max(0,\cdot)$ on that term. The two agree whenever $U\ge\tilde C_F$. The expression is continuous where $S_C$ is a whole multiple of $U$, so no tolerance is added to $\lfloor S_C/U\rfloor$.
-- $E^{UB}$ is only defined for $0\le S_C\le n^CU$. Outside that range the cell computation returns an error instead of a number; $S_C=n^CU$ is allowed. With $n^C=0$ the bills must be empty, and a cap, if given, must be positive.
-- Tasks whose cost or time is $\mathrm{NA}$ are left out of that dimension's samples; $p_K$ still uses the full $n^1$ and $n^0$. The "layer pool" means the arm's raw samples from all positive-weight cells in the layer, winsorized together. The library takes this pooled mean from the caller; building it from the local database is planned. Cancellation time $\bar T_C$ uses the same fallback chain as cost.
-- If $f>0$ but $Q^{\rm match}$ is missing, quality is $\mathrm{NA}$; if $f=0$, $\bar Q_F=Q^{\ast}_{F,u}$.
-- Overflow or NaN returns an error. If any dimension is $\mathrm{NA}$, the robust-comparison flag is off.
+1. The specification writes the first term of $E^{UB}$ as $\lfloor S_C/U\rfloor(U-\tilde C_F)$, which goes negative when $U<\tilde C_F$. The code takes $\max(0,\cdot)$ on that term. The two agree whenever $U\ge\tilde C_F$. The expression is continuous where $S_C$ is a whole multiple of $U$, so no tolerance is added to $\lfloor S_C/U\rfloor$.
+2. $E^{UB}$ is only defined for $0\le S_C\le n^CU$. Outside that range the cell computation returns an error instead of a number; $S_C=n^CU$ is allowed. With $n^C=0$ the bills must be empty, and a cap, if given, must be positive.
+3. Tasks whose cost or time is $\mathrm{NA}$ are left out of that dimension's samples; $p_K$ still uses the full $n^1$ and $n^0$. The "layer pool" means the arm's raw samples from all positive-weight cells in the layer, winsorized together. The library takes this pooled mean from the caller; building it from the local database is planned. Cancellation time $\bar T_C$ uses the same fallback chain as cost.
+4. If $f>0$ but $Q^{\rm match}$ is missing, quality is $\mathrm{NA}$; if $f=0$, $\bar Q_F=Q^{\ast}_{F,u}$.
+5. Overflow or NaN returns an error. If any dimension is $\mathrm{NA}$, the robust-comparison flag is off.
 
 </details>
 
@@ -271,18 +271,18 @@ V_{i,d}=100
 \left(\frac{1-Q^{\rm ref}_{R,d}+\epsilon}{1-Q^*_{i,d}+\epsilon}\right)^{g}.
 $$
 
-- $V=100$ means as good as the reference overall. Above 100 is better, below 100 is worse.
-- Each factor is a ratio "reference over this arm", so lower cost, shorter time and fewer defects ($1-Q^{\ast}$) all raise $V$.
-- $a$, $b$, $g$ are your weights for cost, time and quality, from the current weight version. They sum to 1 and each is at least $0.05$; without any evidence they are $1/3$ each.
-- $c_0=0.15$ RMB, $t_0=15$ s and $\epsilon=0.02$ are noise floors. They keep tiny differences between very cheap, very fast or near-perfect arms from producing huge ratios.
-- $(C^{\rm ref},T^{\rm ref},Q^{\rm ref})$ is the reference anchor. The library certifies it for each layer; see below.
+1. $V=100$ means as good as the reference overall. Above 100 is better, below 100 is worse.
+2. Each factor is a ratio "reference over this arm", so lower cost, shorter time and fewer defects ($1-Q^{\ast}$) all raise $V$.
+3. $a$, $b$, $g$ are your weights for cost, time and quality, from the current weight version. They sum to 1 and each is at least $0.05$; without any evidence they are $1/3$ each.
+4. $c_0=0.15$ RMB, $t_0=15$ s and $\epsilon=0.02$ are noise floors. They keep tiny differences between very cheap, very fast or near-perfect arms from producing huge ratios.
+5. $(C^{\rm ref},T^{\rm ref},Q^{\rm ref})$ is the reference anchor. The library certifies it for each layer; see below.
 
 The overall $V_i$ uses the same formula with overall values. A per-cell $V_{iu}$ is a diagnostic only. $V$ is computed in log space and requires $c_0,t_0,\epsilon>0$, $C,T\ge0$ and $Q\in[0,1]$.
 
 **Reference anchor.** The reference arm's cells get the same $\mathrm{miss}$, $\mathrm{fail}$ and $\mathrm{valid}$ states, and the same $F_{\rm thin}$ and $F_{\rm bad}$ kinds, as any other arm. Each layer is then put in one tier, checked in the order III, II, I; the first that applies wins.
 
-- **Tier III, not certified.** The reference has a $\mathrm{miss}$ cell, an $F_{\rm bad}$ cell, a positive-weight cell with an $\mathrm{NA}$ dimension, or fewer than 3 $\mathrm{valid}$ cells. Every reason that applies is listed, in this order. The layer has no $V_{i,d}$, but each arm's $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and the official frontier of section 8 are still produced. Because tier III is checked first, a layer with fewer than 3 positive-weight cells is never certified, even when every cell is valid.
-- **Tier II, clamped.** Not tier III, and the reference has at least one $F_{\rm thin}$ cell. The layer anchor is clamped; the cell values are not:
+1. **Tier III, not certified.** The reference has a $\mathrm{miss}$ cell, an $F_{\rm bad}$ cell, a positive-weight cell with an $\mathrm{NA}$ dimension, or fewer than 3 $\mathrm{valid}$ cells. Every reason that applies is listed, in this order. The layer has no $V_{i,d}$, but each arm's $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ and the official frontier of section 8 are still produced. Because tier III is checked first, a layer with fewer than 3 positive-weight cells is never certified, even when every cell is valid.
+2. **Tier II, clamped.** Not tier III, and the reference has at least one $F_{\rm thin}$ cell. The layer anchor is clamped; the cell values are not:
 
 $$
 X^{\rm anchor}_{R,d}={\rm clip}\bigl(A_X,\ (1-\theta)a_X,\ (1+\theta)a_X\bigr),\qquad
@@ -293,7 +293,7 @@ $$
 
 $X$ stands for cost and for time. Quality is clamped through its defect $D=1-Q$, with $A_D$ and $a_D$ defined the same way on $D$: $Q_{R,d}^{\rm anchor}=1-{\rm clip}\bigl(A_D,(1-\theta)a_D,(1+\theta)a_D\bigr)$. A layer value inside the window is used as it is; only a value outside it is pulled back to the edge. The cell values never change, so the fallback terms of section 4 still use the measured values. The library keeps $A$, $a$, the clamped value and the weight of the reference's $F_{\rm thin}$ cells for the header. In tier II a pure-route arm (one whose cells equal the reference's) need not score 100, and the legend has to say so.
 
-- **Tier I, certified.** Every other case. The anchor is the reference's measured layer values, and a pure-route arm scores exactly 100.
+3. **Tier I, certified.** Every other case. The anchor is the reference's measured layer values, and a pure-route arm scores exactly 100.
 
 $V$ is never divided by the pure-route arm's score to bring it back to 100; that would cancel the clamp and undo tier II.
 
@@ -325,12 +325,12 @@ The result lists whether the arm is eligible, every gate it failed, and the "aut
 <details>
 <summary>Implementation notes</summary>
 
-- The rate gates are compared in integers, $5n^C\le N^{\rm sub}$ and $2n^{\rm comp}\ge N^{\rm sub}$, so there is no rounding at the boundaries. If $N^{\rm sub}=0$, both rate gates fail without dividing.
-- All five gates are always evaluated, and every failed gate is listed once, in a fixed order; the check does not stop at the first failure.
-- $n^C$ and $N^{\rm sub}$ are summed over the positive-weight cells that have data; a $\mathrm{miss}$ cell adds 0. In a layer with a $\mathrm{miss}$ cell the failure list may therefore also name a rate gate. The arm is ineligible either way, through the complete-case gate.
-- The reference-base gate takes the reference arm's triples from the caller and does not check that they were really computed from the reference arm. The same cell given twice is an error.
-- For attribution, each failure label maps to one of the five gates, and the primary failures leave out the rate gates when the complete-case gate has already failed (step 9).
-- Step 9 checks the gates against the specification's worked example 6.
+1. The rate gates are compared in integers, $5n^C\le N^{\rm sub}$ and $2n^{\rm comp}\ge N^{\rm sub}$, so there is no rounding at the boundaries. If $N^{\rm sub}=0$, both rate gates fail without dividing.
+2. All five gates are always evaluated, and every failed gate is listed once, in a fixed order; the check does not stop at the first failure.
+3. $n^C$ and $N^{\rm sub}$ are summed over the positive-weight cells that have data; a $\mathrm{miss}$ cell adds 0. In a layer with a $\mathrm{miss}$ cell the failure list may therefore also name a rate gate. The arm is ineligible either way, through the complete-case gate.
+4. The reference-base gate takes the reference arm's triples from the caller and does not check that they were really computed from the reference arm. The same cell given twice is an error.
+5. For attribution, each failure label maps to one of the five gates, and the primary failures leave out the rate gates when the complete-case gate has already failed (step 9).
+6. Step 9 checks the gates against the specification's worked example 6.
 
 </details>
 
@@ -350,8 +350,8 @@ Here $\kappa_{\rm eff}$ is the prior strength $\kappa_{iu}$ from section 3, aver
 
 **Filling the gaps.** Fill values are built from the plain $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$ of the arm's own $\mathrm{valid}$ cells in the layer, never from the cancel-robust versions.
 
-- A $\mathrm{miss}$ cell gets two values. The optimistic one is the weighted median of the valid cells, taken separately for cost, time and quality. It is the lower median: the valid cells' weights are normalized, values are sorted, and the first one whose cumulative weight reaches one half wins. Quality is sorted by its defect $1-Q$, so a tie always picks the better real cell. The conservative one is the worst valid value in each dimension: the highest cost, the highest time and the lowest quality, which may come from different cells. 
-- A $\mathrm{fail}$ cell gets one value: in each dimension, the worse of its measured value and the worst valid value.
+1. A $\mathrm{miss}$ cell gets two values. The optimistic one is the weighted median of the valid cells, taken separately for cost, time and quality. It is the lower median: the valid cells' weights are normalized, values are sorted, and the first one whose cumulative weight reaches one half wins. Quality is sorted by its defect $1-Q$, so a tie always picks the better real cell. The conservative one is the worst valid value in each dimension: the highest cost, the highest time and the lowest quality, which may come from different cells. 
+2. A $\mathrm{fail}$ cell gets one value: in each dimension, the worse of its measured value and the worst valid value.
 
 The filled cells are aggregated over the layer as in section 5, once with every $\mathrm{miss}$ cell at its optimistic value and once at its conservative value; $\mathrm{fail}$ cells use their single value both times. An arm with $\mathrm{miss}$ cells is shown with the range $[V^{\rm diag,cons},V^{\rm diag,opt}]$; an arm with only $\mathrm{fail}$ cells gets a single $V^{\rm diag}$, labelled with the total weight of its failed cells $w^{\rm fail}_{i,d}$. $V$ is computed against the diagnostic reference anchor, which does not depend on the tier and is never clamped. Following line 570 of the spec, the worst valid value is taken in each dimension on its own: the highest cost, the highest time and the lowest quality among the reference's positive-weight $\mathrm{valid}$ cells, which may come from different cells. A valid cell with an $\mathrm{NA}$ dimension still counts for its other dimensions. In every positive-weight cell, each dimension of the reference is then the worse of its own value and that worst valid value; an $\mathrm{NA}$ dimension takes the worst valid value. A library function computes this anchor and the caller passes it to the row. If some dimension is missing in every positive-weight valid cell of the reference, there is no anchor, and the row has no $V$.
 
@@ -366,10 +366,10 @@ There is no way to sort by diagnostic $V$.
 <details>
 <summary>Implementation notes</summary>
 
-- The layer aggregates in a diagnostic row are computed after filling. A raw measured layer mean, such as the $A_C=0.165$ in the specification's example 8, has to be computed by the caller from the measured values; the library does not store it.
-- When an arm is not admitted, the row lists every reason that applies: $\mathrm{ESS}<3$ (`EssBelowThree`), no $\mathrm{valid}$ cell (`NoValidCell`), or a valid cell without a complete $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$, so no fill values can be built (`ValidCellIncomplete`). The list is empty exactly when the row is admitted.
-- Bad input returns an error: the same cell given twice, a weight or $\kappa$ that is not a finite number, or a $\mathrm{fail}$ cell without a complete measured triple.
-- Checked against the specification's examples: the $F_{\rm thin}$ cell and diagnostic aggregate 0.7875 in example 6, and the $F_{\rm bad}$ cell and 0.9000 in example 7. The raw mean 0.1650 in example 8 is checked by the tests for steps 6 and 7.
+1. The layer aggregates in a diagnostic row are computed after filling. A raw measured layer mean, such as the $A_C=0.165$ in the specification's example 8, has to be computed by the caller from the measured values; the library does not store it.
+2. When an arm is not admitted, the row lists every reason that applies: $\mathrm{ESS}<3$ (`EssBelowThree`), no $\mathrm{valid}$ cell (`NoValidCell`), or a valid cell without a complete $C^{\ast}$, $T^{\ast}$, $Q^{\ast}$, so no fill values can be built (`ValidCellIncomplete`). The list is empty exactly when the row is admitted.
+3. Bad input returns an error: the same cell given twice, a weight or $\kappa$ that is not a finite number, or a $\mathrm{fail}$ cell without a complete measured triple.
+4. Checked against the specification's examples: the $F_{\rm thin}$ cell and diagnostic aggregate 0.7875 in example 6, and the $F_{\rm bad}$ cell and 0.9000 in example 7. The raw mean 0.1650 in example 8 is checked by the tests for steps 6 and 7.
 
 </details>
 
@@ -411,13 +411,13 @@ If any positive-weight layer is tier III, the overall reference is $\mathrm{NA}$
 <details>
 <summary>Implementation notes</summary>
 
-- The caller passes in the arms of $\mathcal E_d$; the frontier function does not check eligibility itself.
-- An arm whose plain triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm off}_d$; an arm whose cancel-robust triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison.
-- The cancel-robust values are $\mathrm{NA}$ exactly where the plain values are, so with the library's own values an arm on the official frontier always has a complete cancel-robust triple. The specification does not cover a caller that passes in such an arm without one; the library then leaves it out of $\mathcal F^{\rm rec}_d$, in every build.
-- An arm tagged "bill too coarse" is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison, in both directions. If it is on the official frontier, nothing can beat it on the cancel-robust values, so it stays in $\mathcal F^{\rm rec}_d$.
-- The tag is decided by the cell note. The frontier result also lists the tagged arms in $\mathcal F^{\rm rec}_d$, meaning those whose robust dominance is switched off. That switch comes from each cell's robust-dominance flag, not from the notes; for the arms of $\mathcal E_d$ it agrees with the notes. An arm whose dominance is off only because its cancel-robust triple has an $\mathrm{NA}$ is not tagged; it is left out of $\mathcal F^{\rm rec}_d$ as described above.
-- A separate helper returns every arm tied for the highest $V$; the tests check that these arms are on the official frontier.
-- The tests check the specification's examples 6, 7 and 8 end to end, from $\mathcal E_d$ through the frontier to the official pick.
+1. The caller passes in the arms of $\mathcal E_d$; the frontier function does not check eligibility itself.
+2. An arm whose plain triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm off}_d$; an arm whose cancel-robust triple has an $\mathrm{NA}$ is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison.
+3. The cancel-robust values are $\mathrm{NA}$ exactly where the plain values are, so with the library's own values an arm on the official frontier always has a complete cancel-robust triple. The specification does not cover a caller that passes in such an arm without one; the library then leaves it out of $\mathcal F^{\rm rec}_d$, in every build.
+4. An arm tagged "bill too coarse" is left out of $\mathcal F^{\rm rob}_d$ and of every cancel-robust comparison, in both directions. If it is on the official frontier, nothing can beat it on the cancel-robust values, so it stays in $\mathcal F^{\rm rec}_d$.
+5. The tag is decided by the cell note. The frontier result also lists the tagged arms in $\mathcal F^{\rm rec}_d$, meaning those whose robust dominance is switched off. That switch comes from each cell's robust-dominance flag, not from the notes; for the arms of $\mathcal E_d$ it agrees with the notes. An arm whose dominance is off only because its cancel-robust triple has an $\mathrm{NA}$ is not tagged; it is left out of $\mathcal F^{\rm rec}_d$ as described above.
+6. A separate helper returns every arm tied for the highest $V$; the tests check that these arms are on the official frontier.
+7. The tests check the specification's examples 6, 7 and 8 end to end, from $\mathcal E_d$ through the frontier to the official pick.
 
 </details>
 
@@ -447,14 +447,14 @@ $$
 
 $u$ is rounded to 9 decimal places first, so a value that is exactly $0.25$ or $0.50$ stays inside the closed band.
 
-- Candidate weights are a grid: $a$, $b$, $g$ each from $0.05$ to $0.90$ in steps of $0.05$, with $a+b+g=1$. That gives 171 points.
-- The question bank has 96 questions: 3 pairs of dimensions, ratios from $\{1.3, 1.5, 2, 3\}$ for each of the two dimensions, and 2 directions.
-- Let $m$ be the smallest total level deviation from your answers over the grid. The core region $\Omega^{\rm core}_s$ holds the grid points with deviation $m$. The weight region $\Omega_s$ holds the points with deviation at most $m+1$, so one answer may be a level off.
-- The next question is the unanswered one that splits $\Omega_s$ most evenly over the five levels; on a tie, the first one in the bank. Questions stop once at least 4 are answered and $\Omega_s$ has at most 15 points, or after 10 questions.
-- The result is shown mainly as $\Omega_s$ and its range in each dimension. The default point $w_s$ is the grid point nearest the centroid of the core region.
-- If $m\ge2$, the answers are flagged as contradicting each other, with a list of the questions that are two or more levels off at some core point. The list may be empty.
-- The amounts in a question are computed one dimension at a time from a base value: the previous window's median (in the first window, 0.5 RMB and 120 s) for cost and time, and a defect rate passed in by the caller for quality. In each dimension, the option that is better in that dimension shows the base, and the worse option's value is computed from the ratio, so cost and time stay positive and a defect rate is never negative; in the equal dimension both show the base, with a floating-point error of at most 1 ulp (unit in the last place) of base plus noise floor (the value goes through the same ratio formula with a ratio of 1). A question whose computed defect rate would go above 1 is skipped, not clamped.
-- The cut points $0.25$ and $0.50$ and the "one answer may be a level off" error model have been checked in simulation only, not with real users.
+1. Candidate weights are a grid: $a$, $b$, $g$ each from $0.05$ to $0.90$ in steps of $0.05$, with $a+b+g=1$. That gives 171 points.
+2. The question bank has 96 questions: 3 pairs of dimensions, ratios from $\{1.3, 1.5, 2, 3\}$ for each of the two dimensions, and 2 directions.
+3. Let $m$ be the smallest total level deviation from your answers over the grid. The core region $\Omega^{\rm core}_s$ holds the grid points with deviation $m$. The weight region $\Omega_s$ holds the points with deviation at most $m+1$, so one answer may be a level off.
+4. The next question is the unanswered one that splits $\Omega_s$ most evenly over the five levels; on a tie, the first one in the bank. Questions stop once at least 4 are answered and $\Omega_s$ has at most 15 points, or after 10 questions.
+5. The result is shown mainly as $\Omega_s$ and its range in each dimension. The default point $w_s$ is the grid point nearest the centroid of the core region.
+6. If $m\ge2$, the answers are flagged as contradicting each other, with a list of the questions that are two or more levels off at some core point. The list may be empty.
+7. The amounts in a question are computed one dimension at a time from a base value: the previous window's median (in the first window, 0.5 RMB and 120 s) for cost and time, and a defect rate passed in by the caller for quality. In each dimension, the option that is better in that dimension shows the base, and the worse option's value is computed from the ratio, so cost and time stay positive and a defect rate is never negative; in the equal dimension both show the base, with a floating-point error of at most 1 ulp (unit in the last place) of base plus noise floor (the value goes through the same ratio formula with a ratio of 1). A question whose computed defect rate would go above 1 is skipped, not clamped.
+8. The cut points $0.25$ and $0.50$ and the "one answer may be a level off" error model have been checked in simulation only, not with real users.
 
 **Behaviour suggestions.** These use the choice events of the previous window: which arms you could pick and which one you picked. Only real choices between at least 2 arms count, and an event is dropped whole if any of its arms lacks values. Using the noise floors $c_0$, $t_0$, $\epsilon$ from the constants table and the arm's cell values from the previous window, set $x_l=\bigl(\ln(C^{\ast}_l+c_0),\ \ln(T^{\ast}_l+t_0),\ \ln(1-Q^{\ast}_l+\epsilon)\bigr)$, a choice model is fitted with $\vartheta\ge0$:
 
@@ -463,10 +463,10 @@ $$
 w_b=\frac{\hat\vartheta}{\lVert\hat\vartheta\rVert_1},\qquad \hat\lambda=\lVert\hat\vartheta\rVert_1 .
 $$
 
-- There is no signal, and so no suggestion, when there are fewer than 20 events, fewer than 2 different arms were ever picked, the differences $x_{j_e}-x_l$ between the chosen arm and each other option have rank below 3, $\hat\lambda<0.5$, or the fit has no well-defined maximum.
-- Otherwise the support set $\Omega_b$ holds the grid points whose profile log-likelihood is within $3.0$ of the maximum. It is a heuristic set, not a confidence region, and it can be empty: $w_b$ may lie off the grid (a component below 0.05), or the likelihood may be so sharp that even the nearest grid point is more than 3.0 below the maximum. An empty $\Omega_b$ is not an error: with a self-report there is then no overlap, so the "no overlap" row below applies; without one, the "no self-report, behaviour signal" row applies.
-- 200 bootstrap resamples report the 5%, 50% and 95% points of $w_b$. If fewer than 100 resamples succeed, the result is marked unstable.
-- The first window gives no signal. Behaviour from the window being scored, or from a later one, is refused with an error.
+1. There is no signal, and so no suggestion, when there are fewer than 20 events, fewer than 2 different arms were ever picked, the differences $x_{j_e}-x_l$ between the chosen arm and each other option have rank below 3, $\hat\lambda<0.5$, or the fit has no well-defined maximum.
+2. Otherwise the support set $\Omega_b$ holds the grid points whose profile log-likelihood is within $3.0$ of the maximum. It is a heuristic set, not a confidence region, and it can be empty: $w_b$ may lie off the grid (a component below 0.05), or the likelihood may be so sharp that even the nearest grid point is more than 3.0 below the maximum. An empty $\Omega_b$ is not an error: with a self-report there is then no overlap, so the "no overlap" row below applies; without one, the "no self-report, behaviour signal" row applies.
+3. 200 bootstrap resamples report the 5%, 50% and 95% points of $w_b$. If fewer than 100 resamples succeed, the result is marked unstable.
+4. The first window gives no signal. Behaviour from the window being scored, or from a later one, is refused with an error.
 
 **How they combine.** Behaviour never changes the weights. The weights in effect are $w_s$ if you have answered the questions, otherwise $1/3$ each. Behaviour only adds a suggestion:
 
@@ -481,12 +481,12 @@ $$
 <details>
 <summary>Implementation notes</summary>
 
-- On a tie for nearest grid point, $w_s$ is the point with the smallest $(a, b)$ in dictionary order. The distance is compared exactly in integers.
-- The core works with ratios only. Turning a question into amounts and times is done from the ratios; a question that cannot be shown is skipped and not asked again. A defect base of 0 is valid.
-- The rank is computed by elimination with full pivoting and a relative tolerance of $10^{-9}$. "Different arms" are counted by arm id.
-- $\hat\vartheta$ is found by projected Newton steps on $\vartheta\ge0$. Before the fit, the events are checked for separation. The data are separable if some direction $d\ge0$, $d\ne0$, makes the chosen arm $j_e$ of every event no worse than each other option $l$: $d\cdot(x_l-x_{j_e})\ge0$. The fit only runs when the differences have rank 3, so at least one of these is then strict, so the likelihood keeps rising along $\vartheta+td$ and has no maximum: separable data are not identifiable. Separable data, a nearly singular information matrix, or no convergence give "no signal: not identifiable" instead of an error.
-- A bootstrap resample that fails (difference rank below 3, separable, or no finite fit with $\lVert\vartheta\rVert_1>0$) is skipped and counted. The random seed is passed in by the caller.
-- The profile log-likelihood of $w$ is the maximum of the log-likelihood $L$ along $\lambda w$ for $\lambda>0$. If $L$ does not increase from $\lambda=0$, the value at $\lambda=0$ is used. The threshold for $\Omega_b$ uses $L(\hat\vartheta)$ directly; $w_b$ is not moved onto the grid.
+1. On a tie for nearest grid point, $w_s$ is the point with the smallest $(a, b)$ in dictionary order. The distance is compared exactly in integers.
+2. The core works with ratios only. Turning a question into amounts and times is done from the ratios; a question that cannot be shown is skipped and not asked again. A defect base of 0 is valid.
+3. The rank is computed by elimination with full pivoting and a relative tolerance of $10^{-9}$. "Different arms" are counted by arm id.
+4. $\hat\vartheta$ is found by projected Newton steps on $\vartheta\ge0$. Before the fit, the events are checked for separation. The data are separable if some direction $d\ge0$, $d\ne0$, makes the chosen arm $j_e$ of every event no worse than each other option $l$: $d\cdot(x_l-x_{j_e})\ge0$. The fit only runs when the differences have rank 3, so at least one of these is then strict, so the likelihood keeps rising along $\vartheta+td$ and has no maximum: separable data are not identifiable. Separable data, a nearly singular information matrix, or no convergence give "no signal: not identifiable" instead of an error.
+5. A bootstrap resample that fails (difference rank below 3, separable, or no finite fit with $\lVert\vartheta\rVert_1>0$) is skipped and counted. The random seed is passed in by the caller.
+6. The profile log-likelihood of $w$ is the maximum of the log-likelihood $L$ along $\lambda w$ for $\lambda>0$. If $L$ does not increase from $\lambda=0$, the value at $\lambda=0$ is used. The threshold for $\Omega_b$ uses $L(\hat\vartheta)$ directly; $w_b$ is not moved onto the grid.
 
 </details>
 
@@ -502,23 +502,23 @@ $$
 {\rm Win}(w)=\{i\in\mathcal E_d:\ V_{i,d}(w)=\max_{l\in\mathcal E_d}V_{l,d}(w)\}.
 $$
 
-- A tie is reported as the whole group; it is never broken by name.
-- There is no map in the first window, in a layer whose reference anchor is tier III, or when there is no arm to compare. The frontier of section 8 is still produced in those cases.
-- Each grid point is marked as inside or outside $\Omega_s$ and $\Omega_b$ from section 9. The caller passes these sets in.
-- Because $a$, $b$, $g$ are all positive, an arm dominated on the official frontier always has a lower $V$, so the winning group always contains an arm of $\mathcal F^{\rm off}_d$. Apart from ties within the tolerance (see the implementation notes), changing the weights only changes which frontier arm wins.
-- The winner does not depend on the reference anchor's tier I or tier II value, because that part is the same for every arm in the layer. Changing the reference or fallback arm can change the winner, because the fallback arm's cell values enter every arm's score.
+1. A tie is reported as the whole group; it is never broken by name.
+2. There is no map in the first window, in a layer whose reference anchor is tier III, or when there is no arm to compare. The frontier of section 8 is still produced in those cases.
+3. Each grid point is marked as inside or outside $\Omega_s$ and $\Omega_b$ from section 9. The caller passes these sets in.
+4. Because $a$, $b$, $g$ are all positive, an arm dominated on the official frontier always has a lower $V$, so the winning group always contains an arm of $\mathcal F^{\rm off}_d$. Apart from ties within the tolerance (see the implementation notes), changing the weights only changes which frontier arm wins.
+5. The winner does not depend on the reference anchor's tier I or tier II value, because that part is the same for every arm in the layer. Changing the reference or fallback arm can change the winner, because the fallback arm's cell values enter every arm's score.
 
 **Robust to your weights.** The region $\Omega$ is $\Omega_s$ if you have answered the questions. Otherwise it is the grid points whose largest difference from $W_k$ in any of the three weights is at most $0.10$, edge included; $W_k$ itself need not be on the grid.
 
-- For each arm, the share of points in $\Omega$ where it is in ${\rm Win}(w)$. Every member of a tie counts that point, so the shares can add up to more than 100%. The number of points where the arm wins alone is reported too.
-- An arm is labelled "it wins everywhere in your weight range" only if it wins alone at every point of $\Omega$. A tie at every point does not get the label.
+1. For each arm, the share of points in $\Omega$ where it is in ${\rm Win}(w)$. Every member of a tie counts that point, so the shares can add up to more than 100%. The number of points where the arm wins alone is reported too.
+2. An arm is labelled "it wins everywhere in your weight range" only if it wins alone at every point of $\Omega$. A tie at every point does not get the label.
 
 **Robust to sampling.** This is reported separately from the weight check.
 
-- Tasks are resampled with replacement 200 times, within each (arm, design cell) group. Every group keeps its number of tasks, so each arm's task count per cell, the frozen cell weights $\omega_u$ and the design grid stay as they are; only the outcomes inside each cell vary. The reference and fallback arms are resampled like every other arm. The caller passes each task's arm and cell and a random seed, and recomputes $\mathcal E_d$, each arm's cost, time and quality, and the anchor for each resample.
-- For each arm the result gives how often it is in ${\rm Win}(W_k)$ and how often it is on $\mathcal F^{\rm off}_d$. Every member of a tie counts, and the number of tied resamples is reported. A resample whose reference is tier III or whose $\mathcal E_d$ is empty has no winner, but its frontier still counts.
-- The same seed gives the same result.
-- Where the app's seed comes from is settled when the data layer is connected; the library takes the seed as an input and reports it.
+1. Tasks are resampled with replacement 200 times, within each (arm, design cell) group. Every group keeps its number of tasks, so each arm's task count per cell, the frozen cell weights $\omega_u$ and the design grid stay as they are; only the outcomes inside each cell vary. The reference and fallback arms are resampled like every other arm. The caller passes each task's arm and cell and a random seed, and recomputes $\mathcal E_d$, each arm's cost, time and quality, and the anchor for each resample.
+2. For each arm the result gives how often it is in ${\rm Win}(W_k)$ and how often it is on $\mathcal F^{\rm off}_d$. Every member of a tie counts, and the number of tied resamples is reported. A resample whose reference is tier III or whose $\mathcal E_d$ is empty has no winner, but its frontier still counts.
+3. The same seed gives the same result.
+4. Where the app's seed comes from is settled when the data layer is connected; the library takes the seed as an input and reports it.
 
 **Flip line.** Take the two arms $i$ and $j$ with the highest $V$ at $W_k$:
 
@@ -531,31 +531,31 @@ $$
 
 On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
-- There is no line with fewer than 2 arms, or when second and third place are tied (including three or more arms tied for first). If first and second place are tied now, the line is still drawn and marked as tied.
-- The line is explained in one sentence per dimension: keep that dimension's weight at its current value, and let the other two move with each at least 0.05. The front end picks which sentence to show.
-  - If the flip falls inside that range: "as long as the time weight is more than $r$ times the cost weight, $j$ overtakes $i$" (with the dimensions in the right order).
-  - If $j$ never leads there: $j$ does not overtake $i$.
-  - If $j$ leads everywhere there: $j$ is higher at every allowed weight. If the top two are currently within the tie tolerance, the core's Chinese message adds 「（当前差距在并列容差内，按 id 排序）」 (the gap is within the tie tolerance, so the order is by id).
-  - If they are tied everywhere there: they stay tied.
-- $r$ is rounded up to 2 decimal places, so the printed condition is always enough. Each sentence ends with "this holds for the current estimates".
+1. There is no line with fewer than 2 arms, or when second and third place are tied (including three or more arms tied for first). If first and second place are tied now, the line is still drawn and marked as tied.
+2. The line is explained in one sentence per dimension: keep that dimension's weight at its current value, and let the other two move with each at least 0.05. The front end picks which sentence to show.
+    1. If the flip falls inside that range: "as long as the time weight is more than $r$ times the cost weight, $j$ overtakes $i$" (with the dimensions in the right order).
+    2. If $j$ never leads there: $j$ does not overtake $i$.
+    3. If $j$ leads everywhere there: $j$ is higher at every allowed weight. If the top two are currently within the tie tolerance, the core's Chinese message adds 「（当前差距在并列容差内，按 id 排序）」 (the gap is within the tie tolerance, so the order is by id).
+    4. If they are tied everywhere there: they stay tied.
+3. $r$ is rounded up to 2 decimal places, so the printed condition is always enough. Each sentence ends with "this holds for the current estimates".
 
 **Robust to noise floors.** The winner at $W_k$ is computed 7 times: once with the noise floors as set, and once each with $c_0$, $t_0$ and $\epsilon$ halved and doubled, one at a time. If all 7 winners are the same, the result is marked robust to noise floors; otherwise each run's winner is listed. This is a diagnostic only: the scores shown still use the noise floors as set.
 
 <details>
 <summary>Implementation notes</summary>
 
-- The core functions work on one layer or one overall result. The caller runs them for each layer and each overall result of a scope.
-- The grid is built in exact twentieths, the same way as in section 9. The module builds its own copy for now; switching to the section 9 grid code is planned.
-- When $\Omega_s$ or $\Omega_b$ is passed in, every point must be on the 0.05 grid (tolerance $10^{-9}$) and no point may repeat; otherwise it is an error.
-- $\Omega_s$ is passed as none when there is no self-report. It is never empty by definition (it holds the points that fit your answers best), so an empty $\Omega_s$ is an error.
-- $\Omega_b$ is passed as none when behaviour has no signal. An empty $\Omega_b$ means behaviour has a signal but no grid point qualifies (section 9); it is accepted and no point is marked. The result says which of the three cases applies: no signal, no grid point, or how many points.
-- The distance check for $\Omega$ uses a tolerance of $10^{-9}$, so a point exactly $0.10$ away is inside. With $W_k=1/3$ each, $\Omega$ has 12 points.
-- Resampling uses a xorshift64 generator with rejection sampling for indices, so there is no modulo bias. A seed of 0 is an error. All counts use checked addition and report an error on overflow.
-- Ties use the same tolerance as the official pick ($10^{-12}$ on $V$). So an arm dominated by a hair can share a tie group with the arm that dominates it, and the group is reported whole. Every winner group is checked to contain an arm of $\mathcal F^{\rm off}_d$; a group without one is an error.
-- If first and second place are tied, $i$ and $j$ are ordered by arm id. This only sets the display order; it does not pick a winner.
-- The structure keeps the unrounded ratio $r$; only the printed value is rounded up. A ratio within $10^{-11}$ of a two-decimal value prints as that value, so 1.1 prints as 1.10, not 1.11.
-- The noise floor checks halve and double the floors set for that scope.
-- The specification's two-arm example is a test: Y wins 93 grid points and X wins 78; inside the 14-point $\Omega_s$ from an honest set of answers, Y wins all 14.
+1. The core functions work on one layer or one overall result. The caller runs them for each layer and each overall result of a scope.
+2. The grid is built in exact twentieths, the same way as in section 9. The module builds its own copy for now; switching to the section 9 grid code is planned.
+3. When $\Omega_s$ or $\Omega_b$ is passed in, every point must be on the 0.05 grid (tolerance $10^{-9}$) and no point may repeat; otherwise it is an error.
+4. $\Omega_s$ is passed as none when there is no self-report. It is never empty by definition (it holds the points that fit your answers best), so an empty $\Omega_s$ is an error.
+5. $\Omega_b$ is passed as none when behaviour has no signal. An empty $\Omega_b$ means behaviour has a signal but no grid point qualifies (section 9); it is accepted and no point is marked. The result says which of the three cases applies: no signal, no grid point, or how many points.
+6. The distance check for $\Omega$ uses a tolerance of $10^{-9}$, so a point exactly $0.10$ away is inside. With $W_k=1/3$ each, $\Omega$ has 12 points.
+7. Resampling uses a xorshift64 generator with rejection sampling for indices, so there is no modulo bias. A seed of 0 is an error. All counts use checked addition and report an error on overflow.
+8. Ties use the same tolerance as the official pick ($10^{-12}$ on $V$). So an arm dominated by a hair can share a tie group with the arm that dominates it, and the group is reported whole. Every winner group is checked to contain an arm of $\mathcal F^{\rm off}_d$; a group without one is an error.
+9. If first and second place are tied, $i$ and $j$ are ordered by arm id. This only sets the display order; it does not pick a winner.
+10. The structure keeps the unrounded ratio $r$; only the printed value is rounded up. A ratio within $10^{-11}$ of a two-decimal value prints as that value, so 1.1 prints as 1.10, not 1.11.
+11. The noise floor checks halve and double the floors set for that scope.
+12. The specification's two-arm example is a test: Y wins 93 grid points and X wins 78; inside the 14-point $\Omega_s$ from an honest set of answers, Y wins all 14.
 
 </details>
 
@@ -567,25 +567,25 @@ This checks whether a route really serves the model it claims. The probe results
 
 **Probe set.**
 
-- **Deterministic**, 10 questions: addition, subtraction, multiplication, remainder, reversing a digit string, converting to upper case, the largest of five numbers, sorting four numbers, counting the letter a, and the sum of digits. The numbers come from a seed (seed 0 is an error) by rejection sampling, so there is no modulo bias. Each question has two wordings, chosen by the seed, and the sorting question never gives a list that is already sorted.
-- **Fingerprint**, 10 questions answered with a single token, each sampled 20 times: a random number, a colour, a letter, a fruit, an animal, a number from 1 to 10, a country, a day of the week, a planet and a musical instrument.
-- **Capability**: tool calling (`record_number`, whose arguments must be exactly `{"n":<number>}`, ignoring whitespace), strict JSON (the reply body must be exactly `{"answer":<number>}`, ignoring whitespace; wrapping it in a code block counts as a mismatch), passing back a thinking signature (only on the Anthropic protocol, and only if the route claims support), and long-context recall (once a month). Only the capabilities the route claims are checked; if it claims none, this class does not apply.
-- Probes are sent in random order, with a random pause of 1 to 4 seconds between requests. The local script does this.
+1. **Deterministic**, 10 questions: addition, subtraction, multiplication, remainder, reversing a digit string, converting to upper case, the largest of five numbers, sorting four numbers, counting the letter a, and the sum of digits. The numbers come from a seed (seed 0 is an error) by rejection sampling, so there is no modulo bias. Each question has two wordings, chosen by the seed, and the sorting question never gives a list that is already sorted.
+2. **Fingerprint**, 10 questions answered with a single token, each sampled 20 times: a random number, a colour, a letter, a fruit, an animal, a number from 1 to 10, a country, a day of the week, a planet and a musical instrument.
+3. **Capability**: tool calling (`record_number`, whose arguments must be exactly `{"n":<number>}`, ignoring whitespace), strict JSON (the reply body must be exactly `{"answer":<number>}`, ignoring whitespace; wrapping it in a code block counts as a mismatch), passing back a thinking signature (only on the Anthropic protocol, and only if the route claims support), and long-context recall (once a month). Only the capabilities the route claims are checked; if it claims none, this class does not apply.
+4. Probes are sent in random order, with a random pause of 1 to 4 seconds between requests. The local script does this.
 
 **Verdict per class**, for each run day in Beijing time:
 
-- Deterministic: 9 or more correct passes, 7 or fewer fails, 8 is undetermined. Fingerprint: 8 or more of the 10 questions consistent with the baseline passes, 5 or fewer fails, and 6 or 7 is undetermined. All of these thresholds are provisional until the observation period checks them.
-- A 429 rate limit, a timeout, any other HTTP error or an unparseable reply makes that question unanswered, not wrong. A class passes or fails only if no way of counting the unanswered questions would change the verdict; otherwise it is undetermined.
-- Fingerprint answers are compared with the official baseline, its two runs pooled, by Jensen-Shannon divergence (base 2). The threshold $\tau_{\rm JS}$ is the 95th percentile (nearest rank) of the per-question divergence between the two baseline runs; with 10 questions that is the largest one. A baseline older than 30 days, or not from the same model version, protocol and sampling parameters, counts as no baseline, and the class is undetermined. The sampling part of that key is only trimmed, not lower-cased. Its canonical form is lower-case `key=value` parameters joined in a stable order, for example `temperature=1`. `Temperature=1` is a different key from `temperature=1`, so the class is undetermined rather than a mismatch.
-- Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or, when the thinking-signature round trip applies (Anthropic Messages protocol and the route claims thinking support), a passed-back thinking signature is rejected with HTTP 400. On another protocol, or without a thinking claim, the same 400 is not a hard failure.
-- Model names are trimmed and lower-cased, then mapped through the alias table (its keys are lower-case, and a matched value is trimmed and lower-cased too), then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`. A caller-supplied family-prefix table and official-host table are trimmed and lower-cased the same way when they are used (the prefix, the host and the vendor name), so `Anthropic` and ` API.Anthropic.com ` match `anthropic` and `api.anthropic.com`. An entry that is empty after trimming is ignored. The longest prefix still wins.
+1. Deterministic: 9 or more correct passes, 7 or fewer fails, 8 is undetermined. Fingerprint: 8 or more of the 10 questions consistent with the baseline passes, 5 or fewer fails, and 6 or 7 is undetermined. All of these thresholds are provisional until the observation period checks them.
+2. A 429 rate limit, a timeout, any other HTTP error or an unparseable reply makes that question unanswered, not wrong. A class passes or fails only if no way of counting the unanswered questions would change the verdict; otherwise it is undetermined.
+3. Fingerprint answers are compared with the official baseline, its two runs pooled, by Jensen-Shannon divergence (base 2). The threshold $\tau_{\rm JS}$ is the 95th percentile (nearest rank) of the per-question divergence between the two baseline runs; with 10 questions that is the largest one. A baseline older than 30 days, or not from the same model version, protocol and sampling parameters, counts as no baseline, and the class is undetermined. The sampling part of that key is only trimmed, not lower-cased. Its canonical form is lower-case `key=value` parameters joined in a stable order, for example `temperature=1`. `Temperature=1` is a different key from `temperature=1`, so the class is undetermined rather than a mismatch.
+4. Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or, when the thinking-signature round trip applies (Anthropic Messages protocol and the route claims thinking support), a passed-back thinking signature is rejected with HTTP 400. On another protocol, or without a thinking claim, the same 400 is not a hard failure.
+5. Model names are trimmed and lower-cased, then mapped through the alias table (its keys are lower-case, and a matched value is trimmed and lower-cased too), then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`. A caller-supplied family-prefix table and official-host table are trimmed and lower-cased the same way when they are used (the prefix, the host and the vendor name), so `Anthropic` and ` API.Anthropic.com ` match `anthropic` and `api.anthropic.com`. An entry that is empty after trimming is ignored. The longest prefix still wins.
 
 **Grades**, per arm per window; the first match wins: official direct (no grade; the host is on the official host list and the vendor matches), then C, A, A− and B. An official direct arm with a hard failure in the window, from probes or passive logs, is flagged "official route anomaly" for troubleshooting; this does not change its status or block the gate.
 
-- **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
-- **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure, and the capability class fails on at most 1 run day. A run day on which the capability class does not apply counts as a pass.
-- **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, fingerprint is acceptable unless it has zero pass days and at least one fail day (not run, only undetermined, or at least one pass day all qualify), and the capability class fails on at most 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
-- **B** (unverified): everything else.
+1. **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
+2. **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure, and the capability class fails on at most 1 run day. A run day on which the capability class does not apply counts as a pass.
+3. **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, fingerprint is acceptable unless it has zero pass days and at least one fail day (not run, only undetermined, or at least one pass day all qualify), and the capability class fails on at most 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
+4. **B** (unverified): everything else.
 
 If the capability class fails on 2 or more run days and the arm is not already C, the grade is B.
 
@@ -593,11 +593,11 @@ If the capability class fails on 2 or more run days and the arm is not already C
 
 **Log-integrity gate**, compared in integers:
 
-- At least 95% of the requests in the window can be parsed.
-- Version mismatches within the same family are at most 5%. The denominator is the parseable requests minus those with no model and those from another family; if that is 0, this check passes.
-- If more than 20% of the parseable requests have no model, the arm is only flagged "returned model cannot be checked".
-- Requests from another family are already hard failures and are not counted twice.
-- A window with no requests passes and is flagged "no requests to check".
+1. At least 95% of the requests in the window can be parsed.
+2. Version mismatches within the same family are at most 5%. The denominator is the parseable requests minus those with no model and those from another family; if that is 0, this check passes.
+3. If more than 20% of the parseable requests have no model, the arm is only flagged "returned model cannot be checked".
+4. Requests from another family are already hard failures and are not counted twice.
+5. A window with no requests passes and is flagged "no requests to check".
 
 **Probe budget** (spec §9): per calendar month in Beijing time, 10 RMB by default. A run goes ahead only if this month's spending plus the run's estimate stays within the budget, and probing stops once spending reaches the budget (9.99 + 0.01 is allowed, 9.99 + 0.02 stops).
 
@@ -606,9 +606,9 @@ If the capability class fails on 2 or more run days and the arm is not already C
 <details>
 <summary>Implementation notes</summary>
 
-- Modules: `probe` (probe set and per-class verdicts) and `authenticity` (grades, gate input and log integrity).
-- Connection to step 8: `assess(..).gate_input()` gives the authenticity input of `assess_eligibility`, and `log_integrity(..).passes` gives its log-integrity input. The signature of the step 8 function is unchanged.
-- The request plan and the run script cover the 10 deterministic questions plus tool calling and strict JSON, on OpenAI Chat Completions only. Judging thinking-signature and long-context answers is implemented, but generating those requests is not.
+1. Modules: `probe` (probe set and per-class verdicts) and `authenticity` (grades, gate input and log integrity).
+2. Connection to step 8: `assess(..).gate_input()` gives the authenticity input of `assess_eligibility`, and `log_integrity(..).passes` gives its log-integrity input. The signature of the step 8 function is unchanged.
+3. The request plan and the run script cover the 10 deterministic questions plus tool calling and strict JSON, on OpenAI Chat Completions only. Judging thinking-signature and long-context answers is implemented, but generating those requests is not.
 
 </details>
 
@@ -623,8 +623,8 @@ A run on a relay over OpenAI Chat Completions with `claude-haiku-4-5`, 2026-10-2
 
 These parts of the specification are not implemented:
 
-- **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6).
-- **The rest of step 13**: running the observation period (positive and negative controls). The probe-run library can collect an official-direct fingerprint baseline over HTTP and store it; tests use a mock server, and there is no desktop button. A baseline older than 30 days still counts as missing. Still open: hard-failure days from passive logs; an operating-system cron or background daemon for probes; generating thinking-signature and long-context requests. A shell run can already send one selected arm when consent and the monthly budget allow, store the judged results, and record a provisional charge. The page can run that once by hand. It can also enable an in-app re-run every 24 hours (`PROBE_SCHEDULE_INTERVAL_MS`, provisional): the schedule starts only when you enable it, the first send is one interval later, missed intervals are not caught up, a monthly budget stop cancels further scheduled sends, and quitting the app stops it. Probe grade thresholds remain provisional.
+1. **The rest of step 10**: showing the old and new results side by side when $R_k$ or $F_k$ changes (§13), the hint after failures that you usually switch to some arm X and might make X the fallback (§13), and descriptive totals across scoring scopes (§6).
+2. **The rest of step 13**: running the observation period (positive and negative controls). The probe-run library can collect an official-direct fingerprint baseline over HTTP and store it; tests use a mock server, and there is no desktop button. A baseline older than 30 days still counts as missing. Still open: hard-failure days from passive logs; an operating-system cron or background daemon for probes; generating thinking-signature and long-context requests. A shell run can already send one selected arm when consent and the monthly budget allow, store the judged results, and record a provisional charge. The page can run that once by hand. It can also enable an in-app re-run every 24 hours (`PROBE_SCHEDULE_INTERVAL_MS`, provisional): the schedule starts only when you enable it, the first send is one interval later, missed intervals are not caught up, a monthly budget stop cancels further scheduled sends, and quitting the app stops it. Probe grade thresholds remain provisional.
 
 ### Constants
 

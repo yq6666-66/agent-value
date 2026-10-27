@@ -65,7 +65,7 @@ $$
 \hat q=\mathrm{clip}\!\left(\frac{\sum_{j=1}^{n_q}q_j+m_0q_B}{n_q+m_0},\ 0.01,\ 0.99\right),\qquad m_0=0.5 .
 $$
 
-1. **Success-rate mode**, otherwise. Every arm in the layer, including the reference arm, gets $\hat q=0.99$, so $Q^{\ast}$ becomes the probability of delivering successfully. The results are to be labelled that way (planned with the display), rather than presenting missing data as average quality.
+2. **Success-rate mode**, otherwise. Every arm in the layer, including the reference arm, gets $\hat q=0.99$, so $Q^{\ast}$ becomes the probability of delivering successfully. The results are to be labelled that way (planned with the display), rather than presenting missing data as average quality.
 
 ### 2. Cell weights and cell states
 
@@ -293,7 +293,7 @@ $$
 
 $X$ stands for cost and for time. Quality is clamped through its defect $D=1-Q$, with $A_D$ and $a_D$ defined the same way on $D$: $Q_{R,d}^{\rm anchor}=1-{\rm clip}\bigl(A_D,(1-\theta)a_D,(1+\theta)a_D\bigr)$. A layer value inside the window is used as it is; only a value outside it is pulled back to the edge. The cell values never change, so the fallback terms of section 4 still use the measured values. The library keeps $A$, $a$, the clamped value and the weight of the reference's $F_{\rm thin}$ cells for the header. In tier II a pure-route arm (one whose cells equal the reference's) need not score 100, and the legend has to say so.
 
-1. **Tier I, certified.** Every other case. The anchor is the reference's measured layer values, and a pure-route arm scores exactly 100.
+3. **Tier I, certified.** Every other case. The anchor is the reference's measured layer values, and a pure-route arm scores exactly 100.
 
 $V$ is never divided by the pure-route arm's score to bring it back to 100; that would cancel the clamp and undo tier II.
 
@@ -533,11 +533,11 @@ On the side where the left-hand side is above 0, $j$ is ahead of $i$.
 
 1. There is no line with fewer than 2 arms, or when second and third place are tied (including three or more arms tied for first). If first and second place are tied now, the line is still drawn and marked as tied.
 2. The line is explained in one sentence per dimension: keep that dimension's weight at its current value, and let the other two move with each at least 0.05. The front end picks which sentence to show.
-3. If the flip falls inside that range: "as long as the time weight is more than $r$ times the cost weight, $j$ overtakes $i$" (with the dimensions in the right order).
-4. If $j$ never leads there: $j$ does not overtake $i$.
-5. If $j$ leads everywhere there: $j$ is higher at every allowed weight. If the top two are currently within the tie tolerance, the core's Chinese message adds 「（当前差距在并列容差内，按 id 排序）」 (the gap is within the tie tolerance, so the order is by id).
-6. If they are tied everywhere there: they stay tied.
-7. $r$ is rounded up to 2 decimal places, so the printed condition is always enough. Each sentence ends with "this holds for the current estimates".
+  1. If the flip falls inside that range: "as long as the time weight is more than $r$ times the cost weight, $j$ overtakes $i$" (with the dimensions in the right order).
+  2. If $j$ never leads there: $j$ does not overtake $i$.
+  3. If $j$ leads everywhere there: $j$ is higher at every allowed weight. If the top two are currently within the tie tolerance, the core's Chinese message adds 「（当前差距在并列容差内，按 id 排序）」 (the gap is within the tie tolerance, so the order is by id).
+  4. If they are tied everywhere there: they stay tied.
+3. $r$ is rounded up to 2 decimal places, so the printed condition is always enough. Each sentence ends with "this holds for the current estimates".
 
 **Robust to noise floors.** The winner at $W_k$ is computed 7 times: once with the noise floors as set, and once each with $c_0$, $t_0$ and $\epsilon$ halved and doubled, one at a time. If all 7 winners are the same, the result is marked robust to noise floors; otherwise each run's winner is listed. This is a diagnostic only: the scores shown still use the noise floors as set.
 
@@ -574,18 +574,18 @@ This checks whether a route really serves the model it claims. The probe results
 
 **Verdict per class**, for each run day in Beijing time:
 
-1. Deterministic: 9 or more correct passes, 7 or fewer fails, 8 is undetermined. Fingerprint: 8 or more of the 10 questions consistent with the baseline passes, 5 or fewer fails, and 6 or 7 is undetermined. All of these thresholds are provisional until the observation period checks them.
-2. A 429 rate limit, a timeout, any other HTTP error or an unparseable reply makes that question unanswered, not wrong. A class passes or fails only if no way of counting the unanswered questions would change the verdict; otherwise it is undetermined.
-3. Fingerprint answers are compared with the official baseline, its two runs pooled, by Jensen-Shannon divergence (base 2). The threshold $\tau_{\rm JS}$ is the 95th percentile (nearest rank) of the per-question divergence between the two baseline runs; with 10 questions that is the largest one. A baseline older than 30 days, or not from the same model version, protocol and sampling parameters, counts as no baseline, and the class is undetermined. The sampling part of that key is only trimmed, not lower-cased. Its canonical form is lower-case `key=value` parameters joined in a stable order, for example `temperature=1`. `Temperature=1` is a different key from `temperature=1`, so the class is undetermined rather than a mismatch.
-4. Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or, when the thinking-signature round trip applies (Anthropic Messages protocol and the route claims thinking support), a passed-back thinking signature is rejected with HTTP 400. On another protocol, or without a thinking claim, the same 400 is not a hard failure.
-5. Model names are trimmed and lower-cased, then mapped through the alias table (its keys are lower-case, and a matched value is trimmed and lower-cased too), then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`. A caller-supplied family-prefix table and official-host table are trimmed and lower-cased the same way when they are used (the prefix, the host and the vendor name), so `Anthropic` and ` API.Anthropic.com ` match `anthropic` and `api.anthropic.com`. An entry that is empty after trimming is ignored. The longest prefix still wins.
+5. Deterministic: 9 or more correct passes, 7 or fewer fails, 8 is undetermined. Fingerprint: 8 or more of the 10 questions consistent with the baseline passes, 5 or fewer fails, and 6 or 7 is undetermined. All of these thresholds are provisional until the observation period checks them.
+6. A 429 rate limit, a timeout, any other HTTP error or an unparseable reply makes that question unanswered, not wrong. A class passes or fails only if no way of counting the unanswered questions would change the verdict; otherwise it is undetermined.
+7. Fingerprint answers are compared with the official baseline, its two runs pooled, by Jensen-Shannon divergence (base 2). The threshold $\tau_{\rm JS}$ is the 95th percentile (nearest rank) of the per-question divergence between the two baseline runs; with 10 questions that is the largest one. A baseline older than 30 days, or not from the same model version, protocol and sampling parameters, counts as no baseline, and the class is undetermined. The sampling part of that key is only trimmed, not lower-cased. Its canonical form is lower-case `key=value` parameters joined in a stable order, for example `temperature=1`. `Temperature=1` is a different key from `temperature=1`, so the class is undetermined rather than a mismatch.
+8. Hard failures: the returned model belongs to another model family; the usage block has a field name used only by another vendor (names from the model's own vendor and from the protocol in use are allowed); or, when the thinking-signature round trip applies (Anthropic Messages protocol and the route claims thinking support), a passed-back thinking signature is rejected with HTTP 400. On another protocol, or without a thinking claim, the same 400 is not a hard failure.
+9. Model names are trimmed and lower-cased, then mapped through the alias table (its keys are lower-case, and a matched value is trimmed and lower-cased too), then stripped of a trailing date (YYYYMMDD, YYYY-MM-DD or MMDD). The family is the name without its version part, for example `claude-haiku-4-5` belongs to `claude-haiku`. A caller-supplied family-prefix table and official-host table are trimmed and lower-cased the same way when they are used (the prefix, the host and the vendor name), so `Anthropic` and ` API.Anthropic.com ` match `anthropic` and `api.anthropic.com`. An entry that is empty after trimming is ignored. The longest prefix still wins.
 
 **Grades**, per arm per window; the first match wins: official direct (no grade; the host is on the official host list and the vendor matches), then C, A, A− and B. An official direct arm with a hard failure in the window, from probes or passive logs, is flagged "official route anomaly" for troubleshooting; this does not change its status or block the gate.
 
-1. **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
-2. **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure, and the capability class fails on at most 1 run day. A run day on which the capability class does not apply counts as a pass.
-3. **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, fingerprint is acceptable unless it has zero pass days and at least one fail day (not run, only undetermined, or at least one pass day all qualify), and the capability class fails on at most 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
-4. **B** (unverified): everything else.
+10. **C** (suspected mismatch with the baseline): hard failures on 2 or more run days, or deterministic failing on 2 or more run days, or fingerprint failing on 2 or more run days. A failing capability class does not count towards C.
+11. **A**: deterministic, fingerprint and capability each pass on 2 or more run days, with no hard failure, and the capability class fails on at most 1 run day. A run day on which the capability class does not apply counts as a pass.
+12. **A−**: deterministic and capability each pass on at least 1 run day, no hard failure, fingerprint is acceptable unless it has zero pass days and at least one fail day (not run, only undetermined, or at least one pass day all qualify), and the capability class fails on at most 1 run day. Here too, a run day on which the capability class does not apply counts as a pass.
+13. **B** (unverified): everything else.
 
 If the capability class fails on 2 or more run days and the arm is not already C, the grade is B.
 

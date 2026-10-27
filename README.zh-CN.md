@@ -37,20 +37,20 @@ $$
 
 $$
 \begin{aligned}
-C^*_{iu}&=p_K\tilde C_S+E[n_F]\tilde C_F+q_K\,C^*_{F,u}+\frac{n^C\hat{\bar C}_C}{n^1+n^0},\\
-T^*_{iu}&=p_K\tilde T_S+E[n_F]\tilde T_F+E[n_W]D+q_K\,T^*_{F,u}+\frac{n^C\bar T_C}{n^1+n^0},\\
-Q^*_{iu}&=p_K\hat q+q_K\bar Q_F .
+C^{*}_{iu}&=p_K\tilde C_S+E[n_F]\tilde C_F+q_K\,C^{*}_{F,u}+\frac{n^C\hat{\bar C}_C}{n^1+n^0},\\
+T^{*}_{iu}&=p_K\tilde T_S+E[n_F]\tilde T_F+E[n_W]D+q_K\,T^{*}_{F,u}+\frac{n^C\bar T_C}{n^1+n^0},\\
+Q^{*}_{iu}&=p_K\hat q+q_K\bar Q_F .
 \end{aligned}
 $$
 
-自左至右依次为成功尝试、失败尝试、转交兜底、取消摊销（时间式另含重试间隔 \(D\)）。\(n^1,n^0,n^C\) 分别为成功、失败、取消次数；分母 \(n^1+n^0=0\) 时该单元对应维为 \(\mathrm{NA}\)。\(\tilde C_S,\tilde C_F\)（时间同理）为经缩尾并向基准收缩后的成功/失败侧均值；\(\hat{\bar C}_C,\bar T_C\) 为取消任务的平均成本/时间；\(\hat q\) 为本臂成功交付质量估计，\(\bar Q_F\) 为转交后由兜底完成的质量（向兜底单元质量收缩）。参照臂与兜底臂自身的转交项为 0。\(Q^*\in[0,1]\)。
+自左至右依次为成功尝试、失败尝试、转交兜底、取消摊销（时间式另含重试间隔 \(D\)）。\(n^1,n^0,n^C\) 分别为成功、失败、取消次数；分母 \(n^1+n^0=0\) 时该单元对应维为 \(\mathrm{NA}\)。\(\tilde C_S,\tilde C_F\)（时间同理）为经缩尾并向基准收缩后的成功/失败侧均值；\(\hat{\bar C}_C,\bar T_C\) 为取消任务的平均成本/时间；\(\hat q\) 为本臂成功交付质量估计，\(\bar Q_F\) 为转交后由兜底完成的质量（向兜底单元质量收缩）。参照臂与兜底臂自身的转交项为 0。\(Q^{*}\in[0,1]\)。
 
-层与总体对正权重单元、层做加权聚合得到 \(C^*,T^*,Q^*\)（任一正权重单元为 \(\mathrm{NA}\) 则聚合为 \(\mathrm{NA}\)）。价值分（即 \(V\)）用**聚合后**的值相对参照锚点 \(C^{\mathrm{ref}},T^{\mathrm{ref}},Q^{\mathrm{ref}}\)（参照臂的聚合值），且须 \(C^*,T^*,Q^*\) 三者均非 \(\mathrm{NA}\)：
+层与总体对正权重单元、层做加权聚合得到 \(C^{*},T^{*},Q^{*}\)（任一正权重单元为 \(\mathrm{NA}\) 则聚合为 \(\mathrm{NA}\)）。价值分（即 \(V\)）用**聚合后**的值相对参照锚点 \(C^{\mathrm{ref}},T^{\mathrm{ref}},Q^{\mathrm{ref}}\)（参照臂的聚合值），且须 \(C^{*},T^{*},Q^{*}\) 三者均非 \(\mathrm{NA}\)：
 
 $$
-V=100\left(\frac{C^{\mathrm{ref}}+c_0}{C^*+c_0}\right)^{a}
-\left(\frac{T^{\mathrm{ref}}+t_0}{T^*+t_0}\right)^{b}
-\left(\frac{1-Q^{\mathrm{ref}}+\epsilon}{1-Q^*+\epsilon}\right)^{g}.
+V=100\left(\frac{C^{\mathrm{ref}}+c_0}{C^{*}+c_0}\right)^{a}
+\left(\frac{T^{\mathrm{ref}}+t_0}{T^{*}+t_0}\right)^{b}
+\left(\frac{1-Q^{\mathrm{ref}}+\epsilon}{1-Q^{*}+\epsilon}\right)^{g}.
 $$
 
 \(V=100\) 与参照相当，更高更好。\(a,b,g\) 为成本/时间/质量的指数权重，\(a+b+g=1\) 且各项 \(\ge0.05\)（无依据时各取 \(1/3\)），来自五级自报。平滑常数 \(c_0=0.15\) 元、\(t_0=15\) 秒、\(\epsilon=0.02\)。首个评分窗可展示前沿但不显示 \(V\)（权重尚未校准）。档位阈值维持暂定；真实性未定、仅供参考（观测开跑与满窗校准已永久取消）。

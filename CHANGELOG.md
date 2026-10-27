@@ -42,6 +42,8 @@ Root README.md and README.zh-CN.md Technology sections add the implemented core 
 
 ### Fixed
 
+- GitHub README rendering for C*/T*/Q* formulas (bare `*` → braced `*`).
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

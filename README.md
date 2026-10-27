@@ -33,7 +33,7 @@ E[n_W]&=E[n_F]-q_K .
 \end{aligned}
 $$
 
-Here \(p_K\) is the probability of success within the arm’s own \(K\) tries, \(q_K\) the probability of handing off to the fallback after all \(K\) fail, \(E[n_F]\) the expected number of own failures, and \(E[n_W]\) the expected waits before a retry (excluding the final failure that does not retry). Unit expected cost, active time, and delivery quality:
+Here \(p_K\) is the probability of success within the arm’s own \(K\) tries, \(q_K\) the probability of handing off to the fallback after all \(K\) fail, \(E[n_F]\) the expected number of own failures, and \(E[n_W]\) the expected waits before a retry (excluding the final failure that does not retry). Unit expected cost, active time, and delivery quality. Let arm index be \(i\) and unit index be \(u\).
 
 $$
 \begin{aligned}
@@ -45,7 +45,7 @@ $$
 
 Left to right: successful try, failed tries, fallback handoff, cancel amortization (time also includes retry gap \(D\)). \(n^1,n^0,n^C\) are success, failure, and cancel counts; if \(n^1+n^0=0\), that unit dimension is \(\mathrm{NA}\). \(\tilde C_S,\tilde C_F\) (and likewise for time) are winsorized then shrinkage-to-baseline means on the success/failure sides; \(\hat{\bar C}_C,\bar T_C\) are mean cancel cost/time; \(\hat q\) is the arm’s success quality estimate and \(\bar Q_F\) the quality when the fallback finishes after handoff (shrunk toward the fallback unit quality). Reference and fallback arms have zero handoff terms. \(Q^*\in[0,1]\).
 
-Layer and overall \(C^*,T^*,Q^*\) are weighted aggregates over positive-weight units and layers (any positive-weight \(\mathrm{NA}\) unit makes the aggregate \(\mathrm{NA}\)). Value uses these **aggregated** quantities versus the reference anchor:
+Layer and overall \(C^*,T^*,Q^*\) are weighted aggregates over positive-weight units and layers (any positive-weight \(\mathrm{NA}\) unit makes the aggregate \(\mathrm{NA}\)). Value uses these **aggregated** quantities versus the reference anchor \(C^{\mathrm{ref}},T^{\mathrm{ref}},Q^{\mathrm{ref}}\) (the reference arm’s aggregated values), and requires all three of \(C^*,T^*,Q^*\) non-\(\mathrm{NA}\):
 
 $$
 V=100\left(\frac{C^{\mathrm{ref}}+c_0}{C^*+c_0}\right)^{a}

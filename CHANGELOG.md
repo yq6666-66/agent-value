@@ -38,7 +38,7 @@ Root `README.md` and `README.zh-CN.md` convert reader-facing unordered lists to 
 
 Root `README.md` and `README.zh-CN.md` are shortened to five sections (summary, problem, features, technology, usage). Facts are aligned with tip `bf5f9bc3` / v0.3.0. The “not yet calibrated” wording after observation was permanently cancelled is kept. Documentation only; no functional change.
 
-README / README.zh-CN 技术段补核心计分公式（p_K / C^* T^* Q^* / V）；五段短结构不变。
+Root README.md and README.zh-CN.md Technology sections add the implemented core scoring formulas (p_K / C^* T^* Q^* / V). Five-section short structure unchanged. Documentation only; no functional change.
 
 ### Fixed
 

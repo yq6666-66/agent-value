@@ -36,6 +36,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Root `README.md` and `README.zh-CN.md` convert reader-facing unordered lists to ordered lists. Code blocks and tables are unchanged. Documentation only; no functional change.
 
+Root `README.md` and `README.zh-CN.md` are shortened to five sections (summary, problem, features, technology, usage). Facts are aligned with tip `bf5f9bc3` / v0.3.0. The “not yet calibrated” wording after observation was permanently cancelled is kept. Documentation only; no functional change.
+
 ### Fixed
 
 ## [0.3.0] - 2026-10-26
